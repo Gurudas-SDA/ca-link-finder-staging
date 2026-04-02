@@ -463,7 +463,7 @@ PPP.search = (function () {
         });
 
         var where = conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : '';
-        var sql = 'SELECT c.chunk_id, c.lecture_nr, c.block_num, c.concept_summary, c.word_count' +
+        var sql = 'SELECT c.chunk_id, c.lecture_nr, c.block_num, c.text, c.concept_summary, c.word_count' +
                   ' FROM concepts c' + where +
                   ' ORDER BY c.lecture_nr, c.block_num LIMIT 200';
 

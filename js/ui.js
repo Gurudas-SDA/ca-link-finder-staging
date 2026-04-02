@@ -487,19 +487,36 @@ PPP.ui = (function () {
         var html = '<thead><tr>' +
             '<th>Date</th>' +
             '<th>Lecture</th>' +
-            '<th>Theme / Concept</th>' +
+            '<th>Excerpt</th>' +
             '<th>Links</th>' +
             '</tr></thead><tbody>';
 
         if (!rows || rows.length === 0) {
             html += '<tr><td colspan="4" class="empty-result-message">' + t('noConceptResults') + '</td></tr>';
         } else {
-            rows.forEach(function (row) {
+            rows.forEach(function (row, rowIdx) {
                 var date = utils.escapeHtml(row.date || '');
                 var lectureName = row.original_file_name || ('Nr.' + row.lecture_nr);
                 var lectureHighlighted = highlightSearchTerms(lectureName, searchTerms);
-                var conceptText = row.concept_summary || '';
-                var conceptHighlighted = highlightSearchTerms(conceptText, searchTerms);
+
+                // Show original transcript text, truncated to ~300 chars
+                var fullText = row.text || row.concept_summary || '';
+                var truncated = fullText.length > 300;
+                var displayText = truncated ? fullText.substring(0, 300) + '...' : fullText;
+                var textHighlighted = highlightSearchTerms(displayText, searchTerms);
+
+                // "Show more" toggle for long text
+                var textCellHtml = '<span class="concept-text-short" id="concept-short-' + rowIdx + '">' + textHighlighted + '</span>';
+                if (truncated) {
+                    textCellHtml += '<span class="concept-text-full" id="concept-full-' + rowIdx + '" style="display:none;">' +
+                        highlightSearchTerms(fullText, searchTerms) + '</span>';
+                    textCellHtml += ' <a href="#" class="concept-toggle" onclick="' +
+                        'var s=document.getElementById(\'concept-short-' + rowIdx + '\');' +
+                        'var f=document.getElementById(\'concept-full-' + rowIdx + '\');' +
+                        'if(f.style.display===\'none\'){f.style.display=\'inline\';s.style.display=\'none\';this.textContent=\'less\';}' +
+                        'else{f.style.display=\'none\';s.style.display=\'inline\';this.textContent=\'more\';}' +
+                        'return false;" style="font-size:0.8em;color:var(--saffron);font-weight:700;">more</a>';
+                }
 
                 // Build links cell
                 var linksHtml = '';
@@ -523,7 +540,7 @@ PPP.ui = (function () {
                 html += '<tr>' +
                     '<td style="white-space:nowrap;">' + date + '</td>' +
                     '<td>' + lectureHighlighted + '</td>' +
-                    '<td style="font-size:0.9em;line-height:1.5;">' + conceptHighlighted + '</td>' +
+                    '<td style="font-size:0.9em;line-height:1.5;font-style:italic;color:#444;">' + textCellHtml + '</td>' +
                     '<td style="white-space:nowrap;">' + linksHtml + '</td>' +
                     '</tr>';
             });

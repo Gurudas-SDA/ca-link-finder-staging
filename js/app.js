@@ -1654,6 +1654,7 @@ PPP.app = (function () {
                         chunk_id: c.chunk_id,
                         lecture_nr: c.lecture_nr,
                         block_num: c.block_num,
+                        text: c.text || '',
                         concept_summary: c.concept_summary,
                         word_count: c.word_count,
                         date: meta.date || '',
