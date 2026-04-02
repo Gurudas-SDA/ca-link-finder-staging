@@ -103,6 +103,7 @@ PPP.ui = (function () {
      */
     function renderResults(rows, searchTermStr, startIndex, endIndex, matchHints) {
         var table = document.getElementById('resultsTable');
+        table.style.tableLayout = '';
         table.innerHTML = '';
         var thead = table.createTHead();
         buildHeader(thead);
@@ -286,6 +287,7 @@ PPP.ui = (function () {
      */
     function renderEmptyTable() {
         var table = document.getElementById('resultsTable');
+        table.style.tableLayout = '';
         table.innerHTML = '';
         var thead = table.createTHead();
         buildHeader(thead);
@@ -484,7 +486,9 @@ PPP.ui = (function () {
         var table = document.getElementById('resultsTable');
         var searchTerms = searchTermStr ? searchTermStr.split(';').map(function (s) { return s.trim(); }).filter(Boolean) : [];
 
-        var html = '<thead><tr>' +
+        table.style.tableLayout = 'fixed';
+        var html = '<colgroup><col style="width:10%"><col style="width:20%"><col style="width:50%"><col style="width:20%"></colgroup>' +
+            '<thead><tr>' +
             '<th>Date</th>' +
             '<th>Lecture</th>' +
             '<th>Excerpt</th>' +
@@ -539,8 +543,8 @@ PPP.ui = (function () {
 
                 html += '<tr>' +
                     '<td style="white-space:nowrap;">' + date + '</td>' +
-                    '<td>' + lectureHighlighted + '</td>' +
-                    '<td style="font-size:0.9em;line-height:1.5;font-style:italic;color:#444;">' + textCellHtml + '</td>' +
+                    '<td style="word-wrap:break-word;overflow-wrap:break-word;">' + lectureHighlighted + '</td>' +
+                    '<td style="font-size:0.9em;line-height:1.5;font-style:italic;color:#444;word-wrap:break-word;overflow-wrap:break-word;">' + textCellHtml + '</td>' +
                     '<td style="white-space:nowrap;">' + linksHtml + '</td>' +
                     '</tr>';
             });
@@ -554,6 +558,7 @@ PPP.ui = (function () {
      */
     function renderCitationStats(rows) {
         var table = document.getElementById('resultsTable');
+        table.style.tableLayout = '';
         var html = '<thead><tr>' +
             '<th>Source</th>' +
             '<th>Total Citations</th>' +
