@@ -334,15 +334,16 @@ PPP.ui = (function () {
 
             var tdName = tr.insertCell();
             var lectureName = row.original_file_name || row['Original file name'] || '';
-            var summaryText = row.summary_iast || row['Summary_IAST'] || '';
-            if (summaryText) {
+            var lectureNr = row.nr || row['Nr.'] || '';
+            var hasSummary = !!(row.tags_iast || row['Tags_IAST']);
+            if (hasSummary && lectureNr) {
                 var link = document.createElement('a');
                 link.href = '#';
                 link.textContent = lectureName;
                 link.style.cssText = 'color:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;';
                 link.addEventListener('click', function (e) {
                     e.preventDefault();
-                    PPP.ui.openSummaryModal(lectureName, summaryText);
+                    PPP.ui.openSummaryModal(lectureName, lectureNr);
                 });
                 tdName.appendChild(link);
             } else {
@@ -767,15 +768,37 @@ PPP.ui = (function () {
         stars.forEach(function (s) { s.classList.toggle('active', isFav); });
     }
 
-    function openSummaryModal(title, summary) {
+    var _summariesCache = null;
+    var _summariesLoading = null;
+
+    function loadSummaries() {
+        if (_summariesCache) return Promise.resolve(_summariesCache);
+        if (_summariesLoading) return _summariesLoading;
+        _summariesLoading = fetch('data/ppp_summaries.json')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                _summariesCache = data;
+                _summariesLoading = null;
+                return data;
+            });
+        return _summariesLoading;
+    }
+
+    function openSummaryModal(title, lectureNr) {
         var overlay = document.getElementById('summaryModalOverlay');
         var titleEl = document.getElementById('summaryModalTitle');
         var bodyEl = document.getElementById('summaryModalBody');
         if (!overlay) return;
         titleEl.textContent = title;
-        bodyEl.textContent = summary;
+        bodyEl.textContent = '…';
         overlay.style.display = 'flex';
         document.body.style.overflow = 'hidden';
+        loadSummaries().then(function (data) {
+            var text = data[lectureNr] || data[String(parseInt(lectureNr, 10))] || '';
+            bodyEl.textContent = text || '(nav kopsavilkuma)';
+        }).catch(function () {
+            bodyEl.textContent = '(kļūda ielādējot kopsavilkumu)';
+        });
     }
 
     function closeSummaryModal(e) {
