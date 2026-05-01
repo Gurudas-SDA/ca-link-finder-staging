@@ -284,6 +284,29 @@ PPP.ui = (function () {
                     }
                 } else if (col === 'Length') {
                     td.textContent = utils.formatLength(val);
+                } else if (col === 'Original file name' && nr && hasSummary(nr)) {
+                    // Klikšķināms nosaukums ja ir Summary_IAST
+                    var link = document.createElement('a');
+                    link.href = '#';
+                    link.innerHTML = highlightSearchTerms(val, searchTerms);
+                    link.style.cssText = 'color:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;';
+                    link.setAttribute('data-nr', nr);
+                    link.setAttribute('data-name', val);
+                    link.onclick = function (e) {
+                        e.preventDefault();
+                        var el = e.currentTarget;
+                        openSummaryModal(el.getAttribute('data-name'), el.getAttribute('data-nr'));
+                    };
+                    td.appendChild(link);
+                    if (matchHints) {
+                        var hints = matchHints.get(row);
+                        if (hints && hints.length > 0) {
+                            var span = document.createElement('span');
+                            span.className = 'match-hint';
+                            span.textContent = hints.join('; ');
+                            td.appendChild(span);
+                        }
+                    }
                 } else {
                     td.innerHTML = highlightSearchTerms(val, searchTerms);
                     // Add hidden column match hint
