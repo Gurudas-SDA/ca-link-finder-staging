@@ -27,41 +27,41 @@ PPP.ui = (function () {
     /**
      * Build the multi-row table header (same structure as original).
      */
-    function buildHeader(thead) {
+    function buildHeader(thead, totalCount) {
         var row0 = thead.insertRow();
-        for (var i = 0; i < 5; i++) {
+        // Extra spacer for star + share columns
+        var starSpacer = document.createElement('th');
+        starSpacer.colSpan = 2;
+        starSpacer.style.border = 'none';
+        starSpacer.style.backgroundColor = 'transparent';
+        row0.appendChild(starSpacer);
+        for (var i = 0; i < 11; i++) {
             var c = document.createElement('th');
             c.style.border = 'none';
             c.style.backgroundColor = 'transparent';
             row0.appendChild(c);
         }
 
-        var ltCell = document.createElement('th');
-        ltCell.colSpan = 3; ltCell.style.textAlign = 'center'; ltCell.style.border = 'none';
-        ltCell.style.backgroundColor = 'transparent'; ltCell.style.paddingBottom = '5px';
-        var ltBtn = document.createElement('button');
-        ltBtn.setAttribute('data-i18n', 'latest20Transcripts');
-        ltBtn.textContent = t('latest20Transcripts');
-        ltBtn.style.cssText = 'background:linear-gradient(135deg,#e8842c,#f4a54b);color:#fff;border:none;padding:6px 10px;cursor:pointer;font-weight:700;border-radius:20px;font-size:11px;width:100%;box-sizing:border-box;transition:all 0.2s;letter-spacing:0.2px;';
-        ltBtn.onclick = function () { if (PPP.app && PPP.app.showLatestTranscripts) PPP.app.showLatestTranscripts(); };
-        ltCell.appendChild(ltBtn);
-        row0.appendChild(ltCell);
-
-        var tCell = document.createElement('th');
-        tCell.colSpan = 3; tCell.style.textAlign = 'center'; tCell.style.border = 'none';
-        tCell.style.backgroundColor = 'transparent'; tCell.style.paddingBottom = '5px';
-        tCell.style.position = 'relative';
-        var tBtn = document.createElement('button');
-        tBtn.setAttribute('data-i18n', 'lectureTopics');
-        tBtn.textContent = t('lectureTopics');
-        tBtn.style.cssText = 'background:linear-gradient(135deg,#1a3a6b,#2a4f8a);color:#fff;border:none;padding:6px 10px;cursor:pointer;font-weight:700;border-radius:20px;font-size:11px;width:100%;box-sizing:border-box;transition:all 0.2s;letter-spacing:0.2px;';
-        tBtn.onclick = function () { if (PPP.app && PPP.app.showTopics) PPP.app.showTopics(); };
-        tCell.appendChild(tBtn);
-        row0.appendChild(tCell);
-
         var row1 = thead.insertRow();
         var row2 = thead.insertRow();
         var row3 = thead.insertRow();
+
+        // Star column header
+        var starTh = document.createElement('th');
+        starTh.rowSpan = 3;
+        starTh.className = 'fav-cell';
+        starTh.innerHTML = '&#9733;';
+        starTh.style.color = 'var(--primary)';
+        starTh.style.fontSize = '14px';
+        row1.appendChild(starTh);
+
+        // Share column header
+        var shareTh = document.createElement('th');
+        shareTh.rowSpan = 3;
+        shareTh.className = 'share-cell';
+        shareTh.innerHTML = '&#128279;';
+        shareTh.style.fontSize = '12px';
+        row1.appendChild(shareTh);
 
         for (var idx = 0; idx < columnHeaders.length; idx++) {
             var h = columnHeaders[idx];
@@ -75,8 +75,45 @@ PPP.ui = (function () {
             if (h === 'Script_EN') {
                 var thBlock = document.createElement('th');
                 thBlock.colSpan = 3; thBlock.rowSpan = 2; thBlock.className = 'transcripts-block';
-                thBlock.innerHTML = '<div class="transcripts-title">' + t('transcriptsTitle') + '</div>' +
-                    '<div class="transcripts-hintline"><span class="click-word">' + t('clickWord') + '</span> ' + t('transcriptsHint') + '</div>';
+                thBlock.style.textAlign = 'left'; thBlock.style.verticalAlign = 'middle';
+
+                var comboContainer = document.createElement('div');
+                comboContainer.style.cssText = 'display:inline-block;';
+                thBlock.appendChild(comboContainer);
+
+                var ttLabel = document.createElement('div');
+                ttLabel.setAttribute('data-i18n', 'transcriptsAndTranslations');
+                var countStr = (typeof totalCount === 'number' && totalCount > 0) ? (totalCount.toLocaleString() + ' ') : '';
+                ttLabel.textContent = countStr + t('transcriptsAndTranslations');
+                ttLabel.style.cssText = 'font-weight:700;font-size:14px;color:#1a3a6b;margin-bottom:6px;text-transform:none;text-align:center;letter-spacing:0.3px;';
+                comboContainer.appendChild(ttLabel);
+
+                var btnWrap = document.createElement('div');
+                btnWrap.style.cssText = 'display:inline-flex;gap:0;justify-content:flex-start;align-items:center;';
+
+                var bdBtn = document.createElement('button');
+                bdBtn.setAttribute('data-i18n', 'byDate');
+                bdBtn.textContent = t('byDate');
+                bdBtn.style.cssText = 'background:linear-gradient(135deg,#e8842c,#f4a54b);color:#fff;border:none;padding:6px 14px;cursor:pointer;font-weight:700;border-radius:20px 0 0 20px;font-size:11px;transition:all 0.2s;letter-spacing:0.2px;';
+                bdBtn.onclick = function () { if (PPP.app && PPP.app.showAllTranscriptsByDate) PPP.app.showAllTranscriptsByDate(); };
+
+                var btBtn = document.createElement('button');
+                btBtn.setAttribute('data-i18n', 'lectureTopics');
+                btBtn.textContent = t('lectureTopics');
+                btBtn.style.cssText = 'background:linear-gradient(135deg,#1a3a6b,#2a4f8a);color:#fff;border:none;padding:6px 14px;cursor:pointer;font-weight:700;border-radius:0;font-size:11px;transition:all 0.2s;letter-spacing:0.2px;';
+                btBtn.onclick = function () { if (PPP.app && PPP.app.showTopics) PPP.app.showTopics(); };
+
+                var nBtn = document.createElement('button');
+                nBtn.setAttribute('data-i18n', 'latest20Transcripts');
+                nBtn.textContent = t('latest20Transcripts');
+                nBtn.style.cssText = 'background:linear-gradient(135deg,#b8860b,#d4a843);color:#fff;border:none;padding:6px 14px;cursor:pointer;font-weight:700;border-radius:0 20px 20px 0;font-size:11px;transition:all 0.2s;letter-spacing:0.2px;';
+                nBtn.onclick = function () { if (PPP.app && PPP.app.showLatestTranscripts) PPP.app.showLatestTranscripts(); };
+
+                btnWrap.appendChild(bdBtn);
+                btnWrap.appendChild(btBtn);
+                btnWrap.appendChild(nBtn);
+                comboContainer.appendChild(btnWrap);
+
                 row1.appendChild(thBlock);
                 ['EN', 'LV', 'RU'].forEach(function (lang) {
                     var thL = document.createElement('th');
@@ -103,16 +140,15 @@ PPP.ui = (function () {
      */
     function renderResults(rows, searchTermStr, startIndex, endIndex, matchHints) {
         var table = document.getElementById('resultsTable');
-        table.style.tableLayout = '';
         table.innerHTML = '';
         var thead = table.createTHead();
-        buildHeader(thead);
+        buildHeader(thead, rows ? rows.length : 0);
         var tbody = table.createTBody();
 
         if (rows.length === 0) {
             var r = tbody.insertRow();
             var c = r.insertCell();
-            c.colSpan = columnHeaders.length;
+            c.colSpan = columnHeaders.length + 2;
             c.className = 'empty-result-message';
             c.textContent = t('noResultsFound');
             return;
@@ -123,6 +159,47 @@ PPP.ui = (function () {
         for (var i = startIndex; i < endIndex && i < rows.length; i++) {
             var row = rows[i];
             var tr = tbody.insertRow();
+
+            // Star / favorite cell
+            var starTd = tr.insertCell();
+            starTd.className = 'fav-cell';
+            var nr = (row['Nr.'] || '').toString().trim();
+            if (nr && PPP.favorites) {
+                var btn = document.createElement('button');
+                btn.className = 'fav-star' + (PPP.favorites.isFavorite(nr) ? ' active' : '');
+                btn.setAttribute('data-nr', nr);
+                btn.innerHTML = '&#9733;';
+                btn.onclick = function (e) {
+                    e.stopPropagation();
+                    var el = e.currentTarget;
+                    var nrVal = el.getAttribute('data-nr');
+                    showSaveToPopup(nrVal, el);
+                };
+                starTd.appendChild(btn);
+            }
+
+            // Share / deep link cell
+            var shareTd = tr.insertCell();
+            shareTd.className = 'share-cell';
+            if (nr && PPP.app.copyShareLink) {
+                var shareBtn = document.createElement('button');
+                shareBtn.className = 'share-btn';
+                shareBtn.setAttribute('data-nr', nr);
+                shareBtn.setAttribute('data-title', (row['Original file name'] || '').toString().trim());
+                shareBtn.setAttribute('data-subject', (row['Subject'] || '').toString().trim());
+                shareBtn.innerHTML = '&#128279;'; // 🔗
+                shareBtn.title = 'Copy link';
+                shareBtn.onclick = function (e) {
+                    var el = e.currentTarget;
+                    PPP.app.copyShareLink(
+                        el.getAttribute('data-nr'),
+                        el.getAttribute('data-title'),
+                        el.getAttribute('data-subject')
+                    );
+                };
+                shareTd.appendChild(shareBtn);
+            }
+
             for (var ci = 0; ci < columnHeaders.length; ci++) {
                 var col = columnHeaders[ci];
                 var td = tr.insertCell();
@@ -157,11 +234,43 @@ PPP.ui = (function () {
                             };
                             td.appendChild(viewBtn);
                         }
+                    } else if (isScriptCol) {
+                        // NON-VERSE MODE: open in-app modal for script columns
+                        var scriptDriveUrl = row[col + '_url'] || utils.extractUrl(val);
+                        if (scriptDriveUrl && !scriptDriveUrl.startsWith('http')) scriptDriveUrl = null;
+                        var hasScript = val && val !== 'N/A' && val !== '0' && val !== '';
+                        if (hasScript) {
+                            var langLabel = col.split('_')[1];
+                            var langCode = langLabel.toLowerCase();
+                            var lectNr = (row['Nr.'] || '').toString().trim();
+                            var viewBtn = document.createElement('a');
+                            viewBtn.href = '#';
+                            viewBtn.textContent = langLabel;
+                            viewBtn.title = 'Open transcript';
+                            viewBtn.style.cssText = 'color:var(--saffron);font-weight:700;text-decoration:underline;cursor:pointer;';
+                            viewBtn.setAttribute('data-nr', lectNr);
+                            viewBtn.setAttribute('data-lang', langCode);
+                            viewBtn.setAttribute('data-drive-url', scriptDriveUrl || '');
+                            viewBtn.onclick = function (e) {
+                                e.preventDefault();
+                                var el = e.currentTarget;
+                                var nr = el.getAttribute('data-nr');
+                                var lang = el.getAttribute('data-lang');
+                                var dUrl = el.getAttribute('data-drive-url') || undefined;
+                                if (nr) {
+                                    PPP.app.openHtmlTranscriptViewer(nr, lang, null, null, dUrl);
+                                } else if (dUrl) {
+                                    window.open(dUrl, '_blank');
+                                }
+                            };
+                            td.appendChild(viewBtn);
+                        }
                     } else {
+                        // Links and Dwnld. columns — keep existing behavior (external links)
                         var url = row[col + '_url'] || utils.extractUrl(val);
                         if (!url && col === 'Links') url = row['Direct URL_url'] || (row['Direct URL'] || '').toString().trim() || null;
                         if (url && !url.startsWith('http')) url = null;
-                        var label = col.startsWith('Script_') ? col.split('_')[1] : (col === 'Dwnld.' ? 'Mp3' : (val || 'Link'));
+                        var label = col === 'Dwnld.' ? 'Mp3' : (val || 'Link');
                         if (url) {
                             var a = document.createElement('a');
                             a.href = url;
@@ -287,14 +396,13 @@ PPP.ui = (function () {
      */
     function renderEmptyTable() {
         var table = document.getElementById('resultsTable');
-        table.style.tableLayout = '';
         table.innerHTML = '';
         var thead = table.createTHead();
         buildHeader(thead);
         var tbody = table.createTBody();
         var r = tbody.insertRow();
         var c = r.insertCell();
-        c.colSpan = columnHeaders.length;
+        c.colSpan = columnHeaders.length + 2;
         c.className = 'empty-result-message';
         c.textContent = t('enterSearchTerms');
     }
@@ -310,7 +418,7 @@ PPP.ui = (function () {
             if (s) counts[s] = (counts[s] || 0) + 1;
         });
 
-        var html = '<div id="topicsListTitle">' + t('topics') + '</div><div id="topicsListContent">';
+        var html = '<button id="topicsHideBtn" class="recommendations-hide-btn" onclick="PPP.app.showTopics()">' + utils.escapeHtml(t('hideTopicsBtn')) + '</button><div id="topicsListContent">';
         Object.entries(counts).sort(function (a, b) { return a[0].localeCompare(b[0]); }).forEach(function (entry) {
             var name = entry[0], count = entry[1];
             var nameSafe = utils.encodeForAttr(name);
@@ -480,85 +588,10 @@ PPP.ui = (function () {
     }
 
     /**
-     * Render concept search results (themes/summaries with lecture info).
-     */
-    function renderConceptResults(rows, searchTermStr) {
-        var table = document.getElementById('resultsTable');
-        var searchTerms = searchTermStr ? searchTermStr.split(';').map(function (s) { return s.trim(); }).filter(Boolean) : [];
-
-        table.style.tableLayout = 'fixed';
-        var html = '<colgroup><col style="width:10%"><col style="width:20%"><col style="width:50%"><col style="width:20%"></colgroup>' +
-            '<thead><tr>' +
-            '<th>Date</th>' +
-            '<th>Lecture</th>' +
-            '<th>Excerpt</th>' +
-            '<th>Links</th>' +
-            '</tr></thead><tbody>';
-
-        if (!rows || rows.length === 0) {
-            html += '<tr><td colspan="4" class="empty-result-message">' + t('noConceptResults') + '</td></tr>';
-        } else {
-            rows.forEach(function (row, rowIdx) {
-                var date = utils.escapeHtml(row.date || '');
-                var lectureName = row.original_file_name || ('Nr.' + row.lecture_nr);
-                var lectureHighlighted = highlightSearchTerms(lectureName, searchTerms);
-
-                // Show original transcript text, truncated to ~300 chars
-                var fullText = row.text || row.concept_summary || '';
-                var truncated = fullText.length > 300;
-                var displayText = truncated ? fullText.substring(0, 300) + '...' : fullText;
-                var textHighlighted = highlightSearchTerms(displayText, searchTerms);
-
-                // "Show more" toggle for long text
-                var textCellHtml = '<span class="concept-text-short" id="concept-short-' + rowIdx + '">' + textHighlighted + '</span>';
-                if (truncated) {
-                    textCellHtml += '<span class="concept-text-full" id="concept-full-' + rowIdx + '" style="display:none;">' +
-                        highlightSearchTerms(fullText, searchTerms) + '</span>';
-                    textCellHtml += ' <a href="#" class="concept-toggle" onclick="' +
-                        'var s=document.getElementById(\'concept-short-' + rowIdx + '\');' +
-                        'var f=document.getElementById(\'concept-full-' + rowIdx + '\');' +
-                        'if(f.style.display===\'none\'){f.style.display=\'inline\';s.style.display=\'none\';this.textContent=\'less\';}' +
-                        'else{f.style.display=\'none\';s.style.display=\'inline\';this.textContent=\'more\';}' +
-                        'return false;" style="font-size:0.8em;color:var(--saffron);font-weight:700;">more</a>';
-                }
-
-                // Build links cell
-                var linksHtml = '';
-                var linkUrl = row.links_url || utils.extractUrl(row.links || '');
-                if (linkUrl && linkUrl.startsWith && linkUrl.startsWith('http')) {
-                    linksHtml += '<a href="' + utils.escapeHtml(linkUrl) + '" target="_blank" rel="noopener">Link</a> ';
-                }
-                if (row.dwnld_url) {
-                    linksHtml += '<a href="' + utils.escapeHtml(row.dwnld_url) + '" target="_blank" rel="noopener">Mp3</a> ';
-                }
-                // Script links
-                ['en', 'lv', 'ru'].forEach(function (lang) {
-                    var scriptVal = row['script_' + lang] || '';
-                    if (scriptVal && scriptVal !== 'N/A' && scriptVal !== '0' && scriptVal !== '') {
-                        linksHtml += '<a href="#" onclick="PPP.app.openHtmlTranscriptViewer(\'' +
-                            utils.escapeHtml(row.lecture_nr) + '\',\'' + lang + '\',' + (row.block_num || 0) +
-                            ');return false;" style="color:var(--saffron);font-weight:700;">' + lang.toUpperCase() + '</a> ';
-                    }
-                });
-
-                html += '<tr>' +
-                    '<td style="white-space:nowrap;">' + date + '</td>' +
-                    '<td style="word-wrap:break-word;overflow-wrap:break-word;">' + lectureHighlighted + '</td>' +
-                    '<td style="font-size:0.9em;line-height:1.5;font-style:italic;color:#444;word-wrap:break-word;overflow-wrap:break-word;">' + textCellHtml + '</td>' +
-                    '<td style="white-space:nowrap;">' + linksHtml + '</td>' +
-                    '</tr>';
-            });
-        }
-        html += '</tbody>';
-        table.innerHTML = html;
-    }
-
-    /**
      * Render citation stats overview (when no search term entered in Verses mode).
      */
     function renderCitationStats(rows) {
         var table = document.getElementById('resultsTable');
-        table.style.tableLayout = '';
         var html = '<thead><tr>' +
             '<th>Source</th>' +
             '<th>Total Citations</th>' +
@@ -583,12 +616,148 @@ PPP.ui = (function () {
         table.innerHTML = html;
     }
 
+    // ===== "Save to..." popup =====
+    var _activePopup = null;
+
+    function closeSaveToPopup() {
+        if (_activePopup) {
+            _activePopup.remove();
+            _activePopup = null;
+        }
+        document.removeEventListener('click', _onDocClick);
+    }
+
+    function _onDocClick(e) {
+        if (_activePopup && !_activePopup.contains(e.target)) {
+            closeSaveToPopup();
+        }
+    }
+
+    function showSaveToPopup(nr, anchorEl) {
+        closeSaveToPopup();
+        var fav = PPP.favorites;
+        var cols = fav.getCollections();
+
+        var popup = document.createElement('div');
+        popup.className = 'save-to-popup';
+        _activePopup = popup;
+
+        // Header
+        var header = document.createElement('div');
+        header.className = 'save-to-header';
+        header.textContent = t('saveTo') || 'Save to...';
+        popup.appendChild(header);
+
+        // Collection list
+        var list = document.createElement('div');
+        list.className = 'save-to-list';
+
+        cols.forEach(function (col) {
+            var item = document.createElement('label');
+            item.className = 'save-to-item';
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = fav.isInCollection(col.id, nr);
+            cb.onchange = function () {
+                if (cb.checked) {
+                    fav.addToCollection(col.id, nr);
+                } else {
+                    fav.removeFromCollection(col.id, nr);
+                }
+                _updateStarState(nr);
+                if (PPP.app.updateFavoritesCount) PPP.app.updateFavoritesCount();
+            };
+            var nameSpan = document.createElement('span');
+            nameSpan.className = 'save-to-name';
+            nameSpan.textContent = (col.name === 'Favorites') ? (t('favorites') || col.name) : col.name;
+            var countSpan = document.createElement('span');
+            countSpan.className = 'save-to-count';
+            countSpan.textContent = col.count;
+            item.appendChild(cb);
+            item.appendChild(nameSpan);
+            item.appendChild(countSpan);
+            list.appendChild(item);
+        });
+
+        popup.appendChild(list);
+
+        // "+ New collection" button
+        var newBtn = document.createElement('button');
+        newBtn.className = 'save-to-new';
+        newBtn.innerHTML = '+ ' + (t('newCollection') || 'New collection');
+        newBtn.onclick = function (e) {
+            e.stopPropagation();
+            _showNewCollectionInput(popup, nr);
+        };
+        popup.appendChild(newBtn);
+
+        // Position popup near the star
+        document.body.appendChild(popup);
+        var rect = anchorEl.getBoundingClientRect();
+        var popupRect = popup.getBoundingClientRect();
+        var top = rect.bottom + 4;
+        var left = rect.left;
+        // Keep within viewport
+        if (left + popupRect.width > window.innerWidth - 8) {
+            left = window.innerWidth - popupRect.width - 8;
+        }
+        if (top + popupRect.height > window.innerHeight - 8) {
+            top = rect.top - popupRect.height - 4;
+        }
+        popup.style.top = (top + window.scrollY) + 'px';
+        popup.style.left = (left + window.scrollX) + 'px';
+
+        setTimeout(function () {
+            document.addEventListener('click', _onDocClick);
+        }, 0);
+    }
+
+    function _showNewCollectionInput(popup, nr) {
+        var existing = popup.querySelector('.save-to-input-row');
+        if (existing) return;
+        var newBtn = popup.querySelector('.save-to-new');
+
+        var row = document.createElement('div');
+        row.className = 'save-to-input-row';
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'save-to-input';
+        input.placeholder = t('collectionName') || 'Collection name';
+        input.maxLength = 40;
+        var okBtn = document.createElement('button');
+        okBtn.className = 'save-to-ok';
+        okBtn.textContent = '✓';
+        okBtn.onclick = function (e) {
+            e.stopPropagation();
+            var name = input.value.trim();
+            if (!name) return;
+            var col = PPP.favorites.createCollection(name);
+            PPP.favorites.addToCollection(col.id, nr);
+            _updateStarState(nr);
+            if (PPP.app.updateFavoritesCount) PPP.app.updateFavoritesCount();
+            closeSaveToPopup();
+        };
+        input.onkeydown = function (e) {
+            if (e.key === 'Enter') okBtn.click();
+            if (e.key === 'Escape') closeSaveToPopup();
+        };
+        row.appendChild(input);
+        row.appendChild(okBtn);
+        popup.insertBefore(row, newBtn);
+        input.focus();
+    }
+
+    function _updateStarState(nr) {
+        var stars = document.querySelectorAll('.fav-star[data-nr="' + nr + '"]');
+        var isFav = PPP.favorites.isFavorite(nr);
+        stars.forEach(function (s) { s.classList.toggle('active', isFav); });
+    }
+
     return {
         renderResults: renderResults,
         renderTranscriptResults: renderTranscriptResults,
         renderCitationResults: renderCitationResults,
         renderCitationStats: renderCitationStats,
-        renderConceptResults: renderConceptResults,
         renderPagination: renderPagination,
         renderEmptyTable: renderEmptyTable,
         renderTopics: renderTopics,

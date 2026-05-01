@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chaitanya Academy Audio, Video &amp; Transcript Finder — Guida alle funzioni</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --primary: #1a3a6b;
+  --primary-dark: #12294a;
+  --saffron: #e8842c;
+  --cream: #fffcf5;
+  --surface: #ffffff;
+  --gold: #f0c75e;
+  --text: #2d2a24;
+  --text-soft: #6a6358;
+  --border: #e8ddc4;
+  --shadow: 0 2px 14px rgba(26, 58, 107, 0.08);
+  --shadow-lg: 0 8px 32px rgba(26, 58, 107, 0.12);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 80px; }
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: var(--cream);
+  color: var(--text);
+  margin: 0;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Header */
+header {
+  position: sticky;
+  top: 0;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+  color: #fff;
+  padding: 14px 28px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+.brand { display: flex; align-items: center; gap: 12px; font-family: 'Cormorant Garamond', serif; font-size: 22px; font-weight: 600; letter-spacing: 0.3px; }
+.brand svg { width: 34px; height: 34px; }
+.header-search {
+  flex: 1;
+  max-width: 460px;
+  margin-left: auto;
+  position: relative;
+}
+.header-search input {
+  width: 100%;
+  padding: 10px 16px 10px 40px;
+  border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: background 0.2s, border-color 0.2s;
+}
+.header-search input::placeholder { color: rgba(255,255,255,0.65); }
+.header-search input:focus { background: rgba(255,255,255,0.2); border-color: var(--gold); }
+.header-search::before {
+  content: '';
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  transform: translateY(-50%);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round'><circle cx='11' cy='11' r='7'/><path d='m20 20-3.5-3.5'/></svg>");
+  background-size: contain;
+  opacity: 0.7;
+}
+.back-link {
+  color: #fff;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.3);
+  transition: background 0.2s;
+  white-space: nowrap;
+}
+.back-link:hover { background: rgba(255,255,255,0.15); }
+.menu-toggle { display: none; background: none; border: 1px solid rgba(255,255,255,0.3); color: #fff; font-size: 20px; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+
+/* Layout */
+.wrap { display: grid; grid-template-columns: 280px 1fr; min-height: calc(100vh - 64px); }
+
+/* Sidebar */
+.sidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 24px 18px;
+  position: sticky;
+  top: 64px;
+  height: calc(100vh - 64px);
+  overflow-y: auto;
+}
+.sidebar h4 {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 18px;
+  color: var(--primary);
+  margin: 0 0 10px 6px;
+  font-weight: 600;
+}
+.group-nav { margin-bottom: 8px; }
+.group-nav summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.15s;
+}
+.group-nav summary::-webkit-details-marker { display: none; }
+.group-nav summary:hover { background: #f5efe2; }
+.group-nav summary::before {
+  content: '▸';
+  font-size: 10px;
+  color: var(--saffron);
+  transition: transform 0.2s;
+  display: inline-block;
+}
+.group-nav[open] summary::before { transform: rotate(90deg); }
+.group-nav ul { list-style: none; padding: 4px 0 4px 22px; margin: 0; }
+.group-nav li a {
+  display: block;
+  padding: 6px 10px;
+  color: var(--text-soft);
+  text-decoration: none;
+  font-size: 13px;
+  border-radius: 5px;
+  border-left: 2px solid transparent;
+  transition: all 0.15s;
+}
+.group-nav li a:hover { background: #faf5e8; color: var(--primary); }
+.group-nav li a.active {
+  background: #fdf1dc;
+  color: var(--primary);
+  border-left-color: var(--saffron);
+  font-weight: 600;
+}
+
+/* Main */
+main { padding: 48px 56px 80px; max-width: 960px; }
+.hero {
+  margin-bottom: 56px;
+  padding-bottom: 40px;
+  border-bottom: 1px solid var(--border);
+}
+.hero h1 {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 48px;
+  line-height: 1.1;
+  color: var(--primary);
+  margin: 0 0 12px;
+  font-weight: 600;
+}
+.hero p {
+  font-size: 17px;
+  color: var(--text-soft);
+  max-width: 640px;
+  margin: 0;
+}
+.hero-meta {
+  display: inline-block;
+  margin-top: 18px;
+  padding: 6px 14px;
+  background: #fdf1dc;
+  border: 1px solid var(--gold);
+  border-radius: 20px;
+  font-size: 13px;
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.group-section { margin-bottom: 64px; scroll-margin-top: 80px; }
+.group-section h2 {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 34px;
+  color: var(--primary);
+  margin: 0 0 6px;
+  font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+.group-section h2 .group-letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  background: var(--saffron);
+  color: #fff;
+  border-radius: 50%;
+  font-size: 22px;
+  font-weight: 700;
+  font-family: 'Inter', sans-serif;
+  flex-shrink: 0;
+}
+.group-section > p.group-desc {
+  color: var(--text-soft);
+  margin: 0 0 28px 60px;
+  font-size: 14px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 32px 36px;
+  margin-bottom: 24px;
+  box-shadow: var(--shadow);
+  scroll-margin-top: 80px;
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.card:hover { box-shadow: var(--shadow-lg); }
+.card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.card-num {
+  color: #fff;
+  background: var(--primary);
+  font-size: 14px;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 14px;
+  flex-shrink: 0;
+  font-family: 'Inter', sans-serif;
+}
+.card h3 {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 28px;
+  color: var(--primary);
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.card-image {
+  display: block;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  max-height: 180px;
+  margin: 0 auto 24px;
+  padding: 14px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.08);
+  background: #fafafa;
+}
+.card-tall .card-image {
+  max-height: 720px;
+  max-width: 480px;
+}
+.card dl { display: grid; gap: 14px; margin: 0; }
+.card .field { border-left: 3px solid var(--saffron); padding: 2px 0 2px 14px; }
+.card dt {
+  font-weight: 700;
+  color: var(--saffron);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 4px;
+}
+.card dd { margin: 0; line-height: 1.65; color: var(--text); font-size: 15px; }
+
+.nav-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 12px;
+  padding-top: 20px;
+  border-top: 1px dashed var(--border);
+  font-size: 13px;
+}
+.nav-footer a {
+  color: var(--primary);
+  text-decoration: none;
+  padding: 8px 12px;
+  border-radius: 6px;
+  transition: background 0.15s;
+  max-width: 46%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nav-footer a:hover { background: #f5efe2; }
+.nav-footer a.disabled { visibility: hidden; }
+
+.card.hidden { display: none; }
+.group-section.hidden { display: none; }
+.no-results {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-soft);
+  font-size: 15px;
+  display: none;
+}
+.no-results.show { display: block; }
+
+footer.page-footer {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-soft);
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+  margin-top: 40px;
+}
+
+.svarigi {
+  margin-top: 16px;
+  padding: 10px 14px;
+  background: #fff4d6;
+  border-left: 3px solid #e8842c;
+  color: #6b4d0e;
+  font-size: 13px;
+  border-radius: 4px;
+  line-height: 1.55;
+}
+
+/* Mobile */
+@media (max-width: 900px) {
+  .wrap { grid-template-columns: 1fr; }
+  .sidebar {
+    position: fixed;
+    top: 64px;
+    left: 0;
+    width: 85%;
+    max-width: 320px;
+    height: calc(100vh - 64px);
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    z-index: 90;
+    box-shadow: 4px 0 20px rgba(0,0,0,0.15);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .menu-toggle { display: inline-block; }
+  .brand { font-size: 18px; }
+  .brand svg { width: 28px; height: 28px; }
+  main { padding: 28px 20px 60px; }
+  .hero h1 { font-size: 32px; }
+  .hero p { font-size: 15px; }
+  .group-section h2 { font-size: 26px; }
+  .group-section h2 .group-letter { width: 36px; height: 36px; font-size: 18px; }
+  .card { padding: 22px 20px; }
+  .card h3 { font-size: 22px; }
+  .card-image { max-height: 140px; padding: 10px; }
+  .header-search { max-width: none; }
+  .back-link { display: none; }
+}
+@media (max-width: 560px) {
+  header { padding: 12px 14px; gap: 10px; flex-wrap: wrap; }
+  .header-search { order: 10; flex-basis: 100%; max-width: 100%; }
+  .header-search input { padding: 8px 14px 8px 36px; font-size: 13px; }
+}
+
+/* Scrollbar */
+.sidebar::-webkit-scrollbar { width: 8px; }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
+.sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.sidebar::-webkit-scrollbar-thumb:hover { background: var(--gold); }
+</style>
+</head>
+<body>
+
+<header>
+  <button class="menu-toggle" id="menuToggle" aria-label="Apri menu">☰</button>
+  <div class="brand">
+    <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <circle cx="32" cy="32" r="28" fill="none" stroke="#f0c75e" stroke-width="2"/>
+      <circle cx="32" cy="32" r="20" fill="none" stroke="#f0c75e" stroke-width="1.5" opacity="0.7"/>
+      <circle cx="32" cy="32" r="12" fill="none" stroke="#f0c75e" stroke-width="1.2" opacity="0.5"/>
+      <circle cx="32" cy="32" r="3" fill="#e8842c"/>
+      <g stroke="#f0c75e" stroke-width="1" opacity="0.5">
+        <line x1="32" y1="4" x2="32" y2="60"/>
+        <line x1="4" y1="32" x2="60" y2="32"/>
+        <line x1="12" y1="12" x2="52" y2="52"/>
+        <line x1="52" y1="12" x2="12" y2="52"/>
+      </g>
+    </svg>
+    <span>CA Guida</span>
+  </div>
+  <div class="header-search">
+    <input type="search" id="searchInput" placeholder="Cerca funzione... (numero o nome)" autocomplete="off">
+  </div>
+  <a href="../../" class="back-link">← Torna all'app</a>
+</header>
+
+<div class="wrap">
+  <aside class="sidebar" id="sidebar">
+    <h4>Indice</h4>
+    <nav id="sideNav"></nav>
+  </aside>
+
+  <main>
+    <section class="hero">
+      <h1>Chaitanya Academy<br>Audio, Video &amp; Transcript Finder<br>Guida alle funzioni</h1>
+      <p>Descrizione delle funzioni dell'app Chaitanya Academy Audio, Video &amp; Transcript Finder. Per ogni funzione scopri: cos'è, cosa offre e come si usa. Usa la ricerca o il menu laterale sinistro per trovare rapidamente una funzione specifica.</p>
+      <span class="hero-meta">30 funzioni · 9 gruppi</span>
+    </section>
+
+    <div id="content"></div>
+    <div class="no-results" id="noResults">Nessun risultato. Prova un'altra parola di ricerca.</div>
+
+    <footer class="page-footer">
+      Chaitanya Academy Audio, Video &amp; Transcript Finder · Chaitanya Academy · Archivio delle lezioni di Prem Prayojan Prabhu
+    </footer>
+  </main>
+</div>
+
+<script>
+const GROUPS = [
+  { letter: "A", name: "Barra superiore della tabella" },
+  { letter: "B", name: "Intestazione pagina" },
+  { letter: "C", name: "Barra superiore lezioni" },
+  { letter: "D", name: "Ricerca" },
+  { letter: "E", name: "Blocco trascrizioni" },
+  { letter: "F", name: "Tabella dei risultati" },
+  { letter: "G", name: "Finestra trascrizione" },
+  { letter: "H", name: "Preferiti" },
+  { letter: "I", name: "Mobile" },
+];
+
+const ITEMS = [
+  {n:1,g:"A",t:"Data di aggiornamento del database",img:"last-update.png",kas:"La data in cui il database è stato aggiornato l'ultima volta con nuove lezioni.",ieg:"Vedi subito se il database è aggiornato con le lezioni più recenti."},
+  {n:2,g:"A",t:"Elenco fonti (pulsante)",img:"list-of-sources-btn.png",kas:"Un pulsante che apre l'elenco di tutte le fonti del database.",ieg:"Consente di scegliere link e file per una fonte specifica.",kal:"Clicca per aprire l'elenco. Un ulteriore clic lo chiude."},
+  {n:3,g:"B",t:"Attivare la modalità scura",img:"theme-toggle-light.png",kas:"Pulsante per attivare la modalità scura (icona 🌙).",ieg:"Una visualizzazione morbida e non abbagliante per gli occhi stanchi la sera o in una stanza buia.",kal:"Cliccando si passa alla modalità scura. L'impostazione viene salvata."},
+  {n:4,g:"B",t:"Attivare la modalità chiara",img:"theme-toggle-dark.png",kas:"Pulsante per attivare la modalità chiara (icona ☀️).",ieg:"Migliore leggibilità di giorno e in ambienti luminosi.",kal:"Cliccando si riporta l'app in modalità chiara."},
+  {n:5,g:"B",t:"Selettore di lingua",img:"language-switcher.png",kas:"6 pulsanti di lingua — EN, RU, LV, IT, FR, ES.",ieg:"Usa l'app nella tua lingua madre.",kal:"Clicca sul codice della lingua per cambiare tutto il testo dell'app in quella lingua. La scelta viene salvata."},
+  {n:6,g:"C",t:"Voci del 2026",img:"combo-by-2026.png",kas:"Un pulsante filtro che mostra solo le registrazioni del 2026.",ieg:"Con un clic accedi alle registrazioni più recenti.",kal:"Clicca — nella tabella appaiono tutte le voci del 2026, ordinate per data in senso decrescente."},
+  {n:7,g:"C",t:"Per aggiunta",img:"combo-by-added.png",kas:"Un pulsante che mostra le 20 registrazioni aggiunte più di recente al database.",ieg:"Vedi le novità del database indipendentemente dalla data di registrazione (ad es. video di lezioni più vecchie aggiunti di recente).",kal:"Clicca — nella tabella appaiono le 20 voci più recenti per data di aggiunta. (La data di aggiunta non è visibile nella tabella.)"},
+  {n:8,g:"C",t:"Ricerche principali (Top Searches)",img:"combo-top-searches.png",kas:"Un pulsante che apre un pannello con le ricerche più popolari di altri utenti.",ieg:"Una fonte di nuove idee su come esplorare il database.",kal:"Clicca per aprire il pannello. Clicca sul pulsante \"Yes\" per richiamare tutte le voci corrispondenti alla ricerca."},
+  {n:9,g:"C",t:"Per versetti (Verses)",img:"combo-by-verses.png",kas:"Cambia la modalità di ricerca nella ricerca dei versetti nelle trascrizioni.",ieg:"Trovi rapidamente tutte le lezioni trascritte in cui un versetto è citato e, scegliendo una lezione, vai subito al punto della trascrizione in cui è citato.",kal:"Clicca sul pulsante \"Per versetti\" — apparirà una tabella con i titoli delle opere citate. Clicca sull'opera da cui provengono i versetti. Apparirà una tabella con tutti i versetti citati. Clicca su \"Yes\" accanto al versetto scelto: apparirà l'elenco di tutte le lezioni e trascrizioni in cui è citato. Nella lezione scelta seleziona la lingua della trascrizione (EN, RU o LV) e ti verrà mostrato esattamente il punto della trascrizione in cui il versetto è stato citato."},
+  {n:10,g:"C",t:"Versetti (Top)",img:"combo-verses-top.png",kas:"Mostra i 108 versetti più citati in tutte le trascrizioni.",ieg:"Vedi i versetti più importanti di Chaitanya Academy.",kal:"Clicca sul pulsante \"Versetti (Top)\" — apparirà una tabella dei versetti ordinata per fonte e frequenza di citazione. Clicca su \"Yes\" accanto al versetto scelto: apparirà l'elenco di tutte le lezioni e trascrizioni in cui è citato. Nella lezione scelta seleziona la lingua della trascrizione (EN, RU o LV) e ti verrà mostrato il punto esatto in cui il versetto è citato."},
+  {n:11,g:"C",t:"★ Preferiti",img:"combo-favorites.png",kas:"Un pulsante per salvare una lezione o per vedere quelle salvate.",ieg:"Un clic ti riporta alle lezioni salvate — senza cercarle di nuovo.",kal:"Clicca su \"Preferiti\" per aprire il menu delle collezioni. Aggiungi le lezioni cliccando ★ nella riga della tabella.",svarigi:"L'app non ha ancora la registrazione, quindi i \"Preferiti\" sono memorizzati separatamente su ogni dispositivo con cui apri l'app."},
+  {n:12,g:"C",t:"Preferiti con conteggio",img:"combo-favorites-badge.png",kas:"Il pulsante Preferiti con un numero che indica quante lezioni sono attualmente salvate.",ieg:"Vedi subito quante lezioni hai nella tua collezione.",kal:"Il numero si aggiorna automaticamente quando aggiungi o rimuovi un preferito.",svarigi:"L'app non ha ancora la registrazione, quindi i \"Preferiti\" sono memorizzati separatamente su ogni dispositivo con cui apri l'app."},
+  {n:13,g:"D",t:"Parole chiave (modalità)",img:"key-words-btn.png",kas:"Indicatore che è attiva la modalità di ricerca per parole chiave (cerca nei titoli delle lezioni, date, tipi, lingue).",ieg:"Sai con chiarezza cosa stai cercando.",kal:"È la modalità predefinita. Un clic sul pulsante riporta dalla modalità di ricerca per versetti.",svarigi:"Leggi sicuramente le istruzioni su come scrivere correttamente le parole nel campo di ricerca. Sono sotto il pulsante \"Come cercare per parole chiave?\"."},
+  {n:14,g:"D",t:"Campo di ricerca",img:"search-bar.png",kas:"Il campo principale di immissione ricerca e il pulsante \"Cerca\".",ieg:"Trovi voci specifiche tra ~10.000 in pochi secondi.",kal:"Digita le parole. Premi Invio o clicca \"Cerca\". I risultati appaiono nella tabella.",svarigi:"Leggi sicuramente le istruzioni su come scrivere correttamente le parole nel campo di ricerca. Sono sotto il pulsante \"Come cercare per parole chiave?\"."},
+  {n:15,g:"D",t:"Come cercare per parole chiave? (pulsante di aiuto)",img:"help-btn.png",kas:"Un pulsante di aiuto con la spiegazione dei principi di ricerca.",ieg:"Capisci rapidamente come formulare ricerche efficaci.",kal:"Un clic apre una finestra di aiuto con esempi."},
+  {n:16,g:"E",t:"Etichetta \"Trascrizioni e traduzioni\"",img:"transcripts-label.png",kas:"L'etichetta nell'intestazione della tabella dei risultati con il totale di trascrizioni e traduzioni.",ieg:"Vedi quante registrazioni sono anche leggibili (non solo video/audio).",kal:"Informativa — il numero si aggiorna automaticamente."},
+  {n:17,g:"E",t:"Per data (trascrizioni)",img:"transcripts-by-date.png",kas:"Un pulsante che richiama tutte le trascrizioni per data della registrazione audio.",ieg:"Trovi lezioni trascritte di un periodo specifico.",kal:"Clicca — nella tabella appaiono tutte le trascrizioni per data."},
+  {n:18,g:"E",t:"Per argomento (trascrizioni)",img:"transcripts-by-topic.png",kas:"Un pulsante che apre una tabella in cui le trascrizioni sono raggruppate per argomento.",ieg:"Trovi subito le lezioni su un argomento specifico — anche se non conosci i loro titoli.",kal:"Un clic apre l'elenco degli argomenti. Premi \"Yes\" accanto all'argomento scelto: appariranno tutte le registrazioni trascritte che vi si riferiscono."},
+  {n:19,g:"E",t:"Più recenti (trascrizioni)",img:"transcripts-newest.png",kas:"Mostra le 20 trascrizioni più recenti. Possono essere anche trascrizioni di lezioni più vecchie realizzate di recente.",ieg:"Accedi rapidamente alle trascrizioni più recenti.",kal:"Clicca — nella tabella appaiono le trascrizioni più recenti."},
+  {n:20,g:"F",t:"Colonna con stella (preferiti)",img:"results-star-column.png",kas:"Una colonna della tabella dove ogni voce può essere salvata come preferita.",ieg:"Conservi le voci che ti interessano per non doverle cercare di nuovo.",kal:"Un clic su ★ apre la finestra \"Salva in...\" con l'elenco delle collezioni.",svarigi:"L'app non ha ancora la registrazione, quindi i \"Preferiti\" sono memorizzati separatamente su ogni dispositivo con cui apri l'app."},
+  {n:21,g:"F",t:"Colonna link (share)",img:"results-share-column.png",kas:"Una colonna della tabella con un pulsante 🔗 per copiare un link di condivisione.",ieg:"Un clic — e puoi inviare il link di una voce specifica a un'altra persona.",kal:"Un clic su 🔗 copia un deep-link alla voce negli appunti."},
+  {n:22,g:"F",t:"Schede lingua (EN/LV/RU)",img:"results-lang-tabs.png",kas:"Schede filtro nell'intestazione della tabella — mostrano le voci con trascrizioni in una lingua specifica.",ieg:"Aiuta a selezionare le voci con trascrizioni.",kal:"Un clic su EN, LV o RU filtra i risultati. Un ulteriore clic rimuove il filtro."},
+  {n:23,g:"F",t:"Riga del risultato",img:"results-row.png",kas:"Una riga di lezione con data, tipo, nome file, lingua, durata, link all'audio e alle trascrizioni.",ieg:"Tutte le informazioni della lezione in una riga — uno sguardo veloce.",kal:"Clicca sul link Mp3 per aprire il file audio; clicca sul link YouTube o Facebook per aprire il video; clicca sul link della trascrizione per aprire la finestra della trascrizione."},
+  {n:24,g:"F",t:"Navigazione pagine",img:"pagination.png",kas:"Scorrimento dei risultati con \"Precedente\", numeri di pagina e \"Successiva\".",ieg:"Esamini in modo controllato grandi quantità di risultati a 10 voci per pagina.",kal:"Clicca sul numero di pagina o su una freccia."},
+  {n:25,g:"G",t:"Popup \"Condividi citazione\"",img:"share-quote-bubble.png",kas:"Un piccolo popup che appare quando selezioni del testo nella finestra della trascrizione.",ieg:"Invia a un amico proprio il tuo frammento selezionato con riferimento preciso e link.",kal:"Seleziona il testo desiderato. Un clic su 🔗 \"Condividi citazione\" — il frammento e il link vengono copiati negli appunti. Quando il destinatario apre il link, si aprirà la trascrizione con la tua citazione evidenziata."},
+  {n:26,g:"H",t:"Finestra \"Salva in collezione\"",img:"save-to-popup.png",kas:"Una finestra che appare cliccando sulla stella e mostra tutte le collezioni in cui si può salvare la voce.",ieg:"Organizza le voci salvate per argomento.",kal:"Seleziona le collezioni a cui aggiungere la voce. Un clic fuori dalla finestra la chiude."},
+  {n:27,g:"H",t:"Nuova collezione",img:"new-collection.png",kas:"Un modulo per creare una nuova collezione.",ieg:"Raggruppa le lezioni salvate per argomento.",kal:"Clicca su \"+ Nuova collezione\". Scrivi il nome. Premi ✓ per confermare."},
+  {n:28,g:"H",t:"Selezione collezioni",img:"collections-picker.png",kas:"Un elenco a discesa con tutte le collezioni, che appare cliccando sul pulsante Preferiti.",ieg:"Scegli rapidamente quale collezione aprire.",kal:"Un clic su una collezione carica solo le sue voci."},
+  {n:29,g:"I",t:"Layout mobile",img:"mobile-layout.png",kas:"La visualizzazione completa dell'app sul telefono (orientamento verticale, larghezza 375 px).",ieg:"Tutte le funzioni sono comodamente accessibili dal telefono — usala ovunque.",kal:"Apri l'URL dell'app nel browser del telefono o installala come PWA (Progressive Web App)."},
+  {n:30,g:"I",t:"Griglia di pulsanti 2×3",img:"mobile-combo-grid.png",kas:"I 6 pulsanti combo superiori disposti in due righe da tre nella modalità mobile.",ieg:"Tutti i 6 pulsanti principali sono disponibili anche su uno schermo stretto.",kal:"I clic sui pulsanti funzionano come nella versione desktop."},
+];
+
+// Render sidebar
+const sideNav = document.getElementById('sideNav');
+GROUPS.forEach((grp, gi) => {
+  const det = document.createElement('details');
+  det.className = 'group-nav';
+  det.dataset.group = grp.letter;
+  if (gi < 3) det.open = true;
+  const sum = document.createElement('summary');
+  sum.textContent = `${grp.letter}. ${grp.name}`;
+  det.appendChild(sum);
+  const ul = document.createElement('ul');
+  ITEMS.filter(it => it.g === grp.letter).forEach(it => {
+    const li = document.createElement('li');
+    const a = document.createElement('a');
+    a.href = `#item-${it.n}`;
+    a.textContent = `${it.n}. ${it.t}`;
+    a.dataset.item = it.n;
+    li.appendChild(a);
+    ul.appendChild(li);
+  });
+  det.appendChild(ul);
+  sideNav.appendChild(det);
+});
+
+// Render content
+const content = document.getElementById('content');
+GROUPS.forEach(grp => {
+  const groupItems = ITEMS.filter(it => it.g === grp.letter);
+  if (!groupItems.length) return;
+  const sec = document.createElement('section');
+  sec.className = 'group-section';
+  sec.id = `group-${grp.letter}`;
+  sec.dataset.group = grp.letter;
+  sec.innerHTML = `<h2><span class="group-letter">${grp.letter}</span>${grp.name}</h2>`;
+  groupItems.forEach((it, idx) => {
+    const prev = ITEMS[ITEMS.indexOf(it) - 1];
+    const next = ITEMS[ITEMS.indexOf(it) + 1];
+    const card = document.createElement('article');
+    card.className = 'card' + (it.g === 'I' ? ' card-tall' : '');
+    card.id = `item-${it.n}`;
+    card.dataset.num = it.n;
+    card.dataset.search = `${it.n} ${it.t} ${it.kas} ${it.ieg} ${it.kal || ''} ${it.svarigi || ''}`.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    card.innerHTML = `
+      <div class="card-header">
+        <span class="card-num">#${it.n}</span>
+        <h3>${it.t}</h3>
+      </div>
+      <img class="card-image" src="images/${it.img}" alt="${it.t}" loading="lazy">
+      <dl>
+        <div class="field"><dt>Cosa</dt><dd>${it.kas}</dd></div>
+        <div class="field"><dt>Beneficio</dt><dd>${it.ieg}</dd></div>
+        ${it.kal ? `<div class="field"><dt>Come usare</dt><dd>${it.kal}</dd></div>` : ''}
+      </dl>
+      ${it.svarigi ? `<div class="svarigi">⚠ Importante! ${it.svarigi}</div>` : ''}
+      <div class="nav-footer">
+        <a href="${prev ? '#item-' + prev.n : '#'}" class="${prev ? '' : 'disabled'}">${prev ? '← ' + prev.n + '. ' + prev.t : ''}</a>
+        <a href="${next ? '#item-' + next.n : '#'}" class="${next ? '' : 'disabled'}" style="text-align:right;">${next ? next.n + '. ' + next.t + ' →' : ''}</a>
+      </div>
+    `;
+    sec.appendChild(card);
+  });
+  content.appendChild(sec);
+});
+
+// Search filter
+const searchInput = document.getElementById('searchInput');
+const noResults = document.getElementById('noResults');
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  let visible = 0;
+  document.querySelectorAll('.card').forEach(card => {
+    const match = !q || card.dataset.search.includes(q);
+    card.classList.toggle('hidden', !match);
+    if (match) visible++;
+  });
+  document.querySelectorAll('.group-section').forEach(sec => {
+    const anyVisible = sec.querySelectorAll('.card:not(.hidden)').length > 0;
+    sec.classList.toggle('hidden', !anyVisible);
+  });
+  document.querySelectorAll('.group-nav').forEach(gn => {
+    const letter = gn.dataset.group;
+    const anyVisible = document.querySelectorAll(`.card[id^="item-"]:not(.hidden)`);
+    const visibleInGroup = Array.from(anyVisible).filter(c => {
+      const item = ITEMS.find(i => String(i.n) === c.dataset.num);
+      return item && item.g === letter;
+    }).length;
+    gn.style.display = visibleInGroup ? '' : 'none';
+    if (q && visibleInGroup) gn.open = true;
+  });
+  noResults.classList.toggle('show', visible === 0);
+});
+
+// Scroll spy — active sidebar item
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      const num = entry.target.dataset.num;
+      document.querySelectorAll('#sideNav a').forEach(a => {
+        a.classList.toggle('active', a.dataset.item === num);
+      });
+      // Update URL hash without jumping
+      if (history.replaceState) {
+        history.replaceState(null, '', `#item-${num}`);
+      }
+    }
+  });
+}, { rootMargin: '-20% 0px -70% 0px', threshold: 0 });
+
+document.querySelectorAll('.card').forEach(c => observer.observe(c));
+
+// Mobile menu toggle
+const menuToggle = document.getElementById('menuToggle');
+const sidebar = document.getElementById('sidebar');
+menuToggle.addEventListener('click', () => sidebar.classList.toggle('open'));
+document.querySelectorAll('#sideNav a').forEach(a => {
+  a.addEventListener('click', () => {
+    if (window.innerWidth <= 900) sidebar.classList.remove('open');
+  });
+});
+
+// Initial scroll to hash
+if (location.hash) {
+  setTimeout(() => {
+    const el = document.querySelector(location.hash);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 100);
+}
+</script>
+</body>
+</html>

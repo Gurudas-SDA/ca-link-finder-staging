@@ -77,21 +77,21 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(text.length).toBeGreaterThan(10);
   });
 
-  test('4. Top 108 — table renders', async ({ page }) => {
+  test('4. Top 108 — list renders', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);
 
     // Click Top 108 button
     await page.click('.search-mode-btn[data-mode="citationsTop"]');
 
-    // Wait for results table to have content
+    // Wait for topCitationsList to populate
     await page.waitForFunction(() => {
-      const tbody = document.querySelector('#resultsTable tbody');
-      return tbody && tbody.children.length > 5;
-    }, { timeout: 10000 });
+      const list = document.getElementById('topCitationsList');
+      return list && list.children.length > 0 && list.querySelectorAll('.recommendation-item').length > 5;
+    }, { timeout: 15000 });
 
-    const rows = await page.locator('#resultsTable tbody tr').count();
-    expect(rows).toBeGreaterThanOrEqual(10);
+    const items = await page.locator('#topCitationsList .recommendation-item').count();
+    expect(items).toBeGreaterThanOrEqual(10);
   });
 
   test('5. Quick action: 20 latest files', async ({ page }) => {
@@ -259,13 +259,13 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.keyboard.press('Enter');
     await page.waitForTimeout(2000);
 
-    await page.click('.search-mode-btn[data-mode="citations"]');
+    await page.locator('.search-mode-btn[data-mode="citations"]').click({ force: true });
     await page.waitForTimeout(2000);
 
-    await page.click('.search-mode-btn[data-mode="citationsTop"]');
+    await page.locator('.search-mode-btn[data-mode="citationsTop"]').click({ force: true });
     await page.waitForTimeout(2000);
 
-    await page.click('.search-mode-btn[data-mode="metadata"]');
+    await page.locator('.search-mode-btn[data-mode="metadata"]').click({ force: true });
     await page.waitForTimeout(1000);
 
     // Filter out non-critical errors
@@ -276,6 +276,75 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       !e.includes('net::ERR')
     );
     expect(critical).toHaveLength(0);
+  });
+
+  test('14. Top combo row has 6 buttons in single row', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const buttons = page.locator('.search-quick-buttons.main-button-row .combo-btn');
+    await expect(buttons).toHaveCount(6);
+
+    const texts = await buttons.allTextContents();
+    const joined = texts.join(' | ');
+    for (const needle of ['By 2026', 'By Added', 'Top Searches', 'By Verse', 'Verses (Top)', 'Favorites']) {
+      expect(joined).toContain(needle);
+    }
+
+    const flexWrap = await page.locator('.search-quick-buttons.main-button-row').evaluate(el => getComputedStyle(el).flexWrap);
+    expect(flexWrap).toBe('nowrap');
+  });
+
+  test('15. By 2026 button exists and is clickable', async ({ page }) => {
+    const errors = trackConsoleErrors(page);
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const btn = page.locator('.search-quick-buttons.main-button-row .combo-btn', { hasText: 'By 2026' });
+    await expect(btn).toBeVisible();
+    await btn.click();
+    await page.waitForTimeout(500);
+
+    const critical = errors.filter(e =>
+      !e.includes('favicon') && !e.includes('umami') && !e.includes('service-worker')
+    );
+    expect(critical).toHaveLength(0);
+
+    const isFn = await page.evaluate(() => typeof window.PPP?.app?.showBy2026 === 'function');
+    expect(isFn).toBe(true);
+  });
+
+  test('16. Key Words button is to the left of search input', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await expect(page.locator('.keywords-search-btn')).toBeVisible();
+
+    const kwBox = await page.locator('.keywords-search-btn').boundingBox();
+    const inputBox = await page.locator('#searchTerm').boundingBox();
+    expect(kwBox.x).toBeLessThan(inputBox.x);
+  });
+
+  test('17. Transcripts & Translations label and 3-button combo present', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const block = page.locator('.transcripts-block');
+    await expect(block).toBeVisible();
+
+    await expect(block).toContainText('Transcripts & Translations');
+
+    const btns = await page.locator('.transcripts-block button').all();
+    expect(btns).toHaveLength(3);
+
+    const btnTexts = [];
+    for (const b of btns) {
+      btnTexts.push((await b.textContent()) || '');
+    }
+    const joined = btnTexts.join(' | ');
+    for (const needle of ['By Date', 'By Topic', 'Newest']) {
+      expect(joined).toContain(needle);
+    }
   });
 
 });

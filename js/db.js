@@ -28,6 +28,17 @@ PPP.db = (function () {
     var loadingDBs = {};  // { dbName: Promise } — deduplicates concurrent load requests
     var loadedDBs = {};   // { dbName: true } — tracks which DBs have been loaded
 
+    // ===== DB VERSIONS (cache-busting) =====
+    var dbVersionsPromise = null;
+    function getDbVersions() {
+        if (!dbVersionsPromise) {
+            dbVersionsPromise = fetch('data/db-versions.json', { cache: 'no-store' })
+                .then(function (r) { return r.ok ? r.json() : {}; })
+                .catch(function () { return {}; });
+        }
+        return dbVersionsPromise;
+    }
+
     /**
      * Send a message to Worker and return a Promise for the response.
      */
@@ -70,7 +81,7 @@ PPP.db = (function () {
      */
     function tryInitWorker() {
         try {
-            worker = new Worker('js/db-worker.js');
+            worker = new Worker('js/db-worker.js?v=cache4');
             worker.onmessage = onWorkerMessage;
             worker.onerror = function (err) {
                 console.warn('DB Worker error, falling back to main thread:', err);
@@ -228,7 +239,10 @@ PPP.db = (function () {
      * Fetch and open the metadata database.
      */
     function loadMetaDB(progressCallback) {
-        return loadDB(META, 'data/ppp_meta.db', progressCallback);
+        return getDbVersions().then(function (versions) {
+            var v = versions.meta ? '?v=' + versions.meta : '';
+            return loadDB(META, 'data/ppp_meta.db' + v, progressCallback);
+        });
     }
 
     /**
@@ -237,14 +251,10 @@ PPP.db = (function () {
     function loadHtmlDB(lang, progressCallback) {
         lang = lang || 'en';
         var dbName = 'html_' + lang;
-        return loadDB(dbName, 'data/ppp_transcripts_html_' + lang + '.db', progressCallback);
-    }
-
-    /**
-     * Lazy-load the concepts database (on demand, not at startup).
-     */
-    function loadConceptsDB(progressCallback) {
-        return loadDB('concepts_en', 'data/ppp_concepts_en.db', progressCallback);
+        return getDbVersions().then(function (versions) {
+            var v = versions[lang] ? '?v=' + versions[lang] : '';
+            return loadDB(dbName, 'data/ppp_transcripts_html_' + lang + '.db' + v, progressCallback);
+        });
     }
 
     /**
@@ -289,10 +299,6 @@ PPP.db = (function () {
 
     function queryHtmlAsync(lang, sql, params) {
         return queryAsync('html_' + (lang || 'en'), sql, params);
-    }
-
-    function queryConceptsAsync(sql, params) {
-        return queryAsync('concepts_en', sql, params);
     }
 
     /**
@@ -342,10 +348,6 @@ PPP.db = (function () {
         return !!loadedDBs[dbName] || !!databases[dbName];
     }
 
-    function isConceptsLoaded() {
-        return !!loadedDBs['concepts_en'] || !!databases['concepts_en'];
-    }
-
     /**
      * Check if Worker mode is active.
      */
@@ -357,7 +359,6 @@ PPP.db = (function () {
         initSqlJs: initSqlJs,
         loadMetaDB: loadMetaDB,
         loadHtmlDB: loadHtmlDB,
-        loadConceptsDB: loadConceptsDB,
         // Sync queries (fallback mode only)
         queryMeta: queryMeta,
         queryHtmlTranscripts: queryHtmlTranscripts,
@@ -365,13 +366,11 @@ PPP.db = (function () {
         // Async queries (both modes)
         queryMetaAsync: queryMetaAsync,
         queryHtmlAsync: queryHtmlAsync,
-        queryConceptsAsync: queryConceptsAsync,
         getStatsAsync: getStatsAsync,
         queryAsync: queryAsync,
         // State checks
         isMetaLoaded: isMetaLoaded,
         isHtmlLoaded: isHtmlLoaded,
-        isConceptsLoaded: isConceptsLoaded,
         isWorkerMode: isWorkerMode
     };
 })();

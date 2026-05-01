@@ -54,11 +54,40 @@ PPP.app = (function () {
     var matchHints = new Map();
     var dataLoaded = false;
     var usingSqlite = false;        // true if SQLite loaded successfully
-    var searchMode = 'metadata';    // 'metadata', 'citations', 'citationsTop', or 'concepts'
-    var conceptsDBLoading = false;  // true while concepts DB is being loaded
+    var searchMode = 'metadata';    // 'metadata', 'citations', or 'citationsTop'
     var deferredPrompt = null;
     var installMode = 'ios';
     var totalLectures = 0;
+
+    // ===== COMBO DISPLAY HELPERS =====
+    function setComboDisplay(label) {
+        var si = document.getElementById('searchTerm');
+        if (!si) return;
+        si.value = label;
+        si.disabled = true;
+        si.classList.add('combo-display');
+        si.title = i18n.t('comboDisplayTooltip');
+    }
+    function clearComboDisplay() {
+        var si = document.getElementById('searchTerm');
+        if (!si) return;
+        si.value = '';
+        si.disabled = false;
+        si.classList.remove('combo-display');
+        si.removeAttribute('title');
+    }
+
+    // ===== PANEL HELPERS =====
+    function closeAllPanels() {
+        var ids = ['recommendationsList', 'topicsList', 'verseSourcesList', 'verseList', 'topCitationsList'];
+        ids.forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) el.style.display = 'none';
+        });
+        // Re-show results table (Top 108 and similar may have hidden it)
+        var rt = document.getElementById('resultsTable');
+        if (rt) rt.style.display = '';
+    }
 
     // ===== PWA =====
     if ('serviceWorker' in navigator) {
@@ -94,6 +123,17 @@ PPP.app = (function () {
         var savedLang = localStorage.getItem('preferredLanguage') || 'en';
         setLanguage(savedLang);
 
+        // Close List of Sources dropdown on any other button click
+        document.addEventListener('click', function (e) {
+            var sourcesList = document.getElementById('sourcesList');
+            if (!sourcesList || sourcesList.style.display === 'none' || sourcesList.style.display === '') return;
+            var btn = e.target.closest('button');
+            if (!btn) return;
+            if (btn.closest('.top-left-buttons')) return;
+            if (sourcesList.contains(btn)) return;
+            sourcesList.style.display = 'none';
+        }, true);
+
         // Wire search input
         var searchInput = document.getElementById('searchTerm');
         searchInput.addEventListener('keydown', function (e) {
@@ -116,9 +156,6 @@ PPP.app = (function () {
             });
         });
 
-        // Init Firebase auth
-        if (PPP.auth) PPP.auth.init();
-
         // Load data — try SQLite first, fall back to XLSX/CSV
         loadData();
 
@@ -131,6 +168,79 @@ PPP.app = (function () {
             var isAndroid = /android/i.test(navigator.userAgent);
             showInstallBanner(isAndroid ? 'android' : 'ios');
         }, 2000);
+
+        initMobileSwipeHint();
+    }
+
+    function initMobileSwipeHint() {
+        var isPortrait = window.matchMedia('(max-width: 640px) and (orientation: portrait)').matches;
+        if (!isPortrait) return;
+
+        var hint = document.getElementById('swipeHintMobile');
+        if (!hint) return;
+        hint.style.display = '';
+        hint.classList.remove('hiding');
+        hint.classList.add('active');
+
+        var container = document.querySelector('.results-container');
+        var dismissed = false;
+
+        // Position the hint vertically so it overlays the
+        // "Enter search terms to see results" empty-state message.
+        function positionHint() {
+            var target = document.querySelector('.empty-result-message');
+            var rect;
+            if (target && target.offsetHeight > 0) {
+                rect = target.getBoundingClientRect();
+                var top = rect.top + (rect.height / 2) - (hint.offsetHeight / 2);
+                var minTop = 20;
+                var maxTop = window.innerHeight - hint.offsetHeight - 20;
+                if (top < minTop) top = minTop;
+                if (top > maxTop) top = maxTop;
+                hint.style.top = top + 'px';
+            } else if (container) {
+                // Fallback: 30px below the top of the results container
+                rect = container.getBoundingClientRect();
+                hint.style.top = (rect.top + 30) + 'px';
+            }
+        }
+        // Run now and also after a short delay in case layout is still settling
+        positionHint();
+        setTimeout(positionHint, 100);
+        window.addEventListener('resize', positionHint);
+
+        function dismiss() {
+            if (dismissed) return;
+            dismissed = true;
+            window.removeEventListener('resize', positionHint);
+            hint.classList.remove('active');
+            hint.classList.add('hiding');
+            setTimeout(function () {
+                hint.classList.remove('hiding');
+                hint.style.display = 'none';
+            }, 400);
+            if (container) container.removeEventListener('scroll', onScroll);
+            document.removeEventListener('click', onInteraction, true);
+            document.removeEventListener('touchstart', onInteraction, true);
+            document.removeEventListener('keydown', onInteraction, true);
+        }
+
+        function onScroll() {
+            if (container && container.scrollLeft > 30) dismiss();
+        }
+
+        function onInteraction() {
+            dismiss();
+        }
+
+        if (container) container.addEventListener('scroll', onScroll, { passive: true });
+        document.addEventListener('click', onInteraction, true);
+        document.addEventListener('touchstart', onInteraction, true);
+        document.addEventListener('keydown', onInteraction, true);
+
+        setTimeout(function () {
+            if (!dismissed) dismiss();
+        }, 10000);
     }
 
     // ===== DATA LOADING =====
@@ -186,6 +296,17 @@ PPP.app = (function () {
             return db.queryMetaAsync('SELECT * FROM lectures');
         }).then(function (allRows) {
             DB = allRows.map(mapSqlRowToUI);
+            return db.queryMetaAsync("SELECT value AS last_update FROM stats WHERE key = 'db_updated'");
+        }).then(function (dateRows) {
+            if (dateRows && dateRows.length && dateRows[0].last_update) {
+                var d = dateRows[0].last_update.replace(/\./g, '-');
+                var el = document.getElementById('dbLastUpdate');
+                if (el) {
+                    el.setAttribute('data-last-update', d);
+                    el.textContent = (i18n.t('lastUpdate') || 'Last update') + ': ' + d;
+                    el.style.display = '';
+                }
+            }
         });
     }
 
@@ -443,7 +564,7 @@ PPP.app = (function () {
     function doSearch() {
         var term = document.getElementById('searchTerm').value.trim();
         if (!dataLoaded) return;
-        // Allow empty search in citations mode (shows stats overview); require term for concepts
+        // Allow empty search in citations mode (shows stats overview)
         if (!term && searchMode !== 'citations' && searchMode !== 'citationsTop') return;
         setActiveCollection(null);
         lastSearchTerm = term;
@@ -464,11 +585,6 @@ PPP.app = (function () {
 
         if (searchMode === 'citations') {
             performCitationSearch(startTime);
-            return;
-        }
-
-        if (searchMode === 'concepts') {
-            performConceptSearch(startTime);
             return;
         }
 
@@ -579,6 +695,8 @@ PPP.app = (function () {
 
     // ===== SEARCH MODE TOGGLE =====
     function setSearchMode(mode) {
+        closeAllPanels();
+        setActiveCollection(null);
         var prevMode = searchMode;
         searchMode = mode || 'metadata';
         if (prevMode !== mode) {
@@ -610,16 +728,16 @@ PPP.app = (function () {
         }
         // Update search placeholder based on mode
         var searchInput = document.getElementById('searchTerm');
-        if (mode === 'citations' || mode === 'citationsTop') {
+        if (mode === 'citations') {
             searchInput.placeholder = i18n.t('quotesSearchHint');
-            searchInput.disabled = true;
-        } else if (mode === 'concepts') {
-            searchInput.placeholder = i18n.t('conceptsSearchHint');
-            searchInput.disabled = false;
+            setComboDisplay(i18n.t('byCitedVersesDisplay'));
+        } else if (mode === 'citationsTop') {
+            searchInput.placeholder = i18n.t('quotesSearchHint');
+            setComboDisplay(i18n.t('mostCitedVersesDisplay'));
         } else {
             var count = totalLectures || 0;
             searchInput.placeholder = i18n.t('searchPlaceholder').replace('{count}', count.toLocaleString());
-            searchInput.disabled = false;
+            clearComboDisplay();
         }
         // Immediately show top 108 when that mode is selected
         if (mode === 'citationsTop') {
@@ -631,6 +749,7 @@ PPP.app = (function () {
 
     function showLatestFiles() {
         if (!dataLoaded) return;
+        closeAllPanels();
         track('quick-action', { action: 'latest-files' });
         setSearchMode('metadata');
 
@@ -648,6 +767,7 @@ PPP.app = (function () {
                 document.getElementById('searchTerm').value = i18n.t('latest20Files');
                 document.getElementById('timer').textContent = '';
                 displayResults();
+                setComboDisplay(i18n.t('addedDateDisplay'));
             }).catch(function (e) {
                 console.warn('SQLite latest files failed, falling back:', e);
                 showLatestFilesFallback();
@@ -677,10 +797,61 @@ PPP.app = (function () {
         document.getElementById('searchTerm').value = i18n.t('latest20Files');
         document.getElementById('timer').textContent = '';
         displayResults();
+        setComboDisplay(i18n.t('addedDateDisplay'));
+    }
+
+    function showBy2026() {
+        if (!dataLoaded) return;
+        closeAllPanels();
+        track('quick-action', { action: 'by-2026' });
+        setSearchMode('metadata');
+
+        if (usingSqlite) {
+            db.queryMetaAsync(
+                "SELECT * FROM lectures WHERE date LIKE '2026%' AND nr != '' ORDER BY date DESC"
+            ).then(function (rows) {
+                var uiRows = rows.map(mapSqlRowToUI);
+                uiRows.sort(utils.compareDates);
+                lastSearchTerm = '2026';
+                allResults = uiRows;
+                totalResults = uiRows.length;
+                currentPage = 1;
+                matchHints = new Map();
+                document.getElementById('searchTerm').value = '2026';
+                document.getElementById('timer').textContent = '';
+                displayResults();
+                setComboDisplay(i18n.t('entries2026Display'));
+            }).catch(function (e) {
+                console.warn('SQLite by-2026 failed, falling back:', e);
+                showBy2026Fallback();
+            });
+            return;
+        }
+
+        showBy2026Fallback();
+    }
+
+    function showBy2026Fallback() {
+        var rows = DB.filter(function (r) {
+            var d = (r['Date'] || '').toString().trim();
+            var nr = (r['Nr.'] || '').toString().trim();
+            return d.indexOf('2026') === 0 && nr !== '';
+        });
+        rows.sort(utils.compareDates);
+        lastSearchTerm = '2026';
+        allResults = rows;
+        totalResults = rows.length;
+        currentPage = 1;
+        matchHints = new Map();
+        document.getElementById('searchTerm').value = '2026';
+        document.getElementById('timer').textContent = '';
+        displayResults();
+        setComboDisplay(i18n.t('entries2026Display'));
     }
 
     function showLatestTranscripts() {
         if (!dataLoaded) return;
+        closeAllPanels();
         track('quick-action', { action: 'latest-transcripts' });
         setSearchMode('metadata');
 
@@ -689,7 +860,7 @@ PPP.app = (function () {
                 "SELECT * FROM lectures WHERE scripts_added != '' AND nr != '' ORDER BY scripts_added DESC LIMIT 20"
             ).then(function (rows) {
                 var uiRows = rows.map(mapSqlRowToUI);
-                uiRows.sort(utils.compareDates);
+                // Keep SQL order: scripts_added DESC (do NOT re-sort by Date)
                 lastSearchTerm = i18n.t('latest20Transcripts');
                 allResults = uiRows;
                 totalResults = uiRows.length;
@@ -698,6 +869,7 @@ PPP.app = (function () {
                 document.getElementById('searchTerm').value = i18n.t('latest20Transcripts');
                 document.getElementById('timer').textContent = '';
                 displayResults();
+                setComboDisplay(i18n.t('newestTranscriptsDisplay'));
             }).catch(function (e) {
                 console.warn('SQLite latest transcripts failed, falling back:', e);
                 showLatestTranscriptsFallback();
@@ -720,19 +892,90 @@ PPP.app = (function () {
 
         lastSearchTerm = 'latest_transcripts:' + Array.from(nrSet).join(',');
         allResults = DB.filter(function (r) { return nrSet.has((r['Nr.'] || '').toString().trim()); });
-        allResults.sort(utils.compareDates);
+        // Keep scripts_added DESC order from top20
+        allResults.sort(function (a, b) { return (b['Scripts added'] || '').toString().localeCompare((a['Scripts added'] || '').toString()); });
         totalResults = allResults.length;
         currentPage = 1;
         matchHints = new Map();
         document.getElementById('searchTerm').value = i18n.t('latest20Transcripts');
         document.getElementById('timer').textContent = '';
         displayResults();
+        setComboDisplay(i18n.t('newestTranscriptsDisplay'));
+    }
+
+    // ===== ALL TRANSCRIPTS BY DATE =====
+
+    function showAllTranscriptsByDate() {
+        if (!dataLoaded) return;
+        closeAllPanels();
+        track('quick-action', { action: 'all-transcripts-by-date' });
+        setSearchMode('metadata');
+
+        if (usingSqlite) {
+            db.queryMetaAsync(
+                "SELECT * FROM lectures " +
+                "WHERE (script_en != '' AND script_en != 'N/A' AND script_en != '0') " +
+                "   OR (script_lv != '' AND script_lv != 'N/A' AND script_lv != '0') " +
+                "   OR (script_ru != '' AND script_ru != 'N/A' AND script_ru != '0') " +
+                "ORDER BY CASE WHEN date = 'unknown' THEN 1 ELSE 0 END, date DESC, original_file_name DESC"
+            ).then(function (rows) {
+                var uiRows = rows.map(mapSqlRowToUI);
+                lastSearchTerm = i18n.t('allTranscriptsByDate');
+                allResults = uiRows;
+                totalResults = uiRows.length;
+                currentPage = 1;
+                matchHints = new Map();
+                document.getElementById('searchTerm').value = i18n.t('allTranscriptsByDate');
+                document.getElementById('timer').textContent = '';
+                displayResults();
+                setComboDisplay(i18n.t('transcriptsByDateDisplay'));
+            }).catch(function (e) {
+                console.warn('SQLite all transcripts by date failed, falling back:', e);
+                showAllTranscriptsByDateFallback();
+            });
+            return;
+        }
+
+        showAllTranscriptsByDateFallback();
+    }
+
+    function showAllTranscriptsByDateFallback() {
+        var withScripts = DB.filter(function (r) {
+            var en = (r['Script_EN'] || '').toString().trim();
+            var lv = (r['Script_LV'] || '').toString().trim();
+            var ru = (r['Script_RU'] || '').toString().trim();
+            function hasVal(v) { return v !== '' && v !== 'N/A' && v !== '0'; }
+            return hasVal(en) || hasVal(lv) || hasVal(ru);
+        });
+        withScripts.sort(function (a, b) {
+            var dateA = (a['Date'] || '').toString().trim();
+            var dateB = (b['Date'] || '').toString().trim();
+            var unknownA = (dateA === 'unknown' || dateA === '') ? 1 : 0;
+            var unknownB = (dateB === 'unknown' || dateB === '') ? 1 : 0;
+            if (unknownA !== unknownB) return unknownA - unknownB;
+            var cmp = dateB.localeCompare(dateA);
+            if (cmp !== 0) return cmp;
+            return ((b['Original file name'] || '').toString()).localeCompare((a['Original file name'] || '').toString());
+        });
+
+        lastSearchTerm = i18n.t('allTranscriptsByDate');
+        allResults = withScripts;
+        totalResults = withScripts.length;
+        currentPage = 1;
+        matchHints = new Map();
+        document.getElementById('searchTerm').value = i18n.t('allTranscriptsByDate');
+        document.getElementById('timer').textContent = '';
+        displayResults();
+        setComboDisplay(i18n.t('transcriptsByDateDisplay'));
     }
 
     // ===== FAVORITES =====
 
     function showFavorites() {
         if (!dataLoaded) return;
+        closeAllPanels();
+        var _rt = document.getElementById('resultsTable');
+        if (_rt) _rt.style.display = '';
         track('quick-action', { action: 'favorites' });
 
         var cols = PPP.favorites ? PPP.favorites.getCollections() : [];
@@ -791,7 +1034,8 @@ PPP.app = (function () {
         cols.forEach(function (col) {
             var item = document.createElement('div');
             item.className = 'collections-picker-item';
-            item.innerHTML = '<span class="cpi-name">' + _escHtml(col.name) + '</span><span class="cpi-count">' + col.count + '</span>';
+            var dispName = (col.name === 'Favorites') ? (i18n.t('favorites') || col.name) : col.name;
+            item.innerHTML = '<span class="cpi-name">' + _escHtml(dispName) + '</span><span class="cpi-count">' + col.count + '</span>';
             item.onclick = function () {
                 popup.remove();
                 document.removeEventListener('click', onDocClick);
@@ -823,8 +1067,8 @@ PPP.app = (function () {
     }
 
     function _showCollectionLectures(colId, label) {
-        setActiveCollection(label);
         setSearchMode('metadata');
+        setActiveCollection(label);
 
         var nrs = colId !== null
             ? PPP.favorites.getCollectionLectures(colId)
@@ -839,6 +1083,7 @@ PPP.app = (function () {
             document.getElementById('searchTerm').value = label;
             document.getElementById('timer').textContent = '';
             displayResults();
+            setComboDisplay(i18n.t('favoritesBtn') || '\u2605 Favorites');
             var tbody = document.querySelector('#resultsTable tbody');
             if (tbody) {
                 var row = tbody.querySelector('tr');
@@ -862,6 +1107,7 @@ PPP.app = (function () {
                 document.getElementById('searchTerm').value = label;
                 document.getElementById('timer').textContent = '';
                 displayResults();
+                setComboDisplay(i18n.t('favoritesBtn') || '\u2605 Favorites');
             });
             return;
         }
@@ -878,6 +1124,7 @@ PPP.app = (function () {
         document.getElementById('searchTerm').value = label;
         document.getElementById('timer').textContent = '';
         displayResults();
+        setComboDisplay(i18n.t('favoritesBtn') || '\u2605 Favorites');
     }
 
     var _activeCollectionName = null;
@@ -918,9 +1165,16 @@ PPP.app = (function () {
     function showRecommendations() {
         track('quick-action', { action: 'recommendations' });
         var div = document.getElementById('recommendationsList');
-        if (div.style.display !== 'none' && div.style.display !== '') { div.style.display = 'none'; return; }
-        document.getElementById('topicsList').style.display = 'none';
+        var resultsTable = document.getElementById('resultsTable');
+        if (div.style.display !== 'none' && div.style.display !== '') {
+            div.style.display = 'none';
+            if (resultsTable) resultsTable.style.display = '';
+            return;
+        }
+        closeAllPanels();
         if (!dataLoaded) return;
+        if (resultsTable) resultsTable.style.display = 'none';
+        setComboDisplay(i18n.t('recommendations'));
 
         if (usingSqlite) {
             Promise.all([
@@ -930,12 +1184,20 @@ PPP.app = (function () {
                     "GROUP BY lang ORDER BY lang"
                 ),
                 db.queryMetaAsync(
-                    "SELECT subject, COUNT(*) as cnt FROM lectures WHERE subject LIKE '.%' GROUP BY subject ORDER BY subject"
+                    "SELECT subject FROM lectures WHERE subject LIKE '.%'"
                 )
             ]).then(function (results) {
                 var langCounts = {}, subjCounts = {};
                 results[0].forEach(function (r) { langCounts[r.lang] = parseInt(r.cnt, 10); });
-                results[1].forEach(function (r) { subjCounts[r.subject] = parseInt(r.cnt, 10); });
+                results[1].forEach(function (r) {
+                    var parts = (r.subject || '').split(';');
+                    parts.forEach(function (p) {
+                        var t = p.trim();
+                        if (t.charAt(0) === '.') {
+                            subjCounts[t] = (subjCounts[t] || 0) + 1;
+                        }
+                    });
+                });
                 renderRecommendationsHTML(div, langCounts, subjCounts);
             }).catch(function (e) {
                 console.warn('SQLite recommendations failed, falling back:', e);
@@ -953,7 +1215,7 @@ PPP.app = (function () {
     function renderRecommendationsHTML(div, langCounts, subjCounts) {
         var esc = utils.escapeHtml;
         var enc = utils.encodeForAttr;
-        var html = '<div id="recommendationsListTitle">' + i18n.t('recommendationsTitle') + '</div><div id="recommendationsListContent">';
+        var html = '<button id="recommendationsHideBtn" class="recommendations-hide-btn" onclick="PPP.app.showRecommendations()">' + utils.escapeHtml(i18n.t('hideRecommendationsBtn')) + '</button><div id="recommendationsListContent">';
         Object.entries(langCounts).sort(function (a, b) { return a[0].localeCompare(b[0]); }).forEach(function (entry) {
             var name = entry[0], count = entry[1];
             html += '<div class="recommendation-item"><span class="recommendation-name">' + esc(name) +
@@ -983,31 +1245,50 @@ PPP.app = (function () {
 
     function showTopics() {
         var div = document.getElementById('topicsList');
-        if (div.style.display !== 'none' && div.style.display !== '') { div.style.display = 'none'; return; }
+        var resultsTable = document.getElementById('resultsTable');
+        if (div.style.display !== 'none' && div.style.display !== '') {
+            div.style.display = 'none';
+            if (resultsTable) resultsTable.style.display = '';
+            return;
+        }
+        closeAllPanels();
         document.getElementById('recommendationsList').style.display = 'none';
         if (!dataLoaded) return;
+        if (resultsTable) resultsTable.style.display = 'none';
 
         if (usingSqlite) {
             db.queryMetaAsync(
-                "SELECT subject, COUNT(*) as cnt FROM lectures " +
-                "WHERE subject != '' AND script_en != '' AND script_en != 'N/A' AND script_en != '0' " +
-                "GROUP BY subject ORDER BY subject"
-            ).then(function (topicRows) {
+                "SELECT subject FROM lectures " +
+                "WHERE subject LIKE '.%' AND script_en != '' AND script_en != 'N/A' AND script_en != '0'"
+            ).then(function (rows) {
+                var topicCounts = {};
+                rows.forEach(function (r) {
+                    var parts = (r.subject || '').split(';');
+                    parts.forEach(function (p) {
+                        var t = p.trim();
+                        if (t.charAt(0) === '.') {
+                            topicCounts[t] = (topicCounts[t] || 0) + 1;
+                        }
+                    });
+                });
+                var sorted = Object.keys(topicCounts).sort();
                 var esc = utils.escapeHtml;
                 var enc = utils.encodeForAttr;
-                var html = '<div id="topicsListTitle">' + i18n.t('topics') + '</div><div id="topicsListContent">';
-                topicRows.forEach(function (r) {
-                    html += '<div class="topic-item"><span class="topic-name">' + esc(r.subject) +
-                        ' <span style="color:var(--primary-dark);font-weight:700;">(' + r.cnt + ')</span></span>' +
-                        '<button class="topic-search-btn" onclick="PPP.app.applySubjectFilter(decodeURIComponent(\'' + enc(r.subject) + '\'))">Yes</button></div>';
+                var html = '<button id="topicsHideBtn" class="recommendations-hide-btn" onclick="PPP.app.showTopics()">' + utils.escapeHtml(i18n.t('hideTopicsBtn')) + '</button><div id="topicsListContent">';
+                sorted.forEach(function (name) {
+                    html += '<div class="topic-item"><span class="topic-name">' + esc(name) +
+                        ' <span style="color:var(--primary-dark);font-weight:700;">(' + topicCounts[name] + ')</span></span>' +
+                        '<button class="topic-search-btn" onclick="PPP.app.applySubjectFilter(decodeURIComponent(\'' + enc(name) + '\'))">Yes</button></div>';
                 });
                 html += '</div>';
                 div.innerHTML = html;
                 div.style.display = 'block';
+                setComboDisplay(i18n.t('transcriptsByTopicDisplay'));
             }).catch(function (e) {
                 console.warn('SQLite topics failed, falling back:', e);
                 ui.renderTopics(DB, div);
                 div.style.display = 'block';
+                setComboDisplay(i18n.t('transcriptsByTopicDisplay'));
             });
             return;
         }
@@ -1015,6 +1296,7 @@ PPP.app = (function () {
         // Fallback: in-memory
         ui.renderTopics(DB, div);
         div.style.display = 'block';
+        setComboDisplay(i18n.t('transcriptsByTopicDisplay'));
     }
 
     function showSources() {
@@ -1059,15 +1341,25 @@ PPP.app = (function () {
     function hideVersePanels() {
         document.getElementById('verseSourcesList').style.display = 'none';
         document.getElementById('verseList').style.display = 'none';
+        var tc = document.getElementById('topCitationsList');
+        if (tc) tc.style.display = 'none';
+        var resultsTable = document.getElementById('resultsTable');
+        if (resultsTable) resultsTable.style.display = '';
     }
 
     function showVerseSources() {
         var div = document.getElementById('verseSourcesList');
+        var resultsTable = document.getElementById('resultsTable');
         // Toggle off if already open
-        if (div.style.display !== 'none' && div.style.display !== '') { hideVersePanels(); return; }
+        if (div.style.display !== 'none' && div.style.display !== '') {
+            hideVersePanels();
+            if (resultsTable) resultsTable.style.display = '';
+            return;
+        }
         document.getElementById('verseList').style.display = 'none';
         document.getElementById('recommendationsList').style.display = 'none';
         document.getElementById('topicsList').style.display = 'none';
+        if (resultsTable) resultsTable.style.display = 'none';
         if (!usingSqlite) return;
 
         var esc = utils.escapeHtml;
@@ -1093,8 +1385,8 @@ PPP.app = (function () {
             topRows.forEach(function (r) { topNames[r.source_canonical] = true; });
             var otherRows = allRows.filter(function (r) { return !topNames[r.source_canonical]; });
 
-            var html = '<div style="font-family:\'Cormorant Garamond\',Georgia,serif;color:var(--primary-dark);font-size:14px;font-weight:600;padding:10px 14px;letter-spacing:1px;border-bottom:2px solid var(--border);">' +
-                'Scripture Sources (' + allRows.length + ')</div>' +
+            var html = '<button class="verse-sources-hide-btn" onclick="PPP.app.showVerseSources()">' +
+                utils.escapeHtml(i18n.t('hideVerseSourcesBtn')) + ' (' + allRows.length + ')</button>' +
                 '<div style="padding:6px 14px 14px;overflow-y:auto;max-height:60vh;">';
 
             html += '<div style="font-size:11px;color:var(--primary-dark);font-weight:600;padding:8px 0 4px;border-bottom:1px solid var(--border-light);letter-spacing:0.5px;">TOP 30</div>';
@@ -1115,7 +1407,9 @@ PPP.app = (function () {
 
     function showVerseList(sourceName) {
         var div = document.getElementById('verseList');
+        var resultsTable = document.getElementById('resultsTable');
         document.getElementById('verseSourcesList').style.display = 'none';
+        if (resultsTable) resultsTable.style.display = 'none';
         if (!usingSqlite) return;
 
         db.queryMetaAsync(
@@ -1128,9 +1422,8 @@ PPP.app = (function () {
         ).then(function (rows) {
             var esc = utils.escapeHtml;
             var enc = utils.encodeForAttr;
-            var html = '<div style="font-family:\'Cormorant Garamond\',Georgia,serif;color:var(--primary-dark);font-size:14px;font-weight:600;padding:10px 14px;letter-spacing:1px;border-bottom:2px solid var(--border);">' +
-                '<span onclick="PPP.app.showVerseSources()" style="cursor:pointer;margin-right:8px;">&larr;</span>' +
-                esc(sourceName) + ' (' + rows.length + ' verses)</div>' +
+            var html = '<button class="verse-sources-hide-btn" onclick="PPP.app.showVerseSources()">' +
+                '&larr; ' + esc(sourceName) + ' (' + rows.length + ' verses)</button>' +
                 '<div style="padding:6px 14px 14px;overflow-y:auto;max-height:60vh;">';
 
             rows.forEach(function (row) {
@@ -1287,11 +1580,29 @@ PPP.app = (function () {
      * Open HTML transcript viewer in modal, scroll to block-N anchor.
      * lang: 'en', 'lv', 'ru'
      */
-    function openHtmlTranscriptViewer(lectureNr, lang, blockIndex, reference) {
+    function _toDirectDownload(url) {
+        if (!url) return url;
+        var m = url.match(/drive\.google\.com\/file\/d\/([^/]+)/);
+        if (m) return 'https://drive.google.com/uc?export=download&id=' + m[1];
+        return url;
+    }
+
+    function openHtmlTranscriptViewer(lectureNr, lang, blockIndex, reference, driveUrl) {
         track('transcript-open', { nr: String(lectureNr), lang: lang, block: blockIndex || 0 });
         var overlay = document.getElementById('transcriptModalOverlay');
         var body = document.getElementById('transcriptModalBody');
         var title = document.getElementById('transcriptModalTitle');
+
+        var dlBtn = document.getElementById('transcriptDownloadBtn');
+        if (dlBtn) {
+            if (driveUrl) {
+                dlBtn.href = _toDirectDownload(driveUrl);
+                dlBtn.title = i18n.t('downloadTranscript');
+                dlBtn.style.display = '';
+            } else {
+                dlBtn.style.display = 'none';
+            }
+        }
 
         var alreadyLoaded = db.isHtmlLoaded(lang);
         title.textContent = 'Loading ' + lang.toUpperCase() + ' transcript...';
@@ -1335,13 +1646,18 @@ PPP.app = (function () {
         }).then(function (rows) {
             if (rows.length === 0) {
                 title.textContent = 'Transcript not found';
-                body.textContent = 'No ' + lang.toUpperCase() + ' transcript for lecture Nr.' + lectureNr;
+                if (driveUrl) {
+                    body.innerHTML = '<p>No ' + lang.toUpperCase() + ' HTML transcript for lecture Nr.' + lectureNr +
+                        '.</p><p><a href="' + driveUrl + '" target="_blank" rel="noopener" style="color:var(--saffron)">Open in Google Drive \u2197</a></p>';
+                } else {
+                    body.textContent = 'No ' + lang.toUpperCase() + ' transcript for lecture Nr.' + lectureNr;
+                }
                 return;
             }
 
             // Get title from meta DB
             return db.queryMetaAsync(
-                "SELECT original_file_name FROM lectures WHERE nr = $nr LIMIT 1",
+                "SELECT original_file_name, script_en_url, script_lv_url, script_ru_url FROM lectures WHERE nr = $nr LIMIT 1",
                 { $nr: String(lectureNr) }
             ).then(function (meta) {
                 if (meta.length > 0) {
@@ -1349,6 +1665,16 @@ PPP.app = (function () {
                         (reference ? ' — ' + reference : '');
                 } else {
                     title.textContent = 'Nr.' + lectureNr + (reference ? ' — ' + reference : '');
+                }
+                // If driveUrl was not passed, try to get it from meta
+                if (!driveUrl && meta.length > 0 && dlBtn) {
+                    var urlCol = 'script_' + lang + '_url';
+                    var metaDriveUrl = meta[0][urlCol];
+                    if (metaDriveUrl) {
+                        dlBtn.href = _toDirectDownload(metaDriveUrl);
+                        dlBtn.title = i18n.t('downloadTranscript');
+                        dlBtn.style.display = '';
+                    }
                 }
             }).catch(function () {
                 title.textContent = 'Nr.' + lectureNr + (reference ? ' — ' + reference : '');
@@ -1542,6 +1868,8 @@ PPP.app = (function () {
     function closeTranscriptModal(event) {
         if (!event || event.target === document.getElementById('transcriptModalOverlay')) {
             document.getElementById('transcriptModalOverlay').classList.remove('active');
+            var dlBtn = document.getElementById('transcriptDownloadBtn');
+            if (dlBtn) dlBtn.style.display = 'none';
         }
     }
 
@@ -1576,118 +1904,17 @@ PPP.app = (function () {
         });
     }
 
-    // ===== CONCEPT SEARCH =====
-
-    /**
-     * Ensure concepts DB is loaded (lazy), then resolve.
-     */
-    function ensureConceptsDB() {
-        if (db.isConceptsLoaded()) return Promise.resolve();
-        if (conceptsDBLoading) return conceptsDBLoading;
-        ui.showLoading(i18n.t('loadingConcepts'));
-        conceptsDBLoading = db.loadConceptsDB(function (progress) {
-            ui.updateProgress(progress);
-        }).then(function () {
-            ui.hideLoading();
-            conceptsDBLoading = false;
-        }).catch(function (err) {
-            ui.hideLoading();
-            conceptsDBLoading = false;
-            throw err;
-        });
-        return conceptsDBLoading;
-    }
-
-    /**
-     * Concept search: query concepts DB, then enrich with lecture metadata from meta DB.
-     */
-    function performConceptSearch(startTime) {
-        if (!usingSqlite) {
-            document.getElementById('resultsInfo').innerHTML = '<strong>Concept search requires SQLite</strong>';
-            return;
-        }
-
-        var parsed = search.parseSearchQuery(lastSearchTerm);
-        var q = search.buildConceptSQL(parsed);
-
-        if (!lastSearchTerm.trim()) {
-            document.getElementById('resultsInfo').innerHTML = '';
-            return;
-        }
-
-        ensureConceptsDB().then(function () {
-            return db.queryConceptsAsync(q.sql, q.params);
-        }).then(function (conceptRows) {
-            if (!conceptRows || conceptRows.length === 0) {
-                var elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
-                document.getElementById('timer').textContent = i18n.t('elapsedTime') + ' ' + elapsed + ' ' + i18n.t('seconds');
-                document.getElementById('resultsInfo').innerHTML = '<strong>0 ' + i18n.t('conceptResults') + '</strong>';
-                ui.renderConceptResults([], lastSearchTerm);
-                return;
-            }
-
-            // Collect unique lecture_nrs to fetch metadata
-            var lectureNrs = [];
-            var seen = {};
-            conceptRows.forEach(function (r) {
-                if (!seen[r.lecture_nr]) {
-                    seen[r.lecture_nr] = true;
-                    lectureNrs.push(r.lecture_nr);
-                }
-            });
-
-            // Build query for lecture metadata
-            var placeholders = lectureNrs.map(function (_, i) { return '$nr' + i; });
-            var metaParams = {};
-            lectureNrs.forEach(function (nr, i) { metaParams['$nr' + i] = nr; });
-            var metaSql = 'SELECT nr, date, original_file_name, subject, links, links_url, dwnld_url, script_en, script_lv, script_ru FROM lectures WHERE nr IN (' + placeholders.join(',') + ')';
-
-            return db.queryMetaAsync(metaSql, metaParams).then(function (metaRows) {
-                // Build lookup by nr
-                var metaMap = {};
-                metaRows.forEach(function (m) { metaMap[m.nr] = m; });
-
-                // Enrich concept rows with metadata
-                var enriched = conceptRows.map(function (c) {
-                    var meta = metaMap[c.lecture_nr] || {};
-                    return {
-                        chunk_id: c.chunk_id,
-                        lecture_nr: c.lecture_nr,
-                        block_num: c.block_num,
-                        text: c.text || '',
-                        concept_summary: c.concept_summary,
-                        word_count: c.word_count,
-                        date: meta.date || '',
-                        original_file_name: meta.original_file_name || '',
-                        subject: meta.subject || '',
-                        links: meta.links || '',
-                        links_url: meta.links_url || '',
-                        dwnld_url: meta.dwnld_url || '',
-                        script_en: meta.script_en || '',
-                        script_lv: meta.script_lv || '',
-                        script_ru: meta.script_ru || ''
-                    };
-                });
-
-                var elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
-                document.getElementById('timer').textContent = i18n.t('elapsedTime') + ' ' + elapsed + ' ' + i18n.t('seconds');
-                document.getElementById('resultsInfo').innerHTML = '<strong>' + enriched.length + ' ' + i18n.t('conceptResults') + '</strong>';
-
-                track('search', { query: lastSearchTerm, mode: 'concepts', results: enriched.length });
-                ui.renderConceptResults(enriched, lastSearchTerm);
-            });
-        }).catch(function (err) {
-            console.error('Concept search error:', err);
-            document.getElementById('resultsInfo').innerHTML = '<strong>Error: ' + utils.escapeHtml(err.message) + '</strong>';
-        });
-    }
-
     // ===== TOP 108 CITATIONS =====
     function showTopCitations() {
         if (!usingSqlite) {
             document.getElementById('resultsInfo').innerHTML = '<strong>Top citations require SQLite</strong>';
             return;
         }
+
+        closeAllPanels();
+        var div = document.getElementById('topCitationsList');
+        var resultsTable = document.getElementById('resultsTable');
+        if (resultsTable) resultsTable.style.display = 'none';
 
         db.queryMetaAsync(
             "SELECT reference, COUNT(*) as lecture_count " +
@@ -1697,34 +1924,42 @@ PPP.app = (function () {
             "LIMIT 108"
         ).then(function (rows) {
             var resultsInfo = document.getElementById('resultsInfo');
-            resultsInfo.innerHTML = '<strong>' + i18n.t('searchModeCitationsTop') + '</strong>';
+            resultsInfo.innerHTML = '';
             document.getElementById('timer').textContent = '';
-
-            var table = document.getElementById('resultsTable');
-            var tbody = table.querySelector('tbody') || table;
-            tbody.innerHTML = '';
 
             var esc = utils.escapeHtml;
             var enc = utils.encodeForAttr;
-            var html = '';
+            var html = '<button class="verse-sources-hide-btn" onclick="PPP.app.hideTopCitations()">' +
+                utils.escapeHtml(i18n.t('hideTopCitationsBtn')) + '</button>' +
+                '<div style="padding:6px 14px 14px;overflow-y:auto;max-height:60vh;">';
             rows.forEach(function (row, idx) {
                 var ref = row.reference || '';
                 var cnt = row.lecture_count || 0;
-                html += '<tr>' +
-                    '<td style="width:40px;text-align:center;color:var(--primary-dark);font-weight:600;">' + (idx + 1) + '</td>' +
-                    '<td style="font-family:\'Cormorant Garamond\',Georgia,serif;font-size:16px;font-weight:600;color:var(--primary-dark);">' +
-                    esc(ref) + ' <span style="color:var(--text-muted);font-size:13px;font-weight:400;">(' + cnt + ' lectures)</span></td>' +
-                    '<td style="width:60px;text-align:center;">' +
-                    '<button class="recommendation-search-btn" onclick="PPP.app.showVerseLectures(decodeURIComponent(\'' + enc(ref) + '\'))" style="padding:4px 12px;">Yes</button>' +
-                    '</td></tr>';
+                html += '<div class="recommendation-item">' +
+                    '<span class="recommendation-name">' +
+                    '<span style="color:var(--primary-dark);font-weight:600;margin-right:6px;">' + (idx + 1) + '.</span>' +
+                    esc(ref) +
+                    ' <span style="color:var(--primary-dark);font-weight:700;">(' + cnt + ')</span>' +
+                    '</span>' +
+                    '<button class="recommendation-search-btn" onclick="PPP.app.showVerseLectures(decodeURIComponent(\'' + enc(ref) + '\'))">Yes</button>' +
+                    '</div>';
             });
+            html += '</div>';
 
-            tbody.innerHTML = html;
+            div.innerHTML = html;
+            div.style.display = 'block';
             document.getElementById('pagination').innerHTML = '';
         }).catch(function (err) {
             console.error('Top citations error:', err);
             document.getElementById('resultsInfo').innerHTML = '<strong>Error: ' + utils.escapeHtml(err.message) + '</strong>';
         });
+    }
+
+    function hideTopCitations() {
+        var div = document.getElementById('topCitationsList');
+        var resultsTable = document.getElementById('resultsTable');
+        if (div) div.style.display = 'none';
+        if (resultsTable) resultsTable.style.display = '';
     }
 
     // ===== FILTER HELPERS =====
@@ -1741,6 +1976,7 @@ PPP.app = (function () {
         currentPage = 1;
         document.getElementById('topicsList').style.display = 'none';
         document.getElementById('recommendationsList').style.display = 'none';
+        var _rt = document.getElementById('resultsTable'); if (_rt) _rt.style.display = '';
         performSearch();
     }
 
@@ -1749,6 +1985,7 @@ PPP.app = (function () {
         lastSearchTerm = 'lang:' + lang;
         currentPage = 1;
         document.getElementById('recommendationsList').style.display = 'none';
+        var _rt = document.getElementById('resultsTable'); if (_rt) _rt.style.display = '';
         performSearch();
     }
 
@@ -1772,6 +2009,10 @@ PPP.app = (function () {
             var val = i18n.t(key);
             if (val !== key) el.textContent = val;
         });
+        var luEl = document.getElementById('dbLastUpdate');
+        if (luEl && luEl.getAttribute('data-last-update')) {
+            luEl.textContent = (i18n.t('lastUpdate') || 'Last update') + ': ' + luEl.getAttribute('data-last-update');
+        }
         document.querySelector('h1').textContent = i18n.t('pageTitle');
         if (dataLoaded) {
             var inp = document.getElementById('searchTerm');
@@ -1863,7 +2104,9 @@ PPP.app = (function () {
         search: doSearch,
         setLanguage: setLanguage,
         showLatestFiles: showLatestFiles,
+        showBy2026: showBy2026,
         showLatestTranscripts: showLatestTranscripts,
+        showAllTranscriptsByDate: showAllTranscriptsByDate,
         showRecommendations: showRecommendations,
         showTopics: showTopics,
         showSources: showSources,
@@ -1882,6 +2125,7 @@ PPP.app = (function () {
         showVerseList: showVerseList,
         showVerseLectures: showVerseLectures,
         showTopCitations: showTopCitations,
+        hideTopCitations: hideTopCitations,
         openTranscriptAtVerse: openTranscriptAtVerse,
         openHtmlTranscriptViewer: openHtmlTranscriptViewer,
         closeTranscriptModal: closeTranscriptModal,
@@ -1889,7 +2133,11 @@ PPP.app = (function () {
         updateFavoritesCount: updateFavoritesCount,
         copyShareLink: copyShareLink,
         buildShareUrl: buildShareUrl,
-        toggleTheme: toggleTheme
+        toggleTheme: toggleTheme,
+        openGuide: function () {
+            var lang = localStorage.getItem('preferredLanguage') || 'en';
+            window.open('guide/' + lang + '/', '_blank');
+        }
     };
 })();
 

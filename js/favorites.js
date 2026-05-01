@@ -1,12 +1,7 @@
 /* ===========================================================================
-   PPP Link Finder — Collections (localStorage + Firestore sync)
+   PPP Link Finder — Collections (localStorage-backed)
    YouTube-style "Save to..." with multiple folders/collections.
    Backward compatible — migrates old ppp_favorites on first load.
-
-   Firestore sync:
-   - On login: merges localStorage ↔ Firestore (union of lectures)
-   - On change: debounced 2s write to Firestore
-   - Offline: localStorage always works, syncs when back online
    =========================================================================== */
 window.PPP = window.PPP || {};
 
@@ -17,11 +12,8 @@ PPP.favorites = (function () {
     var OLD_KEY = 'ppp_favorites';
     var _collections = []; // [{id, name, created, lectures: [nr,...]}]
     var _nextId = 1;
-    var _userId = null;
-    var _syncTimer = null;
-    var SYNC_DEBOUNCE = 2000; // ms
 
-    // ===== Persistence (localStorage) =====
+    // ===== Persistence =====
     function _load() {
         try {
             var raw = localStorage.getItem(STORAGE_KEY);
@@ -58,130 +50,6 @@ PPP.favorites = (function () {
             collections: _collections,
             nextId: _nextId
         }));
-        _scheduleSyncToFirestore();
-    }
-
-    // ===== Firestore Sync =====
-    function _getFirestore() {
-        try {
-            return firebase.firestore();
-        } catch (e) {
-            return null;
-        }
-    }
-
-    function _userDocRef() {
-        var fs = _getFirestore();
-        if (!fs || !_userId) return null;
-        return fs.collection('users').doc(_userId).collection('data').doc('favorites');
-    }
-
-    function _scheduleSyncToFirestore() {
-        if (!_userId) return;
-        if (_syncTimer) clearTimeout(_syncTimer);
-        _syncTimer = setTimeout(_syncToFirestore, SYNC_DEBOUNCE);
-    }
-
-    function _syncToFirestore() {
-        var ref = _userDocRef();
-        if (!ref) return;
-
-        var payload = {
-            collections: _collections,
-            nextId: _nextId,
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        };
-
-        ref.set(payload).then(function () {
-            _updateSyncIndicator('synced');
-        }).catch(function (err) {
-            console.error('[favorites] Firestore write failed:', err);
-            _updateSyncIndicator('error');
-        });
-    }
-
-    function _loadFromFirestore(userId) {
-        _userId = userId;
-        var ref = _userDocRef();
-        if (!ref) return;
-
-        _updateSyncIndicator('syncing');
-
-        ref.get().then(function (doc) {
-            if (!doc.exists) {
-                // First login — push localStorage to Firestore
-                _syncToFirestore();
-                _updateSyncIndicator('synced');
-                return;
-            }
-            var remote = doc.data();
-            var remoteCols = remote.collections || [];
-            var remoteNextId = remote.nextId || 1;
-
-            // Merge: union of lectures per collection name
-            _mergeCollections(remoteCols, remoteNextId);
-            _save(); // saves merged to localStorage + triggers Firestore write
-            _updateSyncIndicator('synced');
-
-            // Refresh UI
-            if (PPP.app && PPP.app.updateFavoritesCount) {
-                PPP.app.updateFavoritesCount();
-            }
-        }).catch(function (err) {
-            console.error('[favorites] Firestore read failed:', err);
-            _updateSyncIndicator('error');
-        });
-    }
-
-    function _mergeCollections(remoteCols, remoteNextId) {
-        // Build map: name → {local collection}
-        var localMap = {};
-        _collections.forEach(function (c) { localMap[c.name] = c; });
-
-        remoteCols.forEach(function (rc) {
-            if (localMap[rc.name]) {
-                // Merge lectures (union)
-                var existing = localMap[rc.name];
-                var set = {};
-                existing.lectures.forEach(function (nr) { set[nr] = true; });
-                rc.lectures.forEach(function (nr) { set[nr] = true; });
-                existing.lectures = Object.keys(set);
-            } else {
-                // New collection from remote
-                _collections.push({
-                    id: _nextId++,
-                    name: rc.name,
-                    created: rc.created || new Date().toISOString(),
-                    lectures: rc.lectures || []
-                });
-            }
-        });
-
-        // Ensure nextId is highest
-        if (remoteNextId > _nextId) _nextId = remoteNextId;
-    }
-
-    function _updateSyncIndicator(state) {
-        var el = document.getElementById('syncStatus');
-        if (!el) return;
-        el.className = 'sync-status sync-' + state;
-        var titles = { syncing: 'Syncing...', synced: 'Synced', error: 'Sync error' };
-        el.title = titles[state] || '';
-        // Dot symbol for status
-        var dots = { syncing: '\u25CB', synced: '\u25CF', error: '\u25C6' };
-        el.textContent = dots[state] || '';
-    }
-
-    // ===== Auth Hooks (called by auth.js) =====
-    function _onLogin(userId) {
-        _loadFromFirestore(userId);
-    }
-
-    function _onLogout() {
-        _userId = null;
-        if (_syncTimer) clearTimeout(_syncTimer);
-        var el = document.getElementById('syncStatus');
-        if (el) el.style.display = 'none';
     }
 
     // ===== Collection CRUD =====
@@ -250,6 +118,7 @@ PPP.favorites = (function () {
     }
 
     // ===== Backward-compatible API =====
+    // isFavorite = is in ANY collection
     function isFavorite(nr) {
         nr = String(nr);
         for (var i = 0; i < _collections.length; i++) {
@@ -258,6 +127,7 @@ PPP.favorites = (function () {
         return false;
     }
 
+    // getAll = all unique nrs across all collections
     function getAll() {
         var set = {};
         _collections.forEach(function (c) {
@@ -266,8 +136,10 @@ PPP.favorites = (function () {
         return Object.keys(set);
     }
 
+    // count = total unique saved lectures
     function count() { return getAll().length; }
 
+    // toggle = simple toggle for default/first collection (backward compat)
     function toggle(nr) {
         nr = String(nr);
         if (_collections.length === 0) {
@@ -284,6 +156,7 @@ PPP.favorites = (function () {
         return col.lectures.indexOf(nr) !== -1;
     }
 
+    // Get collections that contain a specific lecture
     function getCollectionsForLecture(nr) {
         nr = String(nr);
         return _collections.filter(function (c) {
@@ -310,9 +183,6 @@ PPP.favorites = (function () {
         removeFromCollection: removeFromCollection,
         isInCollection: isInCollection,
         getCollectionLectures: getCollectionLectures,
-        getCollectionsForLecture: getCollectionsForLecture,
-        // Auth hooks (called by auth.js)
-        _onLogin: _onLogin,
-        _onLogout: _onLogout
+        getCollectionsForLecture: getCollectionsForLecture
     };
 })();

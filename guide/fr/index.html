@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chaitanya Academy Audio, Video &amp; Transcript Finder — Guide des fonctions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --primary: #1a3a6b;
+  --primary-dark: #12294a;
+  --saffron: #e8842c;
+  --cream: #fffcf5;
+  --surface: #ffffff;
+  --gold: #f0c75e;
+  --text: #2d2a24;
+  --text-soft: #6a6358;
+  --border: #e8ddc4;
+  --shadow: 0 2px 14px rgba(26, 58, 107, 0.08);
+  --shadow-lg: 0 8px 32px rgba(26, 58, 107, 0.12);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 80px; }
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: var(--cream);
+  color: var(--text);
+  margin: 0;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Header */
+header {
+  position: sticky;
+  top: 0;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+  color: #fff;
+  padding: 14px 28px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+.brand { display: flex; align-items: center; gap: 12px; font-family: 'Cormorant Garamond', serif; font-size: 22px; font-weight: 600; letter-spacing: 0.3px; }
+.brand svg { width: 34px; height: 34px; }
+.header-search {
+  flex: 1;
+  max-width: 460px;
+  margin-left: auto;
+  position: relative;
+}
+.header-search input {
+  width: 100%;
+  padding: 10px 16px 10px 40px;
+  border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: background 0.2s, border-color 0.2s;
+}
+.header-search input::placeholder { color: rgba(255,255,255,0.65); }
+.header-search input:focus { background: rgba(255,255,255,0.2); border-color: var(--gold); }
+.header-search::before {
+  content: '';
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  transform: translateY(-50%);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round'><circle cx='11' cy='11' r='7'/><path d='m20 20-3.5-3.5'/></svg>");
+  background-size: contain;
+  opacity: 0.7;
+}
+.back-link {
+  color: #fff;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.3);
+  transition: background 0.2s;
+  white-space: nowrap;
+}
+.back-link:hover { background: rgba(255,255,255,0.15); }
+.menu-toggle { display: none; background: none; border: 1px solid rgba(255,255,255,0.3); color: #fff; font-size: 20px; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+
+/* Layout */
+.wrap { display: grid; grid-template-columns: 280px 1fr; min-height: calc(100vh - 64px); }
+
+/* Sidebar */
+.sidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 24px 18px;
+  position: sticky;
+  top: 64px;
+  height: calc(100vh - 64px);
+  overflow-y: auto;
+}
+.sidebar h4 {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 18px;
+  color: var(--primary);
+  margin: 0 0 10px 6px;
+  font-weight: 600;
+}
+.group-nav { margin-bottom: 8px; }
+.group-nav summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.15s;
+}
+.group-nav summary::-webkit-details-marker { display: none; }
+.group-nav summary:hover { background: #f5efe2; }
+.group-nav summary::before {
+  content: '▸';
+  font-size: 10px;
+  color: var(--saffron);
+  transition: transform 0.2s;
+  display: inline-block;
+}
+.group-nav[open] summary::before { transform: rotate(90deg); }
+.group-nav ul { list-style: none; padding: 4px 0 4px 22px; margin: 0; }
+.group-nav li a {
+  display: block;
+  padding: 6px 10px;
+  color: var(--text-soft);
+  text-decoration: none;
+  font-size: 13px;
+  border-radius: 5px;
+  border-left: 2px solid transparent;
+  transition: all 0.15s;
+}
+.group-nav li a:hover { background: #faf5e8; color: var(--primary); }
+.group-nav li a.active {
+  background: #fdf1dc;
+  color: var(--primary);
+  border-left-color: var(--saffron);
+  font-weight: 600;
+}
+
+/* Main */
+main { padding: 48px 56px 80px; max-width: 960px; }
+.hero {
+  margin-bottom: 56px;
+  padding-bottom: 40px;
+  border-bottom: 1px solid var(--border);
+}
+.hero h1 {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 48px;
+  line-height: 1.1;
+  color: var(--primary);
+  margin: 0 0 12px;
+  font-weight: 600;
+}
+.hero p {
+  font-size: 17px;
+  color: var(--text-soft);
+  max-width: 640px;
+  margin: 0;
+}
+.hero-meta {
+  display: inline-block;
+  margin-top: 18px;
+  padding: 6px 14px;
+  background: #fdf1dc;
+  border: 1px solid var(--gold);
+  border-radius: 20px;
+  font-size: 13px;
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.group-section { margin-bottom: 64px; scroll-margin-top: 80px; }
+.group-section h2 {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 34px;
+  color: var(--primary);
+  margin: 0 0 6px;
+  font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+.group-section h2 .group-letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  background: var(--saffron);
+  color: #fff;
+  border-radius: 50%;
+  font-size: 22px;
+  font-weight: 700;
+  font-family: 'Inter', sans-serif;
+  flex-shrink: 0;
+}
+.group-section > p.group-desc {
+  color: var(--text-soft);
+  margin: 0 0 28px 60px;
+  font-size: 14px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 32px 36px;
+  margin-bottom: 24px;
+  box-shadow: var(--shadow);
+  scroll-margin-top: 80px;
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.card:hover { box-shadow: var(--shadow-lg); }
+.card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.card-num {
+  color: #fff;
+  background: var(--primary);
+  font-size: 14px;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 14px;
+  flex-shrink: 0;
+  font-family: 'Inter', sans-serif;
+}
+.card h3 {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 28px;
+  color: var(--primary);
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.card-image {
+  display: block;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  max-height: 180px;
+  margin: 0 auto 24px;
+  padding: 14px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.08);
+  background: #fafafa;
+}
+.card-tall .card-image {
+  max-height: 720px;
+  max-width: 480px;
+}
+.card dl { display: grid; gap: 14px; margin: 0; }
+.card .field { border-left: 3px solid var(--saffron); padding: 2px 0 2px 14px; }
+.card dt {
+  font-weight: 700;
+  color: var(--saffron);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 4px;
+}
+.card dd { margin: 0; line-height: 1.65; color: var(--text); font-size: 15px; }
+
+.nav-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 12px;
+  padding-top: 20px;
+  border-top: 1px dashed var(--border);
+  font-size: 13px;
+}
+.nav-footer a {
+  color: var(--primary);
+  text-decoration: none;
+  padding: 8px 12px;
+  border-radius: 6px;
+  transition: background 0.15s;
+  max-width: 46%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nav-footer a:hover { background: #f5efe2; }
+.nav-footer a.disabled { visibility: hidden; }
+
+.card.hidden { display: none; }
+.group-section.hidden { display: none; }
+.no-results {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-soft);
+  font-size: 15px;
+  display: none;
+}
+.no-results.show { display: block; }
+
+footer.page-footer {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-soft);
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+  margin-top: 40px;
+}
+
+.svarigi {
+  margin-top: 16px;
+  padding: 10px 14px;
+  background: #fff4d6;
+  border-left: 3px solid #e8842c;
+  color: #6b4d0e;
+  font-size: 13px;
+  border-radius: 4px;
+  line-height: 1.55;
+}
+
+/* Mobile */
+@media (max-width: 900px) {
+  .wrap { grid-template-columns: 1fr; }
+  .sidebar {
+    position: fixed;
+    top: 64px;
+    left: 0;
+    width: 85%;
+    max-width: 320px;
+    height: calc(100vh - 64px);
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    z-index: 90;
+    box-shadow: 4px 0 20px rgba(0,0,0,0.15);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .menu-toggle { display: inline-block; }
+  .brand { font-size: 18px; }
+  .brand svg { width: 28px; height: 28px; }
+  main { padding: 28px 20px 60px; }
+  .hero h1 { font-size: 32px; }
+  .hero p { font-size: 15px; }
+  .group-section h2 { font-size: 26px; }
+  .group-section h2 .group-letter { width: 36px; height: 36px; font-size: 18px; }
+  .card { padding: 22px 20px; }
+  .card h3 { font-size: 22px; }
+  .card-image { max-height: 140px; padding: 10px; }
+  .header-search { max-width: none; }
+  .back-link { display: none; }
+}
+@media (max-width: 560px) {
+  header { padding: 12px 14px; gap: 10px; flex-wrap: wrap; }
+  .header-search { order: 10; flex-basis: 100%; max-width: 100%; }
+  .header-search input { padding: 8px 14px 8px 36px; font-size: 13px; }
+}
+
+/* Scrollbar */
+.sidebar::-webkit-scrollbar { width: 8px; }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
+.sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.sidebar::-webkit-scrollbar-thumb:hover { background: var(--gold); }
+</style>
+</head>
+<body>
+
+<header>
+  <button class="menu-toggle" id="menuToggle" aria-label="Ouvrir le menu">☰</button>
+  <div class="brand">
+    <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <circle cx="32" cy="32" r="28" fill="none" stroke="#f0c75e" stroke-width="2"/>
+      <circle cx="32" cy="32" r="20" fill="none" stroke="#f0c75e" stroke-width="1.5" opacity="0.7"/>
+      <circle cx="32" cy="32" r="12" fill="none" stroke="#f0c75e" stroke-width="1.2" opacity="0.5"/>
+      <circle cx="32" cy="32" r="3" fill="#e8842c"/>
+      <g stroke="#f0c75e" stroke-width="1" opacity="0.5">
+        <line x1="32" y1="4" x2="32" y2="60"/>
+        <line x1="4" y1="32" x2="60" y2="32"/>
+        <line x1="12" y1="12" x2="52" y2="52"/>
+        <line x1="52" y1="12" x2="12" y2="52"/>
+      </g>
+    </svg>
+    <span>CA Guide</span>
+  </div>
+  <div class="header-search">
+    <input type="search" id="searchInput" placeholder="Rechercher une fonction... (numéro ou nom)" autocomplete="off">
+  </div>
+  <a href="../../" class="back-link">← Retour à l'app</a>
+</header>
+
+<div class="wrap">
+  <aside class="sidebar" id="sidebar">
+    <h4>Sommaire</h4>
+    <nav id="sideNav"></nav>
+  </aside>
+
+  <main>
+    <section class="hero">
+      <h1>Chaitanya Academy<br>Audio, Video &amp; Transcript Finder<br>Guide des fonctions</h1>
+      <p>Description des fonctions de l'application Chaitanya Academy Audio, Video &amp; Transcript Finder. Pour chaque fonction, apprenez : ce que c'est, ce qu'elle apporte et comment l'utiliser. Utilisez la recherche ou le menu latéral gauche pour trouver rapidement une fonction précise.</p>
+      <span class="hero-meta">30 fonctions · 9 groupes</span>
+    </section>
+
+    <div id="content"></div>
+    <div class="no-results" id="noResults">Rien trouvé. Essayez un autre mot de recherche.</div>
+
+    <footer class="page-footer">
+      Chaitanya Academy Audio, Video &amp; Transcript Finder · Chaitanya Academy · Archives des conférences de Prem Prayojan Prabhu
+    </footer>
+  </main>
+</div>
+
+<script>
+const GROUPS = [
+  { letter: "A", name: "Barre supérieure du tableau" },
+  { letter: "B", name: "En-tête de page" },
+  { letter: "C", name: "Barre supérieure des conférences" },
+  { letter: "D", name: "Recherche" },
+  { letter: "E", name: "Bloc transcriptions" },
+  { letter: "F", name: "Tableau des résultats" },
+  { letter: "G", name: "Fenêtre de transcription" },
+  { letter: "H", name: "Favoris" },
+  { letter: "I", name: "Mobile" },
+];
+
+const ITEMS = [
+  {n:1,g:"A",t:"Date de mise à jour de la base de données",img:"last-update.png",kas:"La date à laquelle la base de données a été enrichie pour la dernière fois avec de nouvelles conférences.",ieg:"Vous voyez immédiatement si la base contient les dernières conférences."},
+  {n:2,g:"A",t:"Liste des sources (bouton)",img:"list-of-sources-btn.png",kas:"Un bouton qui ouvre la liste de toutes les sources de la base de données.",ieg:"Permet de choisir des liens et des fichiers par source spécifique.",kal:"Cliquez pour ouvrir la liste. Un nouveau clic la ferme."},
+  {n:3,g:"B",t:"Activer le mode sombre",img:"theme-toggle-light.png",kas:"Bouton d'activation du mode sombre (icône 🌙).",ieg:"Vue douce et non éblouissante pour les yeux fatigués le soir ou dans une pièce sombre.",kal:"Un clic bascule l'application en mode sombre. Le réglage est enregistré."},
+  {n:4,g:"B",t:"Activer le mode clair",img:"theme-toggle-dark.png",kas:"Bouton d'activation du mode clair (icône ☀️).",ieg:"Meilleure lisibilité le jour et dans un environnement lumineux.",kal:"Un clic remet l'application en mode clair."},
+  {n:5,g:"B",t:"Sélecteur de langue",img:"language-switcher.png",kas:"6 boutons de langue — EN, RU, LV, IT, FR, ES.",ieg:"Utilisez l'application dans votre langue maternelle.",kal:"Cliquez sur un code de langue pour basculer tout le texte de l'app dans cette langue. Votre choix est enregistré."},
+  {n:6,g:"C",t:"Entrées de 2026",img:"combo-by-2026.png",kas:"Un bouton de filtre qui affiche uniquement les enregistrements de 2026.",ieg:"D'un clic, vous accédez aux enregistrements les plus récents.",kal:"Cliquez — le tableau affiche toutes les entrées de 2026, triées par date décroissante."},
+  {n:7,g:"C",t:"Par ajout",img:"combo-by-added.png",kas:"Un bouton qui affiche les 20 derniers enregistrements ajoutés à la base.",ieg:"Vous voyez les nouveautés de la base, indépendamment de la date de l'enregistrement (par ex. des vidéos de conférences plus anciennes ajoutées récemment).",kal:"Cliquez — le tableau affiche les 20 dernières entrées par date d'ajout. (La date d'ajout elle-même n'est pas visible dans le tableau.)"},
+  {n:8,g:"C",t:"Recherches populaires (Top Searches)",img:"combo-top-searches.png",kas:"Un bouton qui ouvre un panneau avec les recherches les plus populaires des autres utilisateurs.",ieg:"Une source d'idées nouvelles pour explorer la base.",kal:"Cliquez pour ouvrir le panneau. Cliquez sur le bouton « Yes » pour afficher toutes les entrées correspondant à la requête."},
+  {n:9,g:"C",t:"Par versets (Verses)",img:"combo-by-verses.png",kas:"Bascule le mode de recherche vers la recherche de versets dans les transcriptions.",ieg:"Trouvez rapidement toutes les conférences transcrites où un verset donné est cité, et en choisissant une conférence vous accédez directement à l'endroit de la citation dans la transcription.",kal:"Cliquez sur le bouton « Par versets » — un tableau apparaît avec les titres des œuvres citées. Cliquez sur l'œuvre d'où vient le verset que vous cherchez. Un tableau avec tous les versets cités apparaîtra. Cliquez sur « Yes » en face du verset choisi : la liste de toutes les conférences et transcriptions où ce verset est cité apparaîtra. Dans la conférence choisie, sélectionnez la langue de la transcription (EN, RU ou LV) — la transcription s'ouvrira exactement à l'endroit de la citation."},
+  {n:10,g:"C",t:"Versets (Top)",img:"combo-verses-top.png",kas:"Affiche les 108 versets les plus cités dans toutes les transcriptions.",ieg:"Découvrez les versets les plus importants de Chaitanya Academy.",kal:"Cliquez sur « Versets (Top) » — un tableau de versets apparaîtra trié par source et par fréquence de citation. Cliquez sur « Yes » en face du verset choisi : la liste de toutes les conférences et transcriptions où il est cité apparaîtra. Dans la conférence choisie, sélectionnez la langue de la transcription (EN, RU ou LV) — la transcription s'ouvrira exactement à l'endroit de la citation."},
+  {n:11,g:"C",t:"★ Favoris",img:"combo-favorites.png",kas:"Un bouton pour sauvegarder une conférence ou consulter les conférences sauvegardées.",ieg:"Un clic vous ramène à vos conférences sauvegardées — sans nouvelle recherche.",kal:"Cliquez sur « Favoris » pour ouvrir le menu des collections. Ajoutez des conférences en cliquant sur ★ dans la ligne du tableau.",svarigi:"L'application ne propose pas encore de compte utilisateur, donc les « Favoris » sont stockés séparément sur chaque appareil avec lequel vous ouvrez l'app."},
+  {n:12,g:"C",t:"Favoris avec compteur",img:"combo-favorites-badge.png",kas:"Le bouton Favoris avec un chiffre indiquant combien de conférences sont actuellement sauvegardées.",ieg:"Vous voyez rapidement combien de conférences se trouvent dans votre collection.",kal:"Le nombre se met à jour automatiquement lors de l'ajout ou du retrait d'un favori.",svarigi:"L'application ne propose pas encore de compte utilisateur, donc les « Favoris » sont stockés séparément sur chaque appareil avec lequel vous ouvrez l'app."},
+  {n:13,g:"D",t:"Mots-clés (mode)",img:"key-words-btn.png",kas:"Indicateur que le mode de recherche par mots-clés est actif (recherche dans les titres des conférences, dates, types, langues).",ieg:"Vous savez clairement ce que vous cherchez exactement.",kal:"C'est le mode par défaut. Un clic sur le bouton revient du mode de recherche de versets.",svarigi:"Lisez absolument les instructions sur la façon correcte de saisir les mots dans le champ de recherche. Elles se trouvent sous le bouton « Comment rechercher par mots-clés ? »."},
+  {n:14,g:"D",t:"Champ de recherche",img:"search-bar.png",kas:"Le champ de saisie principal et le bouton « Rechercher ».",ieg:"Trouvez des entrées précises parmi ~10 000 en quelques secondes.",kal:"Saisissez des mots. Appuyez sur Entrée ou cliquez sur « Rechercher ». Les résultats apparaissent dans le tableau.",svarigi:"Lisez absolument les instructions sur la façon correcte de saisir les mots dans le champ de recherche. Elles se trouvent sous le bouton « Comment rechercher par mots-clés ? »."},
+  {n:15,g:"D",t:"Comment rechercher par mots-clés ? (bouton d'aide)",img:"help-btn.png",kas:"Un bouton d'aide avec l'explication des principes de recherche.",ieg:"Comprenez rapidement comment formuler des requêtes de recherche efficaces.",kal:"Un clic ouvre une fenêtre d'aide avec des exemples."},
+  {n:16,g:"E",t:"Libellé « Transcriptions et traductions »",img:"transcripts-label.png",kas:"Le libellé dans l'en-tête du tableau des résultats avec le nombre total de transcriptions et de traductions.",ieg:"Vous voyez combien d'enregistrements sont également lisibles (pas seulement vidéo/audio).",kal:"Informatif — le nombre se met à jour automatiquement."},
+  {n:17,g:"E",t:"Par date (transcriptions)",img:"transcripts-by-date.png",kas:"Un bouton qui affiche toutes les transcriptions par date de l'enregistrement audio.",ieg:"Trouvez les conférences transcrites d'une période précise.",kal:"Cliquez — le tableau affiche toutes les transcriptions par date."},
+  {n:18,g:"E",t:"Par sujet (transcriptions)",img:"transcripts-by-topic.png",kas:"Un bouton qui ouvre un tableau dans lequel les transcriptions sont regroupées par sujet.",ieg:"Trouvez immédiatement les conférences sur un sujet donné — même si vous ne connaissez pas leurs titres.",kal:"Un clic ouvre la liste des sujets. Appuyez sur « Yes » en face du sujet choisi et toutes les transcriptions s'y rapportant apparaîtront."},
+  {n:19,g:"E",t:"Plus récentes (transcriptions)",img:"transcripts-newest.png",kas:"Affiche les 20 transcriptions les plus récentes. Il peut s'agir aussi de transcriptions de conférences plus anciennes réalisées récemment.",ieg:"Accédez rapidement aux dernières transcriptions.",kal:"Cliquez — le tableau affiche les transcriptions les plus récentes."},
+  {n:20,g:"F",t:"Colonne étoile (favoris)",img:"results-star-column.png",kas:"Une colonne du tableau où chaque entrée peut être sauvegardée en favori.",ieg:"Conservez les entrées qui vous intéressent pour ne pas avoir à les rechercher à nouveau.",kal:"Un clic sur ★ ouvre la fenêtre « Enregistrer dans... » avec la liste des collections.",svarigi:"L'application ne propose pas encore de compte utilisateur, donc les « Favoris » sont stockés séparément sur chaque appareil avec lequel vous ouvrez l'app."},
+  {n:21,g:"F",t:"Colonne lien (share)",img:"results-share-column.png",kas:"Une colonne du tableau avec un bouton 🔗 pour copier un lien de partage.",ieg:"Un clic — et vous pouvez envoyer le lien d'une entrée spécifique à quelqu'un.",kal:"Un clic sur 🔗 copie un deep-link vers l'entrée dans le presse-papiers."},
+  {n:22,g:"F",t:"Onglets de langue (EN/LV/RU)",img:"results-lang-tabs.png",kas:"Onglets de filtre dans l'en-tête du tableau — affichent les entrées avec des transcriptions dans une langue donnée.",ieg:"Aide à sélectionner les entrées ayant des transcriptions.",kal:"Un clic sur EN, LV ou RU filtre les résultats. Un nouveau clic retire le filtre."},
+  {n:23,g:"F",t:"Ligne de résultat",img:"results-row.png",kas:"Une ligne de conférence avec la date, le type, le nom de fichier, la langue, la durée et des liens vers l'audio et les transcriptions.",ieg:"Toutes les informations de la conférence sur une seule ligne — coup d'œil rapide.",kal:"Cliquez sur le lien Mp3 pour ouvrir le fichier audio ; cliquez sur le lien YouTube ou Facebook pour ouvrir la vidéo ; cliquez sur le lien de la transcription pour ouvrir la fenêtre de transcription."},
+  {n:24,g:"F",t:"Pagination",img:"pagination.png",kas:"Parcours des résultats avec les boutons « Précédente », les numéros de page et « Suivante ».",ieg:"Parcourez de grands ensembles de résultats de manière contrôlée, par lots de 10 entrées.",kal:"Cliquez sur un numéro de page ou sur une flèche."},
+  {n:25,g:"G",t:"Popup « Partager la citation »",img:"share-quote-bubble.png",kas:"Un petit popup qui apparaît lorsque vous sélectionnez du texte dans la fenêtre de transcription.",ieg:"Envoyez à un ami exactement votre extrait sélectionné avec la référence précise et le lien.",kal:"Sélectionnez le texte souhaité. Un clic sur 🔗 « Partager la citation » — l'extrait et un lien sont copiés dans le presse-papiers. Lorsque le destinataire ouvre le lien, la transcription s'ouvre sur votre citation mise en évidence."},
+  {n:26,g:"H",t:"Fenêtre « Enregistrer dans la collection »",img:"save-to-popup.png",kas:"Une fenêtre qui apparaît en cliquant sur l'étoile et qui affiche toutes les collections dans lesquelles l'entrée peut être sauvegardée.",ieg:"Organisez vos entrées sauvegardées par thème.",kal:"Cochez les collections auxquelles ajouter l'entrée. Un clic en dehors de la fenêtre la ferme."},
+  {n:27,g:"H",t:"Nouvelle collection",img:"new-collection.png",kas:"Un formulaire de saisie pour créer une nouvelle collection.",ieg:"Regroupez les conférences sauvegardées par thème.",kal:"Cliquez sur « + Nouvelle collection ». Saisissez un nom. Appuyez sur ✓ pour confirmer."},
+  {n:28,g:"H",t:"Sélecteur de collections",img:"collections-picker.png",kas:"Une liste déroulante avec toutes les collections, qui apparaît en cliquant sur le bouton Favoris.",ieg:"Choisissez rapidement la collection à ouvrir.",kal:"Un clic sur une collection charge uniquement ses entrées."},
+  {n:29,g:"I",t:"Mise en page mobile",img:"mobile-layout.png",kas:"La vue complète de l'application sur téléphone (orientation portrait, largeur 375 px).",ieg:"Toutes les fonctions sont confortablement accessibles sur téléphone — utilisez-la n'importe où.",kal:"Ouvrez l'URL de l'app dans le navigateur du téléphone ou installez-la comme PWA (Progressive Web App)."},
+  {n:30,g:"I",t:"Grille de boutons 2×3",img:"mobile-combo-grid.png",kas:"Les 6 boutons combo du haut disposés en deux lignes de trois dans la mise en page mobile.",ieg:"Les 6 boutons principaux restent disponibles même sur un écran étroit.",kal:"Les clics sur les boutons fonctionnent comme dans la version desktop."},
+];
+
+// Render sidebar
+const sideNav = document.getElementById('sideNav');
+GROUPS.forEach((grp, gi) => {
+  const det = document.createElement('details');
+  det.className = 'group-nav';
+  det.dataset.group = grp.letter;
+  if (gi < 3) det.open = true;
+  const sum = document.createElement('summary');
+  sum.textContent = `${grp.letter}. ${grp.name}`;
+  det.appendChild(sum);
+  const ul = document.createElement('ul');
+  ITEMS.filter(it => it.g === grp.letter).forEach(it => {
+    const li = document.createElement('li');
+    const a = document.createElement('a');
+    a.href = `#item-${it.n}`;
+    a.textContent = `${it.n}. ${it.t}`;
+    a.dataset.item = it.n;
+    li.appendChild(a);
+    ul.appendChild(li);
+  });
+  det.appendChild(ul);
+  sideNav.appendChild(det);
+});
+
+// Render content
+const content = document.getElementById('content');
+GROUPS.forEach(grp => {
+  const groupItems = ITEMS.filter(it => it.g === grp.letter);
+  if (!groupItems.length) return;
+  const sec = document.createElement('section');
+  sec.className = 'group-section';
+  sec.id = `group-${grp.letter}`;
+  sec.dataset.group = grp.letter;
+  sec.innerHTML = `<h2><span class="group-letter">${grp.letter}</span>${grp.name}</h2>`;
+  groupItems.forEach((it, idx) => {
+    const prev = ITEMS[ITEMS.indexOf(it) - 1];
+    const next = ITEMS[ITEMS.indexOf(it) + 1];
+    const card = document.createElement('article');
+    card.className = 'card' + (it.g === 'I' ? ' card-tall' : '');
+    card.id = `item-${it.n}`;
+    card.dataset.num = it.n;
+    card.dataset.search = `${it.n} ${it.t} ${it.kas} ${it.ieg} ${it.kal || ''} ${it.svarigi || ''}`.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    card.innerHTML = `
+      <div class="card-header">
+        <span class="card-num">#${it.n}</span>
+        <h3>${it.t}</h3>
+      </div>
+      <img class="card-image" src="images/${it.img}" alt="${it.t}" loading="lazy">
+      <dl>
+        <div class="field"><dt>Quoi</dt><dd>${it.kas}</dd></div>
+        <div class="field"><dt>Avantage</dt><dd>${it.ieg}</dd></div>
+        ${it.kal ? `<div class="field"><dt>Comment l'utiliser</dt><dd>${it.kal}</dd></div>` : ''}
+      </dl>
+      ${it.svarigi ? `<div class="svarigi">⚠ Important ! ${it.svarigi}</div>` : ''}
+      <div class="nav-footer">
+        <a href="${prev ? '#item-' + prev.n : '#'}" class="${prev ? '' : 'disabled'}">${prev ? '← ' + prev.n + '. ' + prev.t : ''}</a>
+        <a href="${next ? '#item-' + next.n : '#'}" class="${next ? '' : 'disabled'}" style="text-align:right;">${next ? next.n + '. ' + next.t + ' →' : ''}</a>
+      </div>
+    `;
+    sec.appendChild(card);
+  });
+  content.appendChild(sec);
+});
+
+// Search filter
+const searchInput = document.getElementById('searchInput');
+const noResults = document.getElementById('noResults');
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  let visible = 0;
+  document.querySelectorAll('.card').forEach(card => {
+    const match = !q || card.dataset.search.includes(q);
+    card.classList.toggle('hidden', !match);
+    if (match) visible++;
+  });
+  document.querySelectorAll('.group-section').forEach(sec => {
+    const anyVisible = sec.querySelectorAll('.card:not(.hidden)').length > 0;
+    sec.classList.toggle('hidden', !anyVisible);
+  });
+  document.querySelectorAll('.group-nav').forEach(gn => {
+    const letter = gn.dataset.group;
+    const anyVisible = document.querySelectorAll(`.card[id^="item-"]:not(.hidden)`);
+    const visibleInGroup = Array.from(anyVisible).filter(c => {
+      const item = ITEMS.find(i => String(i.n) === c.dataset.num);
+      return item && item.g === letter;
+    }).length;
+    gn.style.display = visibleInGroup ? '' : 'none';
+    if (q && visibleInGroup) gn.open = true;
+  });
+  noResults.classList.toggle('show', visible === 0);
+});
+
+// Scroll spy — active sidebar item
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      const num = entry.target.dataset.num;
+      document.querySelectorAll('#sideNav a').forEach(a => {
+        a.classList.toggle('active', a.dataset.item === num);
+      });
+      // Update URL hash without jumping
+      if (history.replaceState) {
+        history.replaceState(null, '', `#item-${num}`);
+      }
+    }
+  });
+}, { rootMargin: '-20% 0px -70% 0px', threshold: 0 });
+
+document.querySelectorAll('.card').forEach(c => observer.observe(c));
+
+// Mobile menu toggle
+const menuToggle = document.getElementById('menuToggle');
+const sidebar = document.getElementById('sidebar');
+menuToggle.addEventListener('click', () => sidebar.classList.toggle('open'));
+document.querySelectorAll('#sideNav a').forEach(a => {
+  a.addEventListener('click', () => {
+    if (window.innerWidth <= 900) sidebar.classList.remove('open');
+  });
+});
+
+// Initial scroll to hash
+if (location.hash) {
+  setTimeout(() => {
+    const el = document.querySelector(location.hash);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 100);
+}
+</script>
+</body>
+</html>

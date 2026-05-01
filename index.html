@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chaitanya Academy — Video & Audio Link Finder</title>
+    <title>Chaitanya Academy — Audio, Video & Transcript Finder</title>
 
     <!-- Open Graph (Telegram, WhatsApp, Facebook link preview) -->
-    <meta property="og:title" content="Chaitanya Academy — Video & Audio Link Finder">
+    <meta property="og:title" content="Chaitanya Academy — Audio, Video & Transcript Finder">
     <meta property="og:description" content="~10 000 MP3 files by Prem Prayojan Prabhu | Transcripts EN/LV/RU | ~10 000 MP3 файлов | Транскрипты EN/LV/RU">
     <meta property="og:image" content="https://gurudas-sda.github.io/ca-link-finder/og-image.png?v=8">
     <meta property="og:image:width" content="1200">
@@ -14,7 +14,7 @@
     <meta property="og:type" content="website">
     <!-- Twitter Card (also used by Telegram) -->
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Chaitanya Academy — Video & Audio Link Finder">
+    <meta name="twitter:title" content="Chaitanya Academy — Audio, Video & Transcript Finder">
     <meta name="twitter:description" content="~10 000 MP3 files by Prem Prayojan Prabhu | Transcripts EN/LV/RU | ~10 000 MP3 файлов | Транскрипты EN/LV/RU">
     <meta name="twitter:image" content="https://gurudas-sda.github.io/ca-link-finder/og-image.png?v=8">
 
@@ -42,16 +42,13 @@
     <script defer src="https://cloud.umami.is/script.js" data-website-id="e50b4fd4-578a-4674-944d-4fefcb6999e1"></script>
 
     <!-- Application CSS -->
-    <link rel="stylesheet" href="css/styles.css?v=e224e6e2">
+    <link rel="stylesheet" href="css/styles.css?v=4017bce7">
 </head>
 <body>
 
     <!-- ===== HERO SECTION ===== -->
     <div class="hero">
-        <div class="top-left-buttons">
-            <button onclick="PPP.app.showSources()" data-i18n="listOfSources">List Of Sources</button>
-            <div id="sourcesList"></div>
-        </div>
+        <button class="theme-toggle" id="themeToggle" onclick="PPP.app.toggleTheme()" title="Dark / Light mode">☀️</button>
         <!-- Chaitanya Academy Logo (SVG mandala + text) -->
         <div class="logo-wrap">
             <svg class="logo-mandala" viewBox="44 50 96 95" xmlns="http://www.w3.org/2000/svg">
@@ -81,12 +78,13 @@
                 <circle cx="90.5" cy="136.7" r="2.1" fill="#d13931"/>
             </svg>
             <div class="logo-text-block">
-                <div class="logo-title">CHAIT<span class="accent">A</span>NYA<br>ACADEMY</div>
+                <div class="logo-title">CHAIT<span class="accent">A<span class="accent-mark">&#x0301;</span></span>NYA<br>ACADEMY</div>
                 <div class="logo-subtitle">for the study of consciousness</div>
             </div>
         </div>
 
         <div class="language-switcher">
+            <button class="features-btn" onclick="PPP.app.openGuide()" data-i18n="featuresBtn">Features</button>
             <button class="lang-btn active" onclick="PPP.app.setLanguage('en')" data-lang="en">EN</button>
             <button class="lang-btn" onclick="PPP.app.setLanguage('ru')" data-lang="ru">RU</button>
             <button class="lang-btn" onclick="PPP.app.setLanguage('lv')" data-lang="lv">LV</button>
@@ -95,7 +93,7 @@
             <button class="lang-btn" onclick="PPP.app.setLanguage('es')" data-lang="es">ES</button>
         </div>
 
-        <h1 data-i18n="pageTitle">Video & Audio Link Finder</h1>
+        <h1 data-i18n="pageTitle">Audio, Video & Transcript Finder</h1>
         <div id="connectionStatus"></div>
     </div>
 
@@ -110,30 +108,25 @@
 
     <!-- ===== SEARCH SECTION ===== -->
     <div class="search-section">
-        <div id="recommendationsList" style="display: none; position: absolute; right: calc(100% + 8px); top: 0; z-index: 1000; width: 420px;"></div>
-            <div id="verseSourcesList" style="display: none; position: absolute; left: calc(100% + 8px); top: 0; z-index: 1000; width: 420px;"></div>
-            <div id="verseList" style="display: none; position: absolute; left: calc(100% + 8px); top: 0; z-index: 1000; width: 480px;"></div>
         <div class="search-card">
-            <div class="search-quick-buttons">
-                <button class="latest-files-btn" onclick="PPP.app.showLatestFiles()" data-i18n="latest20Files">20 latest files</button>
-                <button class="recommendations-btn" onclick="PPP.app.showRecommendations()" data-i18n="recommendations">Recommendations</button>
-            </div>
-            <!-- Search mode toggle: Mp3 files | Quotes (all) | Quotes (Top 108) | Themes -->
-            <div class="search-mode-toggle">
-                <button class="search-mode-btn active" data-mode="metadata" data-i18n="searchModeMetadata">Mp3 files</button>
-                <button class="search-mode-btn" data-mode="citations" data-i18n="searchModeCitations">Quotes (all)</button>
-                <button class="search-mode-btn" data-mode="citationsTop" data-i18n="searchModeCitationsTop">Quotes (Top 108)</button>
-                <button class="search-mode-btn" data-mode="concepts" data-i18n="searchModeConcepts">Themes</button>
+            <!-- Unified button row: Key words | 20 latest by date | Top Searches | Verses (all) | Verses (Top) -->
+            <div class="search-quick-buttons main-button-row">
+                <button class="combo-btn combo-btn-1" onclick="PPP.app.showBy2026()" data-i18n="by2026">By 2026</button>
+                <button class="combo-btn combo-btn-2" onclick="PPP.app.showLatestFiles()" data-i18n="latest20Files">By Added</button>
+                <button class="combo-btn combo-btn-3" onclick="PPP.app.showRecommendations()" data-i18n="recommendations">Top Searches</button>
+                <button class="combo-btn combo-btn-4 search-mode-btn" data-mode="citations" data-i18n="searchModeCitations">By Verses</button>
+                <button class="combo-btn combo-btn-5 search-mode-btn" data-mode="citationsTop" data-i18n="searchModeCitationsTop">Verses (Top)</button>
+                <button class="combo-btn combo-btn-6" id="favoritesBtn" onclick="PPP.app.showFavorites()">&#9733; Favorites <span id="favCount" class="fav-count-badge" style="display:none"></span></button>
             </div>
             <div class="search-row">
-                <button class="help-search-btn" onclick="PPP.app.openHelpModal()" data-i18n="helpButton">How to use search?</button>
+                <button class="search-mode-btn active keywords-search-btn" data-mode="metadata" data-i18n="searchModeMetadata">Key words</button>
                 <div class="search-bar" style="flex:1;">
                     <input type="text" id="searchTerm" placeholder="Loading..." disabled>
                     <button class="search-button" onclick="PPP.app.search()" data-i18n="searchButton">Search</button>
                 </div>
             </div>
             <div class="search-time">
-                <span data-i18n="searchTime">Client-side search — instant results.</span>
+                <button class="help-search-btn help-search-btn-small" onclick="PPP.app.openHelpModal()" data-i18n="helpButton">How to use search?</button>
                 <span id="timer" class="timer"></span>
             </div>
             <div id="resultsInfo"></div>
@@ -151,11 +144,25 @@
     <!-- ===== RESULTS ===== -->
     <div class="results-container">
         <div style="position: relative;">
-            <div id="topicsList" style="display: none; position: absolute; right: 0; top: 40px; z-index: 1000;"></div>
+            <!-- Mobile swipe hint (portrait only, first visit) -->
+            <div id="swipeHintMobile" aria-hidden="true">
+                <span class="swipe-hint-arrow">&larr;</span>
+                <span class="swipe-hint-text" data-i18n="swipeHintText">Swipe to see the transcripts</span>
+            </div>
+            <div id="recommendationsList" style="display: none;"></div>
+            <div id="topicsList" style="display: none;"></div>
+            <div id="verseSourcesList" style="display: none;"></div>
+            <div id="verseList" style="display: none;"></div>
+            <div id="topCitationsList" style="display: none;"></div>
+            <div class="top-left-buttons">
+                <div id="dbLastUpdate" style="display:none;"></div>
+                <button onclick="PPP.app.showSources()" data-i18n="listOfSources">List Of Sources</button>
+                <div id="sourcesList"></div>
+            </div>
             <table id="resultsTable">
                 <tbody>
                     <tr>
-                        <td colspan="11" class="empty-result-message" data-i18n="enterSearchTerms">Enter search terms to see results</td>
+                        <td colspan="13" class="empty-result-message" data-i18n="enterSearchTerms">Enter search terms to see results</td>
                     </tr>
                 </tbody>
             </table>
@@ -179,6 +186,7 @@
         <div class="transcript-modal" onclick="event.stopPropagation()">
             <div class="transcript-modal-header">
                 <h2 id="transcriptModalTitle">Transcript</h2>
+                <a id="transcriptDownloadBtn" class="transcript-download-btn" href="#" target="_blank" rel="noopener" style="display:none;" title="Download">&#8615; Download</a>
                 <button class="help-modal-close" onclick="PPP.app.closeTranscriptModal()">&times;</button>
             </div>
             <div class="transcript-modal-body" id="transcriptModalBody"></div>
@@ -187,12 +195,13 @@
 
     <!-- ===== APPLICATION SCRIPTS ===== -->
     <!-- Load order matters: utils first, then i18n, db, search, ui, app last -->
-    <script src="js/utils.js?v=ae5fdbad"></script>
-    <script src="js/i18n.js?v=21d04ffa"></script>
-    <script src="js/db.js?v=368d7754"></script>
-    <script src="js/search.js?v=9b9fe422"></script>
-    <script src="js/ui.js?v=3834d262"></script>
-    <script src="js/app.js?v=a166a87b"></script>
+    <script src="js/utils.js?v=dcd92397"></script>
+    <script src="js/i18n.js?v=2a2010c9"></script>
+    <script src="js/db.js?v=5a8d28b2"></script>
+    <script src="js/search.js?v=dd27dfbf"></script>
+    <script src="js/ui.js?v=413d2cd9"></script>
+    <script src="js/favorites.js?v=1"></script>
+    <script src="js/app.js?v=c3e815d7"></script>
 
 </body>
 </html>

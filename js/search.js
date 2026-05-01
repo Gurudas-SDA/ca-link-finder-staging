@@ -429,53 +429,11 @@ PPP.search = (function () {
         return { sql: sql, params: params, mode: 'citations' };
     }
 
-    /**
-     * Build SQL query for concept search using LIKE on concept_summary_norm column.
-     * Returns {sql: string, params: object}.
-     * Note: concepts table is in a separate DB — lecture metadata must be joined in JS.
-     */
-    function buildConceptSQL(parsed) {
-        var params = {};
-        var paramIdx = 0;
-
-        if (!parsed.orGroups || parsed.orGroups.length === 0) {
-            return { sql: "SELECT * FROM concepts LIMIT 0", params: {} };
-        }
-
-        var conditions = [];
-        parsed.orGroups.forEach(function (group) {
-            var groupConds = group.map(function (term) {
-                var normalized = utils.removeDiacritics(term.toLowerCase());
-                var words = normalized.split(/\s+/).filter(Boolean);
-                if (words.length <= 1) {
-                    var key = '$cc' + (paramIdx++);
-                    params[key] = '%' + normalized + '%';
-                    return "c.concept_summary_norm LIKE " + key;
-                }
-                var wordConds = words.map(function (word) {
-                    var key = '$cc' + (paramIdx++);
-                    params[key] = '%' + word + '%';
-                    return "c.concept_summary_norm LIKE " + key;
-                });
-                return "(" + wordConds.join(" AND ") + ")";
-            });
-            conditions.push('(' + groupConds.join(' OR ') + ')');
-        });
-
-        var where = conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : '';
-        var sql = 'SELECT c.chunk_id, c.lecture_nr, c.block_num, c.text, c.concept_summary, c.word_count' +
-                  ' FROM concepts c' + where +
-                  ' ORDER BY c.lecture_nr, c.block_num LIMIT 200';
-
-        return { sql: sql, params: params };
-    }
-
     return {
         parseSearchQuery: parseSearchQuery,
         buildMetaSQL: buildMetaSQL,
         buildTranscriptSQL: buildTranscriptSQL,
         buildCitationSQL: buildCitationSQL,
-        buildConceptSQL: buildConceptSQL,
         searchInMemory: searchInMemory,
         SEARCH_COLS: SEARCH_COLS,
         HIDDEN_COLS: HIDDEN_COLS

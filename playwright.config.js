@@ -7,7 +7,7 @@ module.exports = defineConfig({
   retries: 1,            // Retry once on failure (network flakiness)
   reporter: [['list'], ['json', { outputFile: 'test-results.json' }]],
   use: {
-    baseURL: 'https://gurudas-sda.github.io/ca-link-finder/',
+    baseURL: 'https://gurudas-sda.github.io/ca-link-finder-staging/',
     screenshot: 'only-on-failure',
     trace: 'off',
   },
