@@ -159,8 +159,9 @@ PPP.app = (function () {
         // Load data — try SQLite first, fall back to XLSX/CSV
         loadData();
 
-        // Install banner (delayed)
+        // Install banner (delayed) — skip in automated browsers (Playwright tests etc.)
         setTimeout(function () {
+            if (navigator.webdriver) return;
             var isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
             var dismissed = localStorage.getItem('installDismissed');
             var banner = document.getElementById('installBanner');
