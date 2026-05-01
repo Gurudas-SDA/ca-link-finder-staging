@@ -284,21 +284,32 @@ PPP.ui = (function () {
                     }
                 } else if (col === 'Length') {
                     td.textContent = utils.formatLength(val);
-                } else if (col === 'Original file name' && nr && hasSummary(nr)) {
-                    // Klikšķināms nosaukums ja ir Summary_IAST
-                    var link = document.createElement('a');
-                    link.href = '#';
-                    link.innerHTML = highlightSearchTerms(val, searchTerms);
-                    link.style.cssText = 'color:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;';
-                    link.setAttribute('data-nr', nr);
-                    link.setAttribute('data-name', val);
-                    link.onclick = function (e) {
-                        e.preventDefault();
-                        var el = e.currentTarget;
-                        openSummaryModal(el.getAttribute('data-name'), el.getAttribute('data-nr'));
-                    };
-                    td.appendChild(link);
-                    if (matchHints) {
+                } else if (col === 'Original file name') {
+                    var lectureHasSummary = nr && hasSummary(nr);
+                    if (lectureHasSummary) {
+                        var link = document.createElement('a');
+                        link.href = '#';
+                        link.innerHTML = highlightSearchTerms(val, searchTerms);
+                        link.style.cssText = 'color:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;';
+                        link.setAttribute('data-nr', nr);
+                        link.setAttribute('data-name', val);
+                        link.onclick = function (e) {
+                            e.preventDefault();
+                            var el = e.currentTarget;
+                            openSummaryModal(el.getAttribute('data-name'), el.getAttribute('data-nr'));
+                        };
+                        td.appendChild(link);
+                    } else {
+                        td.innerHTML = highlightSearchTerms(val, searchTerms);
+                    }
+                    // Tags_IAST zem nosaukuma (aizvieto match-hint)
+                    var tagsText = nr ? getTags(nr) : '';
+                    if (tagsText) {
+                        var tagSpan = document.createElement('span');
+                        tagSpan.className = 'match-hint';
+                        tagSpan.textContent = tagsText;
+                        td.appendChild(tagSpan);
+                    } else if (matchHints) {
                         var hints = matchHints.get(row);
                         if (hints && hints.length > 0) {
                             var span = document.createElement('span');
@@ -309,16 +320,6 @@ PPP.ui = (function () {
                     }
                 } else {
                     td.innerHTML = highlightSearchTerms(val, searchTerms);
-                    // Add hidden column match hint
-                    if (col === 'Original file name' && matchHints) {
-                        var hints = matchHints.get(row);
-                        if (hints && hints.length > 0) {
-                            var span = document.createElement('span');
-                            span.className = 'match-hint';
-                            span.textContent = hints.join('; ');
-                            td.appendChild(span);
-                        }
-                    }
                 }
             }
         }
@@ -790,34 +791,44 @@ PPP.ui = (function () {
         stars.forEach(function (s) { s.classList.toggle('active', isFav); });
     }
 
-    var _summariesCache = null;
-    var _summariesLoading = null;
+    var _extrasCache = null;
+    var _extrasLoading = null;
 
-    function loadSummaries() {
-        if (_summariesCache) return Promise.resolve(_summariesCache);
-        if (_summariesLoading) return _summariesLoading;
-        _summariesLoading = fetch('data/ppp_summaries.json')
+    function loadExtras() {
+        if (_extrasCache) return Promise.resolve(_extrasCache);
+        if (_extrasLoading) return _extrasLoading;
+        _extrasLoading = fetch('data/ppp_lecture_extras.json')
             .then(function (r) { return r.ok ? r.json() : {}; })
             .then(function (data) {
-                _summariesCache = data || {};
-                _summariesLoading = null;
-                return _summariesCache;
+                _extrasCache = data || {};
+                _extrasLoading = null;
+                return _extrasCache;
             })
             .catch(function () {
-                _summariesCache = {};
-                _summariesLoading = null;
-                return _summariesCache;
+                _extrasCache = {};
+                _extrasLoading = null;
+                return _extrasCache;
             });
-        return _summariesLoading;
+        return _extrasLoading;
+    }
+
+    function getExtras(nr) {
+        if (!_extrasCache || !nr) return null;
+        return _extrasCache[String(nr)] || null;
     }
 
     function hasSummary(nr) {
-        if (!_summariesCache || !nr) return false;
-        return !!_summariesCache[String(nr)];
+        var e = getExtras(nr);
+        return !!(e && e.s);
     }
 
-    // Pre-load summaries early (fire & forget)
-    loadSummaries();
+    function getTags(nr) {
+        var e = getExtras(nr);
+        return (e && e.t) || '';
+    }
+
+    // Pre-load early (fire & forget)
+    loadExtras();
 
     function openSummaryModal(title, lectureNr) {
         var overlay = document.getElementById('summaryModalOverlay');
@@ -828,9 +839,9 @@ PPP.ui = (function () {
         bodyEl.textContent = '…';
         overlay.style.display = 'flex';
         document.body.style.overflow = 'hidden';
-        loadSummaries().then(function (data) {
-            var text = data[lectureNr] || data[String(parseInt(lectureNr, 10))] || '';
-            bodyEl.textContent = text || '(nav kopsavilkuma)';
+        loadExtras().then(function () {
+            var e = getExtras(lectureNr);
+            bodyEl.textContent = (e && e.s) || '(nav kopsavilkuma)';
         }).catch(function () {
             bodyEl.textContent = '(kļūda ielādējot kopsavilkumu)';
         });
