@@ -333,7 +333,21 @@ PPP.ui = (function () {
             tdDate.textContent = row.date || row.Date || '';
 
             var tdName = tr.insertCell();
-            tdName.textContent = row.original_file_name || row['Original file name'] || '';
+            var lectureName = row.original_file_name || row['Original file name'] || '';
+            var summaryText = row.summary_iast || row['Summary_IAST'] || '';
+            if (summaryText) {
+                var link = document.createElement('a');
+                link.href = '#';
+                link.textContent = lectureName;
+                link.style.cssText = 'color:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;';
+                link.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    PPP.ui.openSummaryModal(lectureName, summaryText);
+                });
+                tdName.appendChild(link);
+            } else {
+                tdName.textContent = lectureName;
+            }
 
             var tdSnippet = tr.insertCell();
             var text = row.text_content || row.text || row.content || '';
@@ -753,6 +767,25 @@ PPP.ui = (function () {
         stars.forEach(function (s) { s.classList.toggle('active', isFav); });
     }
 
+    function openSummaryModal(title, summary) {
+        var overlay = document.getElementById('summaryModalOverlay');
+        var titleEl = document.getElementById('summaryModalTitle');
+        var bodyEl = document.getElementById('summaryModalBody');
+        if (!overlay) return;
+        titleEl.textContent = title;
+        bodyEl.textContent = summary;
+        overlay.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeSummaryModal(e) {
+        var overlay = document.getElementById('summaryModalOverlay');
+        if (!overlay) return;
+        if (e && e.target !== overlay) return;
+        overlay.style.display = 'none';
+        document.body.style.overflow = '';
+    }
+
     return {
         renderResults: renderResults,
         renderTranscriptResults: renderTranscriptResults,
@@ -768,6 +801,8 @@ PPP.ui = (function () {
         hideLoading: hideLoading,
         updateProgress: updateProgress,
         getColumnHeader: getColumnHeader,
-        columnHeaders: columnHeaders
+        columnHeaders: columnHeaders,
+        openSummaryModal: openSummaryModal,
+        closeSummaryModal: closeSummaryModal
     };
 })();

@@ -193,6 +193,17 @@
         </div>
     </div>
 
+    <!-- Summary Modal -->
+    <div class="transcript-modal-overlay" id="summaryModalOverlay" onclick="PPP.ui.closeSummaryModal(event)">
+        <div class="transcript-modal" onclick="event.stopPropagation()">
+            <div class="transcript-modal-header">
+                <h2 id="summaryModalTitle"></h2>
+                <button class="help-modal-close" onclick="PPP.ui.closeSummaryModal()">&times;</button>
+            </div>
+            <div class="transcript-modal-body" id="summaryModalBody" style="font-size:15px;line-height:1.7;"></div>
+        </div>
+    </div>
+
     <!-- ===== APPLICATION SCRIPTS ===== -->
     <!-- Load order matters: utils first, then i18n, db, search, ui, app last -->
     <script src="js/utils.js?v=dcd92397"></script>
