@@ -335,8 +335,7 @@ PPP.ui = (function () {
             var tdName = tr.insertCell();
             var lectureName = row.original_file_name || row['Original file name'] || '';
             var lectureNr = row.nr || row['Nr.'] || '';
-            var hasSummary = !!(row.tags_iast || row['Tags_IAST']);
-            if (hasSummary && lectureNr) {
+            if (lectureNr && hasSummary(lectureNr)) {
                 var link = document.createElement('a');
                 link.href = '#';
                 link.textContent = lectureName;
@@ -775,14 +774,27 @@ PPP.ui = (function () {
         if (_summariesCache) return Promise.resolve(_summariesCache);
         if (_summariesLoading) return _summariesLoading;
         _summariesLoading = fetch('data/ppp_summaries.json')
-            .then(function (r) { return r.json(); })
+            .then(function (r) { return r.ok ? r.json() : {}; })
             .then(function (data) {
-                _summariesCache = data;
+                _summariesCache = data || {};
                 _summariesLoading = null;
-                return data;
+                return _summariesCache;
+            })
+            .catch(function () {
+                _summariesCache = {};
+                _summariesLoading = null;
+                return _summariesCache;
             });
         return _summariesLoading;
     }
+
+    function hasSummary(nr) {
+        if (!_summariesCache || !nr) return false;
+        return !!_summariesCache[String(nr)];
+    }
+
+    // Pre-load summaries early (fire & forget)
+    loadSummaries();
 
     function openSummaryModal(title, lectureNr) {
         var overlay = document.getElementById('summaryModalOverlay');
