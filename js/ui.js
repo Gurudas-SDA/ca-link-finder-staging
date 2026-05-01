@@ -302,21 +302,13 @@ PPP.ui = (function () {
                     } else {
                         td.innerHTML = highlightSearchTerms(val, searchTerms);
                     }
-                    // Tags_IAST zem nosaukuma (aizvieto match-hint)
+                    // Tikai Tags_IAST zem nosaukuma (nav citu kolonnu hint)
                     var tagsText = nr ? getTags(nr) : '';
                     if (tagsText) {
                         var tagSpan = document.createElement('span');
                         tagSpan.className = 'match-hint';
                         tagSpan.textContent = tagsText;
                         td.appendChild(tagSpan);
-                    } else if (matchHints) {
-                        var hints = matchHints.get(row);
-                        if (hints && hints.length > 0) {
-                            var span = document.createElement('span');
-                            span.className = 'match-hint';
-                            span.textContent = hints.join('; ');
-                            td.appendChild(span);
-                        }
                     }
                 } else {
                     td.innerHTML = highlightSearchTerms(val, searchTerms);
