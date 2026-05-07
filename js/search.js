@@ -203,40 +203,6 @@ PPP.search = (function () {
     }
 
     /**
-     * Build SQL query for transcript search using LIKE on pre-normalized text_content_norm column.
-     * Returns {sql: string, params: object}.
-     */
-    function buildTranscriptSQL(parsed) {
-        var params = {};
-        var paramIdx = 0;
-
-        // Check if there are any free-text terms to search
-        if (!parsed.orGroups || parsed.orGroups.length === 0) {
-            return { sql: "SELECT * FROM transcripts LIMIT 0", params: {} };
-        }
-
-        // Use LIKE on pre-normalized text_content_norm column (diacritics already removed, lowercased)
-        // Split each term into individual words so "Radharani prema" becomes two separate LIKE conditions
-        var conditions = [];
-        parsed.orGroups.forEach(function (group) {
-            var groupConds = group.map(function (term) {
-                var normalized = utils.removeDiacritics(term.toLowerCase());
-                // Phrase match — entire term as one literal substring
-                var key = '$tt' + (paramIdx++);
-                params[key] = '%' + normalized + '%';
-                return "t.text_content_norm LIKE " + key;
-            });
-            conditions.push('(' + groupConds.join(' OR ') + ')');
-        });
-
-        var where = conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : '';
-        // No JOIN — transcripts DB has no lectures table. Lecture metadata is enriched by app.js from meta DB.
-        var sql = 'SELECT t.nr, t.text_content, t.char_count, t.word_count FROM transcripts t' + where + ' LIMIT 100';
-
-        return { sql: sql, params: params };
-    }
-
-    /**
      * In-memory search (backward compatibility with XLSX/CSV loaded data).
      * Same logic as original performSearch().
      */
@@ -423,7 +389,6 @@ PPP.search = (function () {
     return {
         parseSearchQuery: parseSearchQuery,
         buildMetaSQL: buildMetaSQL,
-        buildTranscriptSQL: buildTranscriptSQL,
         buildCitationSQL: buildCitationSQL,
         searchInMemory: searchInMemory,
         SEARCH_COLS: SEARCH_COLS,
