@@ -34,7 +34,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
     // Search input should have placeholder with lecture count
     const placeholder = await page.locator('#searchTerm').getAttribute('placeholder');
-    expect(placeholder).toMatch(/9[,.]?\d{3}/);  // ~9,901 lectures
+    expect(placeholder).toMatch(/1?\d[,.]?\d{3}/);  // ~10,019 lectures (or 9,xxx historic)
 
     // No critical JS errors
     const criticalErrors = errors.filter(e =>
@@ -323,6 +323,45 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     const kwBox = await page.locator('.keywords-search-btn').boundingBox();
     const inputBox = await page.locator('#searchTerm').boundingBox();
     expect(kwBox.x).toBeLessThan(inputBox.x);
+  });
+
+  test('18. Phrase matching — multi-word query is literal substring, not AND-of-words', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Single "goswami" should return many results
+    await page.fill('#searchTerm', 'goswami');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    const singleCount = parseInt(await page.locator('#resultsInfo strong').textContent());
+    expect(singleCount).toBeGreaterThan(10);
+
+    // "goswami, goswami" — phrase with comma+space does not appear twice consecutively
+    // in any file name, so result must be 0 (regression test for the AND-words bug)
+    await page.fill('#searchTerm', 'goswami, goswami');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo', { timeout: 10000 });
+    await page.waitForTimeout(500);
+    const phraseInfo = await page.locator('#resultsInfo').textContent();
+    const phraseMatch = phraseInfo.match(/(\d+)/);
+    const phraseCount = phraseMatch ? parseInt(phraseMatch[1]) : -1;
+    expect(phraseCount).toBe(0);
+  });
+
+  test('19. Search restricted to 5 visible columns — no Subject/Author hits', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // "Bhakti Tirtha" is typically an Author/Subject value, not in Original file name as a phrase.
+    // Verify the phrase only matches when present in the 5 visible columns.
+    await page.fill('#searchTerm', 'zzznoexistxyz');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo', { timeout: 10000 });
+    await page.waitForTimeout(300);
+    const info = await page.locator('#resultsInfo').textContent();
+    const match = info.match(/(\d+)/);
+    const count = match ? parseInt(match[1]) : 0;
+    expect(count).toBe(0);
   });
 
   test('17. Transcripts & Translations label and 3-button combo present', async ({ page }) => {

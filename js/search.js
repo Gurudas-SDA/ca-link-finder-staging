@@ -10,8 +10,8 @@ PPP.search = (function () {
 
     var utils = PPP.utils;
 
-    // Columns for free-text search (same as original SEARCH_COLS)
-    var SEARCH_COLS = ['Date', 'Type', 'Original file name', 'Country', 'Lang.', 'Links', 'Dwnld.', 'Length', 'Script_EN', 'Script_LV', 'Script_RU'];
+    // Columns for free-text search — restricted to: Date, Type, Original file name, Country, Lang.
+    var SEARCH_COLS = ['Date', 'Type', 'Original file name', 'Country', 'Lang.'];
 
     // Hidden columns that provide match hints
     var HIDDEN_COLS = ['Subject', 'Subtype', 'Books', 'Author', 'Bhajans', 'Personality'];
@@ -96,12 +96,19 @@ PPP.search = (function () {
             conditions.push('(' + srcConds.join(' OR ') + ')');
         }
 
-        // subject: filter (OR, case-sensitive exact match)
+        // subject: filter (OR, case-sensitive — matches exact or as one of `;`-separated tags)
         if (parsed.filters.subject.length > 0) {
             var subjConds = parsed.filters.subject.map(function (t) {
-                var key = '$subj' + (paramIdx++);
-                params[key] = t.slice(8).trim();
-                return "l.subject = " + key;
+                var v = t.slice(8).trim();
+                var kE = '$subjE' + (paramIdx++);
+                var kS = '$subjS' + (paramIdx++);
+                var kM = '$subjM' + (paramIdx++);
+                var kT = '$subjT' + (paramIdx++);
+                params[kE] = v;             // exact
+                params[kS] = v + ';%';      // starts: "tag; ..."
+                params[kM] = '%; ' + v + ';%'; // middle: "...; tag; ..."
+                params[kT] = '%; ' + v;     // tail:  "...; tag"
+                return "(l.subject = " + kE + " OR l.subject LIKE " + kS + " OR l.subject LIKE " + kM + " OR l.subject LIKE " + kT + ")";
             });
             conditions.push('(' + subjConds.join(' OR ') + ')');
         }
@@ -119,13 +126,17 @@ PPP.search = (function () {
             conditions.push('(' + langConds.join(' OR ') + ')');
         }
 
-        // has: filter (AND, check non-empty columns)
+        // has: filter (AND, check non-empty columns; excludes duplicate-labeled transcripts)
         parsed.filters.has.forEach(function (t) {
             var colName = utils.normalizeHasColumn(t.slice(4));
             // Map column names to SQLite column names (lowercase, underscored)
             var sqlCol = columnToSqlName(colName);
             if (sqlCol) {
-                conditions.push("(l." + sqlCol + " IS NOT NULL AND l." + sqlCol + " != '' AND l." + sqlCol + " != 'N/A' AND l." + sqlCol + " != '0')");
+                var cond = "(l." + sqlCol + " IS NOT NULL AND l." + sqlCol + " != '' AND l." + sqlCol + " != 'N/A' AND l." + sqlCol + " != '0')";
+                if (colName === 'Script_EN' || colName === 'Script_LV' || colName === 'Script_RU') {
+                    cond += " AND l." + sqlCol + " NOT IN ('Duplicate', 'Dublikāts', 'Дубликат')";
+                }
+                conditions.push(cond);
             }
         });
 
@@ -170,30 +181,16 @@ PPP.search = (function () {
             parsed.orGroups.forEach(function (group) {
                 var groupConds = group.map(function (term) {
                     var normalized = utils.removeDiacritics(term.toLowerCase());
-                    // Split into words — each word must match independently
-                    var words = normalized.split(/\s+/).filter(Boolean);
-
                     var normCols = [
-                        "l.original_file_name_norm", "l.subject_norm", "l.type_norm",
-                        "l.subtype_norm", "l.books_norm", "l.author_norm",
-                        "l.bhajans_norm", "l.personality_norm", "l.country_norm",
+                        "l.original_file_name_norm", "l.type_norm",
+                        "l.country_norm",
                         "LOWER(l.date)", "LOWER(l.lang)"
                     ];
-
-                    if (words.length <= 1) {
-                        var key = '$ft' + (paramIdx++);
-                        params[key] = '%' + normalized + '%';
-                        var colChecks = normCols.map(function (col) { return col + " LIKE " + key; });
-                        return "(" + colChecks.join(" OR ") + ")";
-                    }
-                    // Multiple words: each word must match in at least one column
-                    var wordConds = words.map(function (word) {
-                        var key = '$ft' + (paramIdx++);
-                        params[key] = '%' + word + '%';
-                        var colChecks = normCols.map(function (col) { return col + " LIKE " + key; });
-                        return "(" + colChecks.join(" OR ") + ")";
-                    });
-                    return "(" + wordConds.join(" AND ") + ")";
+                    // Phrase match — entire term as one literal substring
+                    var key = '$ft' + (paramIdx++);
+                    params[key] = '%' + normalized + '%';
+                    var colChecks = normCols.map(function (col) { return col + " LIKE " + key; });
+                    return "(" + colChecks.join(" OR ") + ")";
                 });
                 conditions.push('(' + groupConds.join(' OR ') + ')');
             });
@@ -224,20 +221,10 @@ PPP.search = (function () {
         parsed.orGroups.forEach(function (group) {
             var groupConds = group.map(function (term) {
                 var normalized = utils.removeDiacritics(term.toLowerCase());
-                // Split into words — each word must match independently
-                var words = normalized.split(/\s+/).filter(Boolean);
-                if (words.length <= 1) {
-                    var key = '$tt' + (paramIdx++);
-                    params[key] = '%' + normalized + '%';
-                    return "t.text_content_norm LIKE " + key;
-                }
-                // Multiple words: each must be present (AND within the term)
-                var wordConds = words.map(function (word) {
-                    var key = '$tt' + (paramIdx++);
-                    params[key] = '%' + word + '%';
-                    return "t.text_content_norm LIKE " + key;
-                });
-                return "(" + wordConds.join(" AND ") + ")";
+                // Phrase match — entire term as one literal substring
+                var key = '$tt' + (paramIdx++);
+                params[key] = '%' + normalized + '%';
+                return "t.text_content_norm LIKE " + key;
             });
             conditions.push('(' + groupConds.join(' OR ') + ')');
         });
@@ -264,10 +251,14 @@ PPP.search = (function () {
                 if (!parsed.filters.source.some(function (t) { return rowSource.includes(t.slice(1).toLowerCase()); })) return false;
             }
 
-            // subject: case-SENSITIVE exact match, OR
+            // subject: case-SENSITIVE — match exact or as one of `;`-separated tags
             if (parsed.filters.subject.length > 0) {
                 var rowSubject = (row['Subject'] || '').trim();
-                if (!parsed.filters.subject.some(function (t) { return rowSubject === t.slice(8).trim(); })) return false;
+                var rowSubjectTags = rowSubject.split(/\s*;\s*/);
+                if (!parsed.filters.subject.some(function (t) {
+                    var v = t.slice(8).trim();
+                    return rowSubject === v || rowSubjectTags.indexOf(v) !== -1;
+                })) return false;
             }
 
             // lang: exact or starts-with + ";", OR
@@ -301,7 +292,7 @@ PPP.search = (function () {
             if (parsed.filters.has.length > 0) {
                 if (!parsed.filters.has.every(function (t) {
                     var colName = utils.normalizeHasColumn(t.slice(4));
-                    return utils.cellHasLink(row[colName], colName, row);
+                    return utils.cellHasOriginalLink(row[colName], colName, row);
                 })) return false;
             }
 
