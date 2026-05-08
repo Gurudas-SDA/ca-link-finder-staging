@@ -98,13 +98,14 @@ PPP.app = (function () {
         si.removeAttribute('title');
 
         var tip = _ensureComboTooltipEl();
-        tip.textContent = i18n.t('comboDisplayTooltip');
 
         // Detach any previous handlers
         if (_comboTooltipEnter) si.removeEventListener('mouseenter', _comboTooltipEnter);
         if (_comboTooltipLeave) si.removeEventListener('mouseleave', _comboTooltipLeave);
 
         _comboTooltipEnter = function () {
+            // Read translation on each show — picks up the active language
+            tip.textContent = i18n.t('comboDisplayTooltip');
             tip.classList.add('visible');
             _positionComboTooltip(si);
         };
