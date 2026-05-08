@@ -60,13 +60,59 @@ PPP.app = (function () {
     var totalLectures = 0;
 
     // ===== COMBO DISPLAY HELPERS =====
+    var _comboTooltipEl = null;
+    var _comboTooltipEnter = null;
+    var _comboTooltipLeave = null;
+
+    function _ensureComboTooltipEl() {
+        if (_comboTooltipEl) return _comboTooltipEl;
+        _comboTooltipEl = document.createElement('div');
+        _comboTooltipEl.className = 'combo-display-tooltip';
+        _comboTooltipEl.setAttribute('role', 'tooltip');
+        document.body.appendChild(_comboTooltipEl);
+        return _comboTooltipEl;
+    }
+
+    function _positionComboTooltip(si) {
+        if (!_comboTooltipEl) return;
+        var rect = si.getBoundingClientRect();
+        var tipRect = _comboTooltipEl.getBoundingClientRect();
+        var top = window.scrollY + rect.bottom + 8;
+        var left = window.scrollX + rect.left + (rect.width / 2) - (tipRect.width / 2);
+        // Clamp to viewport horizontally
+        var minLeft = window.scrollX + 8;
+        var maxLeft = window.scrollX + document.documentElement.clientWidth - tipRect.width - 8;
+        if (left < minLeft) left = minLeft;
+        if (left > maxLeft) left = maxLeft;
+        _comboTooltipEl.style.top = top + 'px';
+        _comboTooltipEl.style.left = left + 'px';
+    }
+
     function setComboDisplay(label) {
         var si = document.getElementById('searchTerm');
         if (!si) return;
         si.value = label;
         si.disabled = true;
         si.classList.add('combo-display');
-        si.title = i18n.t('comboDisplayTooltip');
+        // Native title cleared — using custom persistent tooltip below
+        si.removeAttribute('title');
+
+        var tip = _ensureComboTooltipEl();
+        tip.textContent = i18n.t('comboDisplayTooltip');
+
+        // Detach any previous handlers
+        if (_comboTooltipEnter) si.removeEventListener('mouseenter', _comboTooltipEnter);
+        if (_comboTooltipLeave) si.removeEventListener('mouseleave', _comboTooltipLeave);
+
+        _comboTooltipEnter = function () {
+            tip.classList.add('visible');
+            _positionComboTooltip(si);
+        };
+        _comboTooltipLeave = function () {
+            tip.classList.remove('visible');
+        };
+        si.addEventListener('mouseenter', _comboTooltipEnter);
+        si.addEventListener('mouseleave', _comboTooltipLeave);
     }
     function clearComboDisplay() {
         var si = document.getElementById('searchTerm');
@@ -75,6 +121,15 @@ PPP.app = (function () {
         si.disabled = false;
         si.classList.remove('combo-display');
         si.removeAttribute('title');
+        if (_comboTooltipEnter) {
+            si.removeEventListener('mouseenter', _comboTooltipEnter);
+            _comboTooltipEnter = null;
+        }
+        if (_comboTooltipLeave) {
+            si.removeEventListener('mouseleave', _comboTooltipLeave);
+            _comboTooltipLeave = null;
+        }
+        if (_comboTooltipEl) _comboTooltipEl.classList.remove('visible');
     }
 
     // ===== PANEL HELPERS =====
@@ -1260,7 +1315,11 @@ PPP.app = (function () {
         if (usingSqlite) {
             db.queryMetaAsync(
                 "SELECT subject FROM lectures " +
-                "WHERE subject LIKE '.%' AND script_en != '' AND script_en != 'N/A' AND script_en != '0'"
+                "WHERE subject LIKE '.%' AND (" +
+                "  (script_en NOT IN ('', 'N/A', '0', 'Duplicate', 'Dublikāts', 'Дубликат')) OR " +
+                "  (script_lv NOT IN ('', 'N/A', '0', 'Duplicate', 'Dublikāts', 'Дубликат')) OR " +
+                "  (script_ru NOT IN ('', 'N/A', '0', 'Duplicate', 'Dublikāts', 'Дубликат'))" +
+                ")"
             ).then(function (rows) {
                 var topicCounts = {};
                 rows.forEach(function (r) {
@@ -1643,7 +1702,29 @@ PPP.app = (function () {
             return db.queryHtmlAsync(lang,
                 "SELECT html_content FROM transcripts_html WHERE nr = $nr LIMIT 1",
                 { $nr: String(lectureNr) }
-            );
+            ).then(function (rows) {
+                if (rows.length > 0) return rows;
+                // Fallback: this might be a duplicate lecture. Look up its URL,
+                // find the original lecture (same URL), and fetch its HTML.
+                var urlCol = 'script_' + lang + '_url';
+                return db.queryMetaAsync(
+                    "SELECT " + urlCol + " AS url FROM lectures WHERE nr = $nr LIMIT 1",
+                    { $nr: String(lectureNr) }
+                ).then(function (urlRows) {
+                    if (urlRows.length === 0 || !urlRows[0].url) return [];
+                    var url = urlRows[0].url;
+                    return db.queryMetaAsync(
+                        "SELECT nr FROM lectures WHERE " + urlCol + " = $url AND nr != $nr LIMIT 1",
+                        { $url: url, $nr: String(lectureNr) }
+                    );
+                }).then(function (origRows) {
+                    if (origRows.length === 0) return [];
+                    return db.queryHtmlAsync(lang,
+                        "SELECT html_content FROM transcripts_html WHERE nr = $nr LIMIT 1",
+                        { $nr: String(origRows[0].nr) }
+                    );
+                });
+            });
         }).then(function (rows) {
             if (rows.length === 0) {
                 title.textContent = 'Transcript not found';

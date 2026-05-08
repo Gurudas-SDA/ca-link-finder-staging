@@ -1125,6 +1125,18 @@ th.transcripts-block {
     margin-top: 3px;
     line-height: 1.3;
 }
+.match-hint.essence-hint {
+    color: #1a4fa8;
+    font-weight: 600;
+    font-style: normal;
+    font-size: 11px;
+}
+.match-hint.translated-title {
+    color: #0a2a5e;
+    font-weight: 600;
+    font-style: normal;
+    font-size: 12px;
+}
 
 /* ===== PAGINATION ===== */
 #pagination {
@@ -1192,7 +1204,7 @@ th.transcripts-block {
     overflow: hidden;
 }
 .progress-bar-fill {
-    background: linear-gradient(135deg, var(--primary), var(--primary-light));
+    background: linear-gradient(135deg, #cc0000, #ff4444);
     height: 100%;
     width: 0%;
     transition: width 0.3s ease;
@@ -1200,9 +1212,15 @@ th.transcripts-block {
 }
 .progress-label {
     font-size: 11px;
-    color: var(--text-muted);
+    color: #cc0000;
     text-align: center;
     margin-top: 4px;
+    font-weight: 600;
+    animation: loadingBlink 0.8s ease-in-out infinite;
+}
+@keyframes loadingBlink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.2; }
 }
 
 /* ===== SCROLLBAR ===== */
@@ -1314,6 +1332,13 @@ th.transcripts-block {
     .top-left-buttons button { padding: 5px 12px; font-size: 10px; }
     #dbLastUpdate { font-size: 9px; }
     .results-container { padding: 0 4px 30px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    /* Mobile: dropdown lists stick to viewport (not centered in scrollable 800px+ area) */
+    #topicsList, #recommendationsList, #verseSourcesList, #verseList, #topCitationsList {
+        position: sticky;
+        left: 4px;
+        max-width: calc(100vw - 16px);
+        margin: 0 0 20px 0;
+    }
     #resultsTable { font-size: 11px; min-width: 800px; }
     #resultsTable thead th { padding: 6px 6px; font-size: 10px; }
     #resultsTable tbody td { padding: 6px 6px; font-size: 11px; }
@@ -1714,4 +1739,28 @@ body.dark .transcript-deep-highlight {
     cursor: not-allowed !important;
     opacity: 0.5 !important;
     pointer-events: none !important;
+}
+
+/* Persistent tooltip shown while cursor is over a combo-display search input.
+   Replaces the native title attribute (which dismisses on keypress / cursor move). */
+.combo-display-tooltip {
+    position: absolute;
+    z-index: 9999;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 120ms ease;
+    background: #1a3a6b;
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+    white-space: nowrap;
+    max-width: 92vw;
+}
+.combo-display-tooltip.visible {
+    opacity: 1;
+    visibility: visible;
 }
