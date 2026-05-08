@@ -57,7 +57,12 @@ PPP.app = (function () {
     var searchMode = 'metadata';    // 'metadata', 'citations', or 'citationsTop'
     var deferredPrompt = null;
     var installMode = 'ios';
-    var totalLectures = 0;
+    var totalLectures = (function () {
+        try {
+            var v = parseInt(localStorage.getItem('ppp_total_lectures') || '0', 10);
+            return v > 0 ? v : 0;
+        } catch (e) { return 0; }
+    })();
 
     // ===== COMBO DISPLAY HELPERS =====
     var _comboTooltipEl = null;
@@ -348,6 +353,7 @@ PPP.app = (function () {
             return db.getStatsAsync();
         }).then(function (stats) {
             totalLectures = parseInt(stats.total_lectures || '0', 10);
+            try { if (totalLectures > 0) localStorage.setItem('ppp_total_lectures', String(totalLectures)); } catch (e) {}
 
             // Also populate DB[] array for backward-compatible features
             return db.queryMetaAsync('SELECT * FROM lectures');
