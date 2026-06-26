@@ -84,7 +84,6 @@ PPP.app = (function () {
         var tipRect = _comboTooltipEl.getBoundingClientRect();
         var top = window.scrollY + rect.bottom + 8;
         var left = window.scrollX + rect.left + (rect.width / 2) - (tipRect.width / 2);
-        // Clamp to viewport horizontally
         var minLeft = window.scrollX + 8;
         var maxLeft = window.scrollX + document.documentElement.clientWidth - tipRect.width - 8;
         if (left < minLeft) left = minLeft;
@@ -99,12 +98,10 @@ PPP.app = (function () {
         si.value = label;
         si.disabled = true;
         si.classList.add('combo-display');
-        // Native title cleared — using custom persistent tooltip below
         si.removeAttribute('title');
 
         var tip = _ensureComboTooltipEl();
 
-        // Detach any previous handlers
         if (_comboTooltipEnter) si.removeEventListener('mouseenter', _comboTooltipEnter);
         if (_comboTooltipLeave) si.removeEventListener('mouseleave', _comboTooltipLeave);
 
@@ -329,8 +326,18 @@ PPP.app = (function () {
         // Show progress bar
         ui.showLoading(i18n.t('loadingDB'));
 
-        // Try SQLite first
-        loadSqlite().then(function () {
+        var sqlitePromise = loadSqlite();
+
+        // When DB is ready but extras are still loading, switch indicator text
+        sqlitePromise.then(function () {
+            if (ui.extrasReady && !ui.extrasReady()) {
+                ui.setLoadingText(i18n.t('loadingExtras'));
+            }
+        }, function () { /* swallow — handled below */ });
+
+        var extrasPromise = (ui.loadExtras ? ui.loadExtras() : Promise.resolve());
+
+        Promise.all([sqlitePromise, extrasPromise]).then(function () {
             ui.hideLoading();
             usingSqlite = true;
             onDataLoaded();
@@ -977,9 +984,9 @@ PPP.app = (function () {
         if (usingSqlite) {
             db.queryMetaAsync(
                 "SELECT * FROM lectures " +
-                "WHERE (script_en != '' AND script_en != 'N/A' AND script_en != '0') " +
-                "   OR (script_lv != '' AND script_lv != 'N/A' AND script_lv != '0') " +
-                "   OR (script_ru != '' AND script_ru != 'N/A' AND script_ru != '0') " +
+                "WHERE (script_en NOT IN ('', 'N/A', '0', 'Duplicate', 'Dublikāts', 'Дубликат', 'Дубикат', 'Not relevant', 'Neattiecas', 'Не относится')) " +
+                "   OR (script_lv NOT IN ('', 'N/A', '0', 'Duplicate', 'Dublikāts', 'Дубликат', 'Дубикат', 'Not relevant', 'Neattiecas', 'Не относится')) " +
+                "   OR (script_ru NOT IN ('', 'N/A', '0', 'Duplicate', 'Dublikāts', 'Дубликат', 'Дубикат', 'Not relevant', 'Neattiecas', 'Не относится')) " +
                 "ORDER BY CASE WHEN date = 'unknown' THEN 1 ELSE 0 END, date DESC, original_file_name DESC"
             ).then(function (rows) {
                 var uiRows = rows.map(mapSqlRowToUI);
@@ -1007,7 +1014,7 @@ PPP.app = (function () {
             var en = (r['Script_EN'] || '').toString().trim();
             var lv = (r['Script_LV'] || '').toString().trim();
             var ru = (r['Script_RU'] || '').toString().trim();
-            function hasVal(v) { return v !== '' && v !== 'N/A' && v !== '0'; }
+            function hasVal(v) { return v !== '' && v !== 'N/A' && v !== '0' && v !== 'Duplicate' && v !== 'Dublikāts' && v !== 'Дубликат' && v !== 'Дубикат' && v !== 'Not relevant' && v !== 'Neattiecas' && v !== 'Не относится'; }
             return hasVal(en) || hasVal(lv) || hasVal(ru);
         });
         withScripts.sort(function (a, b) {
@@ -1320,12 +1327,13 @@ PPP.app = (function () {
         if (resultsTable) resultsTable.style.display = 'none';
 
         if (usingSqlite) {
+            // Count only ORIGINAL transcripts (any of script_en/lv/ru with non-duplicate label)
             db.queryMetaAsync(
                 "SELECT subject FROM lectures " +
                 "WHERE subject LIKE '.%' AND (" +
-                "  (script_en NOT IN ('', 'N/A', '0', 'Duplicate', 'Dublikāts', 'Дубликат')) OR " +
-                "  (script_lv NOT IN ('', 'N/A', '0', 'Duplicate', 'Dublikāts', 'Дубликат')) OR " +
-                "  (script_ru NOT IN ('', 'N/A', '0', 'Duplicate', 'Dublikāts', 'Дубликат'))" +
+                "  (script_en NOT IN ('', 'N/A', '0', 'Duplicate', 'Dublikāts', 'Дубликат', 'Not relevant', 'Neattiecas', 'Не относится')) OR " +
+                "  (script_lv NOT IN ('', 'N/A', '0', 'Duplicate', 'Dublikāts', 'Дубликат', 'Not relevant', 'Neattiecas', 'Не относится')) OR " +
+                "  (script_ru NOT IN ('', 'N/A', '0', 'Duplicate', 'Dublikāts', 'Дубликат', 'Not relevant', 'Neattiecas', 'Не относится'))" +
                 ")"
             ).then(function (rows) {
                 var topicCounts = {};
@@ -1647,11 +1655,75 @@ PPP.app = (function () {
      * Open HTML transcript viewer in modal, scroll to block-N anchor.
      * lang: 'en', 'lv', 'ru'
      */
-    function _toDirectDownload(url) {
-        if (!url) return url;
-        var m = url.match(/drive\.google\.com\/file\/d\/([^/]+)/);
-        if (m) return 'https://drive.google.com/uc?export=download&id=' + m[1];
-        return url;
+    var _currentTranscriptCtx = null;
+
+    function _sanitizeFilename(s) {
+        return String(s || '').replace(/[<>:"/\\|?* -]/g, '_').replace(/\s+/g, '_').slice(0, 120) || 'transcript';
+    }
+
+    function _escapeHtmlAttr(s) {
+        return String(s || '').replace(/[<>&"']/g, function (c) {
+            return { '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    function _driveIdFromUrl(url) {
+        if (!url) return null;
+        var m = url.match(/\/file\/d\/([^/]+)/) || url.match(/[?&]id=([^&]+)/);
+        return m ? m[1] : null;
+    }
+
+    function _triggerBlobDownload(blob, fileName) {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+    }
+
+    function _buildHtmlDoc(ctx) {
+        var titleText = ctx.title || ('Nr_' + ctx.nr);
+        return '<!DOCTYPE html>\n<html lang="' + _escapeHtmlAttr(ctx.lang) + '">\n<head>\n' +
+            '<meta charset="utf-8">\n' +
+            '<meta name="viewport" content="width=device-width,initial-scale=1">\n' +
+            '<title>' + _escapeHtmlAttr(titleText) + '</title>\n' +
+            '<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;max-width:820px;margin:1.5em auto;padding:0 1em;line-height:1.55;color:#222;background:#fff}h1,h2,h3{color:#7a1f00}a{color:#c97a00}p{margin:0.6em 0}</style>\n' +
+            '</head>\n<body>\n<h1>' + _escapeHtmlAttr(titleText) + '</h1>\n' +
+            ctx.html + '\n</body>\n</html>';
+    }
+
+    function downloadTranscript() {
+        var ctx = _currentTranscriptCtx;
+        if (!ctx) return;
+        var driveId = _driveIdFromUrl(ctx.driveUrl);
+
+        // Preferred path: navigate to drive.usercontent.google.com which sends
+        // Content-Disposition: attachment. Chrome saves the original DOCX without
+        // leaving the page. drive.usercontent.google.com is NOT registered for the
+        // Android Drive app intent filter, so the file lands directly in Downloads.
+        if (driveId) {
+            var dlUrl = 'https://drive.usercontent.google.com/download?id=' + encodeURIComponent(driveId) + '&export=download';
+            var a = document.createElement('a');
+            a.href = dlUrl;
+            a.rel = 'noopener';
+            // Note: cross-origin <a download> attribute is ignored by Chrome, but
+            // the server's Content-Disposition: attachment header takes effect.
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            track('transcript-download', { nr: String(ctx.nr), lang: ctx.lang, format: 'docx' });
+            return;
+        }
+
+        // Fallback (no Drive URL): client-side HTML
+        if (ctx.html) {
+            var fileName = _sanitizeFilename(ctx.title || ('Nr_' + ctx.nr)) + '_' + ctx.lang + '.html';
+            _triggerBlobDownload(new Blob([_buildHtmlDoc(ctx)], { type: 'text/html;charset=utf-8' }), fileName);
+            track('transcript-download', { nr: String(ctx.nr), lang: ctx.lang, format: 'html' });
+        }
     }
 
     function openHtmlTranscriptViewer(lectureNr, lang, blockIndex, reference, driveUrl) {
@@ -1660,116 +1732,95 @@ PPP.app = (function () {
         var body = document.getElementById('transcriptModalBody');
         var title = document.getElementById('transcriptModalTitle');
 
+        // Reset download context — only enable button after content loads
+        _currentTranscriptCtx = null;
         var dlBtn = document.getElementById('transcriptDownloadBtn');
-        if (dlBtn) {
-            if (driveUrl) {
-                dlBtn.href = _toDirectDownload(driveUrl);
-                dlBtn.title = i18n.t('downloadTranscript');
-                dlBtn.style.display = '';
-            } else {
-                dlBtn.style.display = 'none';
-            }
-        }
+        if (dlBtn) dlBtn.style.display = 'none';
 
-        var alreadyLoaded = db.isHtmlLoaded(lang);
         title.textContent = 'Loading ' + lang.toUpperCase() + ' transcript...';
-        body.innerHTML = alreadyLoaded
-            ? '<div class="transcript-loading"><div class="transcript-spinner"></div><span>Opening transcript...</span></div>'
-            : '<div class="transcript-loading"><div class="transcript-spinner"></div><span>Loading database...</span><span class="transcript-timer"></span></div>';
+        body.innerHTML = '<div class="transcript-loading"><div class="transcript-spinner"></div><span>Opening transcript...</span></div>';
         overlay.classList.add('active');
 
-        var loadingMsg = body.querySelector('.transcript-loading span');
-        var timerEl = body.querySelector('.transcript-timer');
-        var timerStart = Date.now();
-        var timerInterval = null;
-        if (!alreadyLoaded && timerEl) {
-            timerInterval = setInterval(function () {
-                var sec = Math.floor((Date.now() - timerStart) / 1000);
-                timerEl.textContent = sec + 's — may take up to 1 min on first load';
-            }, 1000);
+        // Phase 2: fetch a single per-lecture HTML file instead of loading the whole
+        // language SQLite DB. Falls back via duplicate detection (meta DB → original
+        // nr → fetch that file) when the requested nr has no own HTML file.
+        function fetchTranscriptFile(nr) {
+            return fetch('transcripts/' + lang + '/' + encodeURIComponent(String(nr)) + '.html')
+                .then(function (r) { return r.ok ? r.text() : ''; })
+                .catch(function () { return ''; });
         }
 
-        var loadPromise = alreadyLoaded
-            ? Promise.resolve()
-            : db.loadHtmlDB(lang, function (progress) {
-                var pct = Math.round(progress * 100);
-                if (pct >= 100) {
-                    title.textContent = 'Opening all ' + lang.toUpperCase() + ' transcripts...';
-                    if (loadingMsg) loadingMsg.textContent = 'Preparing transcripts (first time only)...';
-                } else {
-                    title.textContent = 'Loading all ' + lang.toUpperCase() + ' transcripts... ' + pct + '%';
-                    if (loadingMsg) loadingMsg.textContent = pct + '% downloaded';
-                }
-            });
-
-        loadPromise.then(function () {
-            if (timerInterval) clearInterval(timerInterval);
-            title.textContent = 'Opening ' + lang.toUpperCase() + ' transcript...';
-            if (loadingMsg) loadingMsg.textContent = 'Preparing transcripts...';
-            return db.queryHtmlAsync(lang,
-                "SELECT html_content FROM transcripts_html WHERE nr = $nr LIMIT 1",
+        var firstFetch = fetchTranscriptFile(lectureNr).then(function (html) {
+            if (html) return [{ html_content: html }];
+            // Duplicate-lecture fallback (matches the prior SQLite logic via meta DB)
+            var urlCol = 'script_' + lang + '_url';
+            return db.queryMetaAsync(
+                "SELECT " + urlCol + " AS url FROM lectures WHERE nr = $nr LIMIT 1",
                 { $nr: String(lectureNr) }
-            ).then(function (rows) {
-                if (rows.length > 0) return rows;
-                // Fallback: this might be a duplicate lecture. Look up its URL,
-                // find the original lecture (same URL), and fetch its HTML.
-                var urlCol = 'script_' + lang + '_url';
+            ).then(function (urlRows) {
+                if (urlRows.length === 0 || !urlRows[0].url) return [];
+                var url = urlRows[0].url;
                 return db.queryMetaAsync(
-                    "SELECT " + urlCol + " AS url FROM lectures WHERE nr = $nr LIMIT 1",
-                    { $nr: String(lectureNr) }
-                ).then(function (urlRows) {
-                    if (urlRows.length === 0 || !urlRows[0].url) return [];
-                    var url = urlRows[0].url;
-                    return db.queryMetaAsync(
-                        "SELECT nr FROM lectures WHERE " + urlCol + " = $url AND nr != $nr LIMIT 1",
-                        { $url: url, $nr: String(lectureNr) }
-                    );
-                }).then(function (origRows) {
-                    if (origRows.length === 0) return [];
-                    return db.queryHtmlAsync(lang,
-                        "SELECT html_content FROM transcripts_html WHERE nr = $nr LIMIT 1",
-                        { $nr: String(origRows[0].nr) }
-                    );
+                    "SELECT nr FROM lectures WHERE " + urlCol + " = $url AND nr != $nr LIMIT 1",
+                    { $url: url, $nr: String(lectureNr) }
+                );
+            }).then(function (origRows) {
+                if (origRows.length === 0) return [];
+                return fetchTranscriptFile(origRows[0].nr).then(function (h) {
+                    return h ? [{ html_content: h }] : [];
                 });
             });
-        }).then(function (rows) {
+        });
+
+        firstFetch.then(function (rows) {
             if (rows.length === 0) {
-                title.textContent = 'Transcript not found';
                 if (driveUrl) {
-                    body.innerHTML = '<p>No ' + lang.toUpperCase() + ' HTML transcript for lecture Nr.' + lectureNr +
-                        '.</p><p><a href="' + driveUrl + '" target="_blank" rel="noopener" style="color:var(--saffron)">Open in Google Drive \u2197</a></p>';
+                    // Raw transcript: HTML not in-app, but the txt exists on Drive.
+                    var rawTitle = (i18n.t && i18n.t('rawTranscriptTitle')) || 'Raw transcript (txt)';
+                    var rawBody = (i18n.t && i18n.t('rawTranscriptBody')) ||
+                        'This is a Raw transcript, available only in txt format. Open it from Google Drive.';
+                    var openLabel = (i18n.t && i18n.t('openInGoogleDrive')) || 'Open in Google Drive';
+                    title.textContent = rawTitle;
+                    body.innerHTML = '<p>' + utils.escapeHtml(rawBody) + '</p><p><a href="' + driveUrl +
+                        '" target="_blank" rel="noopener" style="color:var(--saffron)">' +
+                        utils.escapeHtml(openLabel) + ' \u2197</a></p>';
                 } else {
+                    title.textContent = 'Transcript not found';
                     body.textContent = 'No ' + lang.toUpperCase() + ' transcript for lecture Nr.' + lectureNr;
                 }
                 return;
             }
 
-            // Get title from meta DB
+            // Get title and Drive URL from meta DB
             return db.queryMetaAsync(
                 "SELECT original_file_name, script_en_url, script_lv_url, script_ru_url FROM lectures WHERE nr = $nr LIMIT 1",
                 { $nr: String(lectureNr) }
             ).then(function (meta) {
-                if (meta.length > 0) {
-                    title.textContent = (meta[0].original_file_name || 'Nr.' + lectureNr) +
-                        (reference ? ' — ' + reference : '');
-                } else {
-                    title.textContent = 'Nr.' + lectureNr + (reference ? ' — ' + reference : '');
-                }
-                // If driveUrl was not passed, try to get it from meta
-                if (!driveUrl && meta.length > 0 && dlBtn) {
-                    var urlCol = 'script_' + lang + '_url';
-                    var metaDriveUrl = meta[0][urlCol];
-                    if (metaDriveUrl) {
-                        dlBtn.href = _toDirectDownload(metaDriveUrl);
-                        dlBtn.title = i18n.t('downloadTranscript');
-                        dlBtn.style.display = '';
-                    }
-                }
+                var row = meta[0] || {};
+                var origName = row.original_file_name || ('Nr.' + lectureNr);
+                title.textContent = origName + (reference ? ' — ' + reference : '');
+                var resolvedDriveUrl = driveUrl || row['script_' + lang + '_url'] || '';
+                return { origName: origName, driveUrl: resolvedDriveUrl };
             }).catch(function () {
                 title.textContent = 'Nr.' + lectureNr + (reference ? ' — ' + reference : '');
-            }).then(function () {
+                return { origName: 'Nr_' + lectureNr, driveUrl: driveUrl || '' };
+            }).then(function (info) {
                 // Insert HTML content
-                body.innerHTML = rows[0].html_content || '';
+                var htmlContent = rows[0].html_content || '';
+                body.innerHTML = htmlContent;
+
+                // Enable download button (DOCX from Drive if available, else client-side HTML)
+                if ((htmlContent || info.driveUrl) && dlBtn) {
+                    _currentTranscriptCtx = {
+                        nr: lectureNr,
+                        lang: lang,
+                        title: info.origName,
+                        html: htmlContent,
+                        driveUrl: info.driveUrl
+                    };
+                    dlBtn.title = (i18n.t && i18n.t('downloadTranscript')) || 'Download';
+                    dlBtn.style.display = '';
+                }
 
                 // Attach selection share handler
                 _attachTranscriptSelectionShare(body, lectureNr, lang);
@@ -1959,6 +2010,7 @@ PPP.app = (function () {
             document.getElementById('transcriptModalOverlay').classList.remove('active');
             var dlBtn = document.getElementById('transcriptDownloadBtn');
             if (dlBtn) dlBtn.style.display = 'none';
+            _currentTranscriptCtx = null;
         }
     }
 
@@ -2218,6 +2270,7 @@ PPP.app = (function () {
         openTranscriptAtVerse: openTranscriptAtVerse,
         openHtmlTranscriptViewer: openHtmlTranscriptViewer,
         closeTranscriptModal: closeTranscriptModal,
+        downloadTranscript: downloadTranscript,
         showFavorites: showFavorites,
         updateFavoritesCount: updateFavoritesCount,
         copyShareLink: copyShareLink,

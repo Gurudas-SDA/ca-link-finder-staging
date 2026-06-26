@@ -371,6 +371,7 @@ PPP.db = (function () {
         // State checks
         isMetaLoaded: isMetaLoaded,
         isHtmlLoaded: isHtmlLoaded,
+        getDbVersions: getDbVersions,
         isWorkerMode: isWorkerMode
     };
 })();

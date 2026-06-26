@@ -167,12 +167,14 @@ PPP.utils = (function () {
     /**
      * Check if a cell has an ORIGINAL link (excludes Duplicate-marked transcript cells).
      */
-    var DUPLICATE_LABELS = new Set(['Duplicate', 'Dublikāts', 'Дубликат']);
+    var DUPLICATE_LABELS = new Set(['Duplicate', 'Dublikāts', 'Дубликат', 'Дубикат']);
+    var NOT_RELEVANT_LABELS = new Set(['Not relevant', 'Neattiecas', 'Не относится']);
     function cellHasOriginalLink(val, colName, row) {
         if (!cellHasLink(val, colName, row)) return false;
         if (colName === 'Script_EN' || colName === 'Script_LV' || colName === 'Script_RU') {
             var s = (val || '').toString().trim();
             if (DUPLICATE_LABELS.has(s)) return false;
+            if (NOT_RELEVANT_LABELS.has(s)) return false;
         }
         return true;
     }

@@ -82,6 +82,7 @@ PPP.i18n = (function () {
             citationResults: 'verse citations found',
             noCitationResults: 'No verse citations found',
             loadingDB: 'Loading database...',
+            loadingExtras: 'Loading summaries...',
             dbLoaded: 'Database loaded',
             verseCopiedToast: '"{ref}" copied to clipboard — press Ctrl+F and paste to find the verse',
             favorites: 'Favorites',
@@ -93,6 +94,9 @@ PPP.i18n = (function () {
             allSaved: 'All saved',
             shareQuote: 'Share quote',
             downloadTranscript: 'Download transcript',
+            rawTranscriptTitle: 'Raw transcript (txt)',
+            rawTranscriptBody: 'This is an automatically generated, medium-quality, unprocessed (Raw) transcript, to help you quickly get an idea of the file\'s content.',
+            openInGoogleDrive: 'Open in Google Drive',
             lastUpdate: 'Last update',
             featuresBtn: '32 Features'
         },
@@ -161,6 +165,7 @@ PPP.i18n = (function () {
             citationResults: '\u0441\u0441\u044b\u043b\u043e\u043a \u043d\u0430 \u0441\u0442\u0438\u0445\u0438 \u043d\u0430\u0439\u0434\u0435\u043d\u043e',
             noCitationResults: '\u0421\u0441\u044b\u043b\u043e\u043a \u043d\u0430 \u0441\u0442\u0438\u0445\u0438 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u043e',
             loadingDB: '\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u0431\u0430\u0437\u044b \u0434\u0430\u043d\u043d\u044b\u0445...',
+            loadingExtras: '\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u043a\u0440\u0430\u0442\u043a\u0438\u0445 \u0441\u043e\u0434\u0435\u0440\u0436\u0430\u043d\u0438\u0439...',
             dbLoaded: '\u0411\u0430\u0437\u0430 \u0434\u0430\u043d\u043d\u044b\u0445 \u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043d\u0430',
             verseCopiedToast: '"{ref}" \u0441\u043a\u043e\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u043e \u0432 \u0431\u0443\u0444\u0435\u0440 \u2014 \u043d\u0430\u0436\u043c\u0438\u0442\u0435 Ctrl+F \u0438 \u0432\u0441\u0442\u0430\u0432\u044c\u0442\u0435',
             favorites: '\u0418\u0437\u0431\u0440\u0430\u043d\u043d\u043e\u0435',
@@ -172,6 +177,9 @@ PPP.i18n = (function () {
             allSaved: '\u0412\u0441\u0435 \u0441\u043e\u0445\u0440\u0430\u043d\u0451\u043d\u043d\u044b\u0435',
             shareQuote: '\u041f\u043e\u0434\u0435\u043b\u0438\u0442\u044c\u0441\u044f \u0446\u0438\u0442\u0430\u0442\u043e\u0439',
             downloadTranscript: '\u0421\u043a\u0430\u0447\u0430\u0442\u044c \u0442\u0440\u0430\u043d\u0441\u043a\u0440\u0438\u043f\u0442',
+            rawTranscriptTitle: 'Raw-\u0442\u0440\u0430\u043d\u0441\u043a\u0440\u0438\u043f\u0442 (txt)',
+            rawTranscriptBody: '\u042d\u0442\u043e \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438 \u0441\u043e\u0437\u0434\u0430\u043d\u043d\u044b\u0439, \u043d\u0435\u043e\u0431\u0440\u0430\u0431\u043e\u0442\u0430\u043d\u043d\u044b\u0439 (Raw) \u0442\u0440\u0430\u043d\u0441\u043a\u0440\u0438\u043f\u0442 \u0441\u0440\u0435\u0434\u043d\u0435\u0433\u043e \u043a\u0430\u0447\u0435\u0441\u0442\u0432\u0430, \u0447\u0442\u043e\u0431\u044b \u043f\u043e\u043c\u043e\u0447\u044c \u0431\u044b\u0441\u0442\u0440\u043e \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u043f\u0440\u0435\u0434\u0441\u0442\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u043e \u0441\u043e\u0434\u0435\u0440\u0436\u0430\u043d\u0438\u0438 \u0444\u0430\u0439\u043b\u0430.',
+            openInGoogleDrive: '\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u0432 Google Drive',
             lastUpdate: '\u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u043e',
             featuresBtn: '32 \u0424\u0443\u043d\u043a\u0446\u0438\u0438'
         },
@@ -239,6 +247,7 @@ PPP.i18n = (function () {
             citationResults: 'pantu atsauces atrastas',
             noCitationResults: 'Pantu atsauces nav atrastas',
             loadingDB: 'Iel\u0101d\u0113 datub\u0101zi...',
+            loadingExtras: 'Iel\u0101d\u0113 kopsavilkumus...',
             dbLoaded: 'Datub\u0101ze iel\u0101d\u0113ta',
             verseCopiedToast: '"{ref}" nokop\u0113ts starpliktuve \u2014 spied Ctrl+F un ielim\u0113',
             favorites: 'Izlase',
@@ -250,6 +259,9 @@ PPP.i18n = (function () {
             allSaved: 'Visi saglab\u0101tie',
             shareQuote: 'Koplietot cit\u0101tu',
             downloadTranscript: 'Lejupiel\u0101d\u0113t transkriptu',
+            rawTranscriptTitle: 'Raw transkripts (txt)',
+            rawTranscriptBody: '\u0160is ir autom\u0101tiski veikts vid\u0113jas kvalit\u0101tes un neapstr\u0101d\u0101ts (Raw) transkripts, lai pal\u012bdz\u0113tu \u0101tri g\u016bt priek\u0161statu par faila saturu.',
+            openInGoogleDrive: 'Atv\u0113rt Google Drive',
             lastUpdate: 'Atjaunots',
             featuresBtn: '32 Funkcijas'
         },
@@ -272,6 +284,9 @@ PPP.i18n = (function () {
             shareQuote: 'Condividi citazione',
             downloadTranscript: 'Scarica trascrizione',
             lastUpdate: 'Aggiornato',
+            rawTranscriptTitle: 'Trascrizione Raw (txt)',
+            rawTranscriptBody: 'Questa \u00e8 una trascrizione (Raw) generata automaticamente, di qualit\u00e0 media e non elaborata, per aiutarti a farti rapidamente un\'idea del contenuto del file.',
+            openInGoogleDrive: 'Apri in Google Drive',
             featuresBtn: '32 Funzioni'
         },
         fr: {
@@ -293,6 +308,9 @@ PPP.i18n = (function () {
             shareQuote: 'Partager la citation',
             downloadTranscript: 'T\u00e9l\u00e9charger la transcription',
             lastUpdate: 'Mis \u00e0 jour',
+            rawTranscriptTitle: 'Transcription Raw (txt)',
+            rawTranscriptBody: 'Ceci est une transcription (Raw) g\u00e9n\u00e9r\u00e9e automatiquement, de qualit\u00e9 moyenne et non trait\u00e9e, pour vous aider \u00e0 vous faire rapidement une id\u00e9e du contenu du fichier.',
+            openInGoogleDrive: 'Ouvrir dans Google Drive',
             featuresBtn: '32 Fonctions'
         },
         es: {
@@ -314,6 +332,9 @@ PPP.i18n = (function () {
             shareQuote: 'Compartir cita',
             downloadTranscript: 'Descargar transcripci\u00f3n',
             lastUpdate: 'Actualizado',
+            rawTranscriptTitle: 'Transcripci\u00f3n Raw (txt)',
+            rawTranscriptBody: 'Esta es una transcripci\u00f3n (Raw) generada autom\u00e1ticamente, de calidad media y sin procesar, para ayudarte a hacerte una idea r\u00e1pida del contenido del archivo.',
+            openInGoogleDrive: 'Abrir en Google Drive',
             featuresBtn: '32 Funciones'
         }
     };

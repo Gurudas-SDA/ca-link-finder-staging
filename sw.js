@@ -1,7 +1,7 @@
-// Service Worker v5 — Force Update + DB cache-busting rollout
-// Versija: 2026-05-06 (mainīt šo komentāru katru reizi kad vajag forsēt atjaunināšanu)
+// Service Worker v7 — Force Update + no-cache for index.html
+// Versija: 2026-06-26 (mainīt šo komentāru katru reizi kad vajag forsēt atjaunināšanu)
 
-const SW_VERSION = 'v5-2026-05-06-translations';
+const SW_VERSION = 'v7-2026-06-26-nocache-html';
 
 self.addEventListener('install', function(event) {
     console.log('[SW ' + SW_VERSION + '] Install — skip waiting');
@@ -32,5 +32,12 @@ self.addEventListener('activate', function(event) {
 });
 
 self.addEventListener('fetch', function(event) {
-    event.respondWith(fetch(event.request));
+    var url = new URL(event.request.url);
+    var path = url.pathname;
+    // Always bypass HTTP cache for index.html so updated ?v= hashes are seen immediately
+    if (path === '/' || path.endsWith('/index.html') || path === '/ca-link-finder' || path === '/ca-link-finder/') {
+        event.respondWith(fetch(event.request, { cache: 'no-cache' }));
+    } else {
+        event.respondWith(fetch(event.request));
+    }
 });

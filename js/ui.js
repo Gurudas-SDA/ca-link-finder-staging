@@ -142,7 +142,17 @@ PPP.ui = (function () {
         var table = document.getElementById('resultsTable');
         table.innerHTML = '';
         var thead = table.createTHead();
-        buildHeader(thead, rows ? rows.length : 0);
+        // Count: only lectures with at least one ORIGINAL transcript (EN/LV/RU non-duplicate)
+        var DUP_LABELS = { 'Duplicate': 1, 'Dublikāts': 1, 'Дубликат': 1, 'Дубикат': 1 };
+        var NOT_REL_LABELS = { 'Not relevant': 1, 'Neattiecas': 1, 'Не относится': 1 };
+        function isOrig(v) {
+            v = (v || '').toString().trim();
+            return v !== '' && v !== 'N/A' && v !== '0' && !DUP_LABELS[v] && !NOT_REL_LABELS[v];
+        }
+        var origCount = rows ? rows.filter(function (r) {
+            return isOrig(r['Script_EN']) || isOrig(r['Script_LV']) || isOrig(r['Script_RU']);
+        }).length : 0;
+        buildHeader(thead, origCount);
         var tbody = table.createTBody();
 
         if (rows.length === 0) {
@@ -211,13 +221,36 @@ PPP.ui = (function () {
                     if (isScriptCol && row._blockIndex && row._lectureNr) {
                         var hasScript = val && val !== 'N/A' && val !== '0' && val !== '';
                         if (hasScript) {
-                            var langLabel = col.split('_')[1];
-                            var langCode = langLabel.toLowerCase();
+                            var cellTrimNR = (val || '').toString().trim();
+                            if (cellTrimNR === 'Not relevant' || cellTrimNR === 'Neattiecas' || cellTrimNR === 'Не относится') {
+                                var spanNR = document.createElement('span');
+                                spanNR.textContent = cellTrimNR;
+                                spanNR.style.cssText = 'color:#222;font-size:11px;';
+                                td.appendChild(spanNR);
+                            } else {
+                            var defaultLangLabel = col.split('_')[1];
+                            var langCode = defaultLangLabel.toLowerCase();
+                            // Recognize special cell markers like the non-verse path.
+                            // Non-ASCII duplicate labels (LV "Dublikats" with a-macron,
+                            // RU "Dubikat") are built via char codes to keep source ASCII-safe.
+                            var lvDup = 'Dublik' + String.fromCharCode(257) + 'ts';
+                            var ruDup = String.fromCharCode(1044, 1091, 1073, 1080, 1082, 1072, 1090);
+                            var ruDupCorrect = String.fromCharCode(1044, 1091, 1073, 1083, 1080, 1082, 1072, 1090);
+                            var cellTrim = (val || '').toString().trim();
+                            var isDuplicate = (cellTrim === 'Duplicate' || cellTrim === lvDup || cellTrim === ruDup || cellTrim === ruDupCorrect);
+                            var isRaw = (cellTrim === 'Raw');
+                            var langLabel = isDuplicate ? cellTrim : (isRaw ? 'Raw' : defaultLangLabel);
                             var viewBtn = document.createElement('a');
                             viewBtn.href = '#';
                             viewBtn.textContent = langLabel;
-                            viewBtn.title = 'Open transcript at [' + row._blockIndex + ']';
-                            viewBtn.style.cssText = 'color:var(--saffron);font-weight:700;text-decoration:underline;cursor:pointer;';
+                            viewBtn.title = isRaw ? 'Open raw (auto) transcript at [' + row._blockIndex + ']' : 'Open transcript at [' + row._blockIndex + ']';
+                            if (isDuplicate) {
+                                viewBtn.style.cssText = 'color:#1a4fa8;font-weight:600;font-size:11px;text-decoration:underline;cursor:pointer;';
+                            } else if (isRaw) {
+                                viewBtn.style.cssText = 'color:#888;font-weight:600;text-decoration:underline;cursor:pointer;';
+                            } else {
+                                viewBtn.style.cssText = 'color:var(--saffron);font-weight:700;text-decoration:underline;cursor:pointer;';
+                            }
                             viewBtn.setAttribute('data-nr', row._lectureNr);
                             viewBtn.setAttribute('data-lang', langCode);
                             viewBtn.setAttribute('data-block', row._blockIndex);
@@ -233,6 +266,7 @@ PPP.ui = (function () {
                                 );
                             };
                             td.appendChild(viewBtn);
+                            } // end else (not-relevant check)
                         }
                     } else if (isScriptCol) {
                         // NON-VERSE MODE: open in-app modal for script columns
@@ -240,14 +274,35 @@ PPP.ui = (function () {
                         if (scriptDriveUrl && !scriptDriveUrl.startsWith('http')) scriptDriveUrl = null;
                         var hasScript = val && val !== 'N/A' && val !== '0' && val !== '';
                         if (hasScript) {
-                            var langLabel = col.split('_')[1];
-                            var langCode = langLabel.toLowerCase();
+                            var cellTrim = (val || '').toString().trim();
+                            if (cellTrim === 'Not relevant' || cellTrim === 'Neattiecas' || cellTrim === 'Не относится') {
+                                var spanNRnv = document.createElement('span');
+                                spanNRnv.textContent = cellTrim;
+                                spanNRnv.style.cssText = 'color:#222;font-size:11px;';
+                                td.appendChild(spanNRnv);
+                            } else {
+                            var defaultLangLabel = col.split('_')[1];
+                            var langCode = defaultLangLabel.toLowerCase();
+                            // If the cell value is a duplicate label, show it; otherwise show EN/LV/RU
+                            var DUP_LABELS = { 'Duplicate': 1, 'Dublikāts': 1, 'Дубликат': 1, 'Дубикат': 1 };
+                            cellTrim = cellTrim;
+                            var isDuplicate = !!DUP_LABELS[cellTrim];
+                            var isRaw = (cellTrim === 'Raw');
+                            var langLabel = isDuplicate ? cellTrim : (isRaw ? 'Raw' : defaultLangLabel);
                             var lectNr = (row['Nr.'] || '').toString().trim();
                             var viewBtn = document.createElement('a');
                             viewBtn.href = '#';
                             viewBtn.textContent = langLabel;
-                            viewBtn.title = 'Open transcript';
-                            viewBtn.style.cssText = 'color:var(--saffron);font-weight:700;text-decoration:underline;cursor:pointer;';
+                            viewBtn.title = isRaw ? 'Open raw (auto) transcript' : 'Open transcript';
+                            if (isDuplicate) {
+                                // Duplicate label: blue, 11px, same as Essence
+                                viewBtn.style.cssText = 'color:#1a4fa8;font-weight:600;font-size:11px;text-decoration:underline;cursor:pointer;';
+                            } else if (isRaw) {
+                                // Raw (auto) transcript: muted gray so users see it is not polished
+                                viewBtn.style.cssText = 'color:#888;font-weight:600;text-decoration:underline;cursor:pointer;';
+                            } else {
+                                viewBtn.style.cssText = 'color:var(--saffron);font-weight:700;text-decoration:underline;cursor:pointer;';
+                            }
                             viewBtn.setAttribute('data-nr', lectNr);
                             viewBtn.setAttribute('data-lang', langCode);
                             viewBtn.setAttribute('data-drive-url', scriptDriveUrl || '');
@@ -264,6 +319,7 @@ PPP.ui = (function () {
                                 }
                             };
                             td.appendChild(viewBtn);
+                            } // end else (not-relevant check)
                         }
                     } else {
                         // Links and Dwnld. columns — keep existing behavior (external links)
@@ -455,7 +511,11 @@ PPP.ui = (function () {
     function renderTopics(DB, container) {
         var counts = {};
         DB.forEach(function (r) {
-            if (!utils.cellHasLink(r['Script_EN'], 'Script_EN', r)) return;
+            // Count only lectures with at least one ORIGINAL transcript (EN/LV/RU)
+            var hasOrig = utils.cellHasOriginalLink(r['Script_EN'], 'Script_EN', r) ||
+                utils.cellHasOriginalLink(r['Script_LV'], 'Script_LV', r) ||
+                utils.cellHasOriginalLink(r['Script_RU'], 'Script_RU', r);
+            if (!hasOrig) return;
             var s = (r['Subject'] || '').trim();
             if (s) counts[s] = (counts[s] || 0) + 1;
         });
@@ -570,6 +630,17 @@ PPP.ui = (function () {
             var label = bar.querySelector('.progress-label');
             if (label) label.textContent = message || t('loadingDB');
         }
+    }
+
+    function setLoadingText(message) {
+        var bar = document.getElementById('progressBar');
+        if (!bar) return;
+        var label = bar.querySelector('.progress-label');
+        if (label && message) label.textContent = message;
+    }
+
+    function extrasReady() {
+        return _extrasCache !== null;
     }
 
     /**
@@ -801,7 +872,15 @@ PPP.ui = (function () {
     function loadExtras() {
         if (_extrasCache) return Promise.resolve(_extrasCache);
         if (_extrasLoading) return _extrasLoading;
-        _extrasLoading = fetch('data/ppp_lecture_extras.json?v=e9add6d9')
+        var versionsP = (window.PPP && PPP.db && PPP.db.getDbVersions)
+            ? PPP.db.getDbVersions()
+            : Promise.resolve({});
+        _extrasLoading = versionsP
+            .then(function (v) {
+                var url = 'data/ppp_lecture_extras.json' +
+                    (v && v.extras ? ('?v=' + v.extras) : '');
+                return fetch(url);
+            })
             .then(function (r) { return r.ok ? r.json() : {}; })
             .then(function (data) {
                 _extrasCache = data || {};
@@ -893,7 +972,10 @@ PPP.ui = (function () {
         getSnippet: getSnippet,
         showLoading: showLoading,
         hideLoading: hideLoading,
+        setLoadingText: setLoadingText,
         updateProgress: updateProgress,
+        loadExtras: loadExtras,
+        extrasReady: extrasReady,
         getColumnHeader: getColumnHeader,
         columnHeaders: columnHeaders,
         openSummaryModal: openSummaryModal,
