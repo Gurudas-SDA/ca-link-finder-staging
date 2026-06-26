@@ -165,6 +165,19 @@ PPP.utils = (function () {
     }
 
     /**
+     * Check if a cell has an ORIGINAL link (excludes Duplicate-marked transcript cells).
+     */
+    var DUPLICATE_LABELS = new Set(['Duplicate', 'Dublikāts', 'Дубликат']);
+    function cellHasOriginalLink(val, colName, row) {
+        if (!cellHasLink(val, colName, row)) return false;
+        if (colName === 'Script_EN' || colName === 'Script_LV' || colName === 'Script_RU') {
+            var s = (val || '').toString().trim();
+            if (DUPLICATE_LABELS.has(s)) return false;
+        }
+        return true;
+    }
+
+    /**
      * Extract URL from cell value.
      */
     function extractUrl(val) {
@@ -207,6 +220,7 @@ PPP.utils = (function () {
         formatLength: formatLength,
         normalizeHasColumn: normalizeHasColumn,
         cellHasLink: cellHasLink,
+        cellHasOriginalLink: cellHasOriginalLink,
         extractUrl: extractUrl,
         escapeHtml: escapeHtml,
         encodeForAttr: encodeForAttr

@@ -1,7 +1,7 @@
-// Service Worker v4 — Force Update + DB cache-busting rollout
-// Versija: 2026-04-11 (mainīt šo komentāru katru reizi kad vajag forsēt atjaunināšanu)
+// Service Worker v5 — Force Update + DB cache-busting rollout
+// Versija: 2026-05-06 (mainīt šo komentāru katru reizi kad vajag forsēt atjaunināšanu)
 
-const SW_VERSION = 'v4-2026-04-11';
+const SW_VERSION = 'v5-2026-05-06-translations';
 
 self.addEventListener('install', function(event) {
     console.log('[SW ' + SW_VERSION + '] Install — skip waiting');

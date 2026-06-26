@@ -302,13 +302,25 @@ PPP.ui = (function () {
                     } else {
                         td.innerHTML = highlightSearchTerms(val, searchTerms);
                     }
-                    // Tikai Tags_IAST zem nosaukuma (nav citu kolonnu hint)
-                    var tagsText = nr ? getTags(nr) : '';
-                    if (tagsText) {
-                        var tagSpan = document.createElement('span');
-                        tagSpan.className = 'match-hint';
-                        tagSpan.textContent = tagsText;
-                        td.appendChild(tagSpan);
+                    // Tulkotais nosaukums zem oriģināla (tumši zils) — tikai non-EN valodās
+                    var langPref = localStorage.getItem('preferredLanguage') || 'en';
+                    if (langPref !== 'en' && nr) {
+                        var translatedTitle = getTitleTranslation(nr, langPref);
+                        if (translatedTitle) {
+                            var titleSpan = document.createElement('span');
+                            titleSpan.className = 'match-hint translated-title';
+                            titleSpan.textContent = translatedTitle;
+                            td.appendChild(titleSpan);
+                        }
+                    }
+                    // Essence zem nosaukuma (sarkans, prefiksu lokalizē LV/RU)
+                    var essenceText = nr ? getEssence(nr) : '';
+                    if (essenceText) {
+                        var prefix = (langPref === 'lv') ? 'Būtība: ' : (langPref === 'ru') ? 'Суть: ' : 'Essence: ';
+                        var essSpan = document.createElement('span');
+                        essSpan.className = 'match-hint essence-hint';
+                        essSpan.textContent = prefix + essenceText;
+                        td.appendChild(essSpan);
                     }
                 } else {
                     td.innerHTML = highlightSearchTerms(val, searchTerms);
@@ -789,7 +801,7 @@ PPP.ui = (function () {
     function loadExtras() {
         if (_extrasCache) return Promise.resolve(_extrasCache);
         if (_extrasLoading) return _extrasLoading;
-        _extrasLoading = fetch('data/ppp_lecture_extras.json')
+        _extrasLoading = fetch('data/ppp_lecture_extras.json?v=e9add6d9')
             .then(function (r) { return r.ok ? r.json() : {}; })
             .then(function (data) {
                 _extrasCache = data || {};
@@ -814,9 +826,29 @@ PPP.ui = (function () {
         return !!(e && e.s);
     }
 
-    function getTags(nr) {
-        var e = getExtras(nr);
-        return (e && e.t) || '';
+    function getEssence(nr) {
+        var ex = getExtras(nr);
+        if (!ex) return '';
+        var lang = localStorage.getItem('preferredLanguage') || 'en';
+        if (lang === 'lv' && ex.elv) return ex.elv;
+        if (lang === 'ru' && ex.eru) return ex.eru;
+        return ex.e || '';
+    }
+
+    function getTitleTranslation(nr, lang) {
+        var ex = getExtras(nr);
+        if (!ex || !lang || lang === 'en') return '';
+        return ex['t' + lang] || '';
+    }
+
+    function getSummary(nr, lang) {
+        var ex = getExtras(nr);
+        if (!ex) return '';
+        if (lang && lang !== 'en') {
+            var key = 's' + lang;
+            if (ex[key]) return ex[key];
+        }
+        return ex.s || '';
     }
 
     // Pre-load early (fire & forget)
@@ -832,8 +864,9 @@ PPP.ui = (function () {
         overlay.style.display = 'flex';
         document.body.style.overflow = 'hidden';
         loadExtras().then(function () {
-            var e = getExtras(lectureNr);
-            bodyEl.textContent = (e && e.s) || '(nav kopsavilkuma)';
+            var lang = localStorage.getItem('preferredLanguage') || 'en';
+            var summaryText = getSummary(lectureNr, lang);
+            bodyEl.textContent = summaryText || '(nav kopsavilkuma)';
         }).catch(function () {
             bodyEl.textContent = '(kļūda ielādējot kopsavilkumu)';
         });
