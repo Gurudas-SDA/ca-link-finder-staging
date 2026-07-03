@@ -911,6 +911,9 @@ PPP.ui = (function () {
         var lang = localStorage.getItem('preferredLanguage') || 'en';
         if (lang === 'lv' && ex.elv) return ex.elv;
         if (lang === 'ru' && ex.eru) return ex.eru;
+        if (lang === 'fr' && ex.efr) return ex.efr;
+        if (lang === 'es' && ex.ees) return ex.ees;
+        if (lang === 'it' && ex.eit) return ex.eit;
         return ex.e || '';
     }
 
