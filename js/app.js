@@ -242,7 +242,8 @@ PPP.app = (function () {
             showInstallBanner(isAndroid ? 'android' : 'ios');
         }, 2000);
 
-        initMobileSwipeHint();
+        // S94: swipe hint disabled — mobile results are cards now (nothing to swipe).
+        // initMobileSwipeHint();
     }
 
     function initMobileSwipeHint() {

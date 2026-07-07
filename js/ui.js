@@ -89,6 +89,7 @@ PPP.ui = (function () {
                 comboContainer.appendChild(ttLabel);
 
                 var btnWrap = document.createElement('div');
+                btnWrap.className = 'tt-btnwrap'; // S94: mobile card CSS hook (inert on desktop)
                 btnWrap.style.cssText = 'display:inline-flex;gap:0;justify-content:flex-start;align-items:center;';
 
                 var bdBtn = document.createElement('button');
@@ -141,6 +142,10 @@ PPP.ui = (function () {
     function renderResults(rows, searchTermStr, startIndex, endIndex, matchHints) {
         var table = document.getElementById('resultsTable');
         table.innerHTML = '';
+        // S94: mobile card layout hook — CSS (≤640px) turns rows of THIS
+        // 13-column lecture table into cards. Other tables (citations,
+        // transcript snippets) keep the classic table layout.
+        table.classList.add('lecture-cards');
         var thead = table.createTHead();
         // Count: only lectures with at least one ORIGINAL transcript (EN/LV/RU non-duplicate)
         var DUP_LABELS = { 'Duplicate': 1, 'Dublikāts': 1, 'Дубликат': 1, 'Дубикат': 1 };
@@ -245,6 +250,8 @@ PPP.ui = (function () {
                             var viewBtn = document.createElement('a');
                             viewBtn.href = '#';
                             viewBtn.textContent = langLabel;
+                            // S94: class only used by mobile card CSS (desktop keeps inline styles)
+                            viewBtn.className = 'script-chip ' + (isDuplicate ? 'script-dup' : (isRaw ? 'script-raw' : 'script-orig'));
                             viewBtn.title = isRaw ? 'Open raw (auto) transcript at [' + row._blockIndex + ']' : 'Open transcript at [' + row._blockIndex + ']';
                             if (isDuplicate) {
                                 viewBtn.style.cssText = 'color:#1a4fa8;font-weight:600;font-size:11px;text-decoration:underline;cursor:pointer;';
@@ -295,6 +302,8 @@ PPP.ui = (function () {
                             var viewBtn = document.createElement('a');
                             viewBtn.href = '#';
                             viewBtn.textContent = langLabel;
+                            // S94: class only used by mobile card CSS (desktop keeps inline styles)
+                            viewBtn.className = 'script-chip ' + (isDuplicate ? 'script-dup' : (isRaw ? 'script-raw' : 'script-orig'));
                             viewBtn.title = isRaw ? 'Open raw (auto) transcript' : 'Open transcript';
                             if (isDuplicate) {
                                 // Duplicate label: blue, 11px, same as Essence
@@ -333,6 +342,7 @@ PPP.ui = (function () {
                             var a = document.createElement('a');
                             a.href = url;
                             a.textContent = label;
+                            a.className = 'ext-chip'; // S94: mobile card chip styling hook
                             a.target = '_blank';
                             a.rel = 'noopener';
                             td.appendChild(a);
@@ -393,6 +403,7 @@ PPP.ui = (function () {
     function renderTranscriptResults(rows, searchTermStr) {
         var container = document.getElementById('resultsTable');
         container.innerHTML = '';
+        container.classList.remove('lecture-cards'); // not the 13-col lecture table
 
         if (rows.length === 0) {
             container.innerHTML = '<div class="empty-result-message">' + t('noTranscriptResults') + '</div>';
@@ -497,6 +508,7 @@ PPP.ui = (function () {
     function renderEmptyTable() {
         var table = document.getElementById('resultsTable');
         table.innerHTML = '';
+        table.classList.add('lecture-cards'); // S94: keep card layout hook on empty state too
         var thead = table.createTHead();
         buildHeader(thead);
         var tbody = table.createTBody();
@@ -666,6 +678,7 @@ PPP.ui = (function () {
      */
     function renderCitationResults(rows, searchTerms) {
         var table = document.getElementById('resultsTable');
+        table.classList.remove('lecture-cards'); // not the 13-col lecture table
         var html = '<thead><tr>' +
             '<th>Reference</th>' +
             '<th>Source</th>' +
@@ -707,6 +720,7 @@ PPP.ui = (function () {
      */
     function renderCitationStats(rows) {
         var table = document.getElementById('resultsTable');
+        table.classList.remove('lecture-cards'); // not the 13-col lecture table
         var html = '<thead><tr>' +
             '<th>Source</th>' +
             '<th>Total Citations</th>' +

@@ -1347,7 +1347,10 @@ th.transcripts-block {
     .logo-title { font-size: 20px; }
     .logo-subtitle { font-size: 8px; letter-spacing: 2.5px; }
     .search-bar input { font-size: 13px; padding: 9px 12px; }
-    .top-left-buttons { padding: 8px 10px; gap: 10px; min-width: 800px; box-sizing: border-box; }
+    /* S94 cards: buttons flow ABOVE the results instead of overlaying the
+       (now hidden) table header — the 800px overlay forced horizontal scroll
+       and would overlap the first card. */
+    .top-left-buttons { position: static; min-width: 0; padding: 4px 4px 8px; gap: 10px; box-sizing: border-box; pointer-events: auto; }
     .top-left-buttons button { padding: 5px 12px; font-size: 10px; }
     #dbLastUpdate { font-size: 9px; }
     .results-container { padding: 0 4px 30px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -1391,6 +1394,221 @@ th.transcripts-block {
         padding-top: 10px;
         padding-bottom: 10px;
     }
+
+    /* ===== S94: RESULT CARDS (main 13-column lecture table only) =====
+       The .lecture-cards class is set by ui.js renderResults/renderEmptyTable
+       and removed for citation/snippet tables, which keep the classic
+       scrollable table. Desktop (>640px) is untouched — everything below
+       lives inside this media query.
+       Cell map (DOM order): 1 ★  2 🔗  3 Date  4 Type  5 Title  6 Country
+       7 Lang.  8 Links  9 Dwnld.  10 Length  11 EN  12 LV  13 RU */
+    #resultsTable.lecture-cards {
+        display: block;
+        min-width: 0;
+        background: transparent;
+        border: none;
+        box-shadow: none;
+        overflow: visible;
+    }
+    /* Header: column headers are hidden, but the "N Transcripts & Translations"
+       block (count + By Date / By Topic / Newest buttons) stays available
+       above the cards — hiding it would be a mobile feature loss. */
+    #resultsTable.lecture-cards thead { display: block; }
+    #resultsTable.lecture-cards thead tr { display: block; }
+    #resultsTable.lecture-cards thead th { display: none; }
+    #resultsTable.lecture-cards thead th.transcripts-block {
+        display: block;
+        background: transparent !important;
+        border-bottom: none;
+        padding: 0 0 12px;
+        text-align: center !important; /* beats inline textAlign='left' (desktop look) */
+        white-space: normal;
+    }
+    #resultsTable.lecture-cards thead th.transcripts-block .tt-btnwrap {
+        display: inline-flex !important;
+        flex-wrap: wrap;
+        justify-content: center;
+        max-width: 100%;
+    }
+    /* Count label readable in dark mode (inline color is #1a3a6b) */
+    body.dark #resultsTable.lecture-cards thead th.transcripts-block [data-i18n="transcriptsAndTranslations"] {
+        color: var(--primary-light) !important;
+    }
+    /* Buttons: ≥44px touch targets + AA gradients (same tokens the combo
+       buttons use — see test 25). !important beats the inline desktop styles. */
+    #resultsTable.lecture-cards thead th.transcripts-block button {
+        min-height: 44px;
+        padding: 10px 16px !important;
+        font-size: 12px !important;
+    }
+    #resultsTable.lecture-cards thead th.transcripts-block button[data-i18n="byDate"] {
+        background: linear-gradient(135deg, var(--btn-saffron), var(--btn-saffron-light)) !important;
+    }
+    #resultsTable.lecture-cards thead th.transcripts-block button[data-i18n="lectureTopics"] {
+        background: linear-gradient(135deg, var(--btn-blue), var(--btn-blue-light)) !important;
+    }
+    #resultsTable.lecture-cards thead th.transcripts-block button[data-i18n="latest20Transcripts"] {
+        background: linear-gradient(135deg, var(--btn-gold), var(--btn-gold-light)) !important;
+    }
+    #resultsTable.lecture-cards tbody { display: block; }
+    #resultsTable.lecture-cards tbody tr {
+        position: relative;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow-sm);
+        margin-bottom: 12px;
+        padding: 12px 12px 10px;
+    }
+    #resultsTable.lecture-cards tbody td {
+        display: block;
+        padding: 0;
+        border-bottom: none;
+        font-size: 13px;
+        overflow-wrap: anywhere;
+    }
+    #resultsTable.lecture-cards tbody tr:hover td,
+    body.dark #resultsTable.lecture-cards tbody tr:hover td { background: transparent; }
+    /* Empty cells (no value / no transcript) take no space */
+    #resultsTable.lecture-cards tbody td:empty { display: none; }
+
+    /* ★ and 🔗 pinned to the card's top-right corner */
+    #resultsTable.lecture-cards tbody td.fav-cell {
+        position: absolute; top: 6px; right: 38px; width: auto;
+    }
+    #resultsTable.lecture-cards tbody td.share-cell {
+        position: absolute; top: 6px; right: 6px; width: auto;
+    }
+    #resultsTable.lecture-cards .fav-star { font-size: 20px; padding: 6px; }
+    #resultsTable.lecture-cards .share-btn { font-size: 16px; padding: 8px 6px; }
+
+    /* 1) Title (Original file name) + translated title + Essence — full width */
+    #resultsTable.lecture-cards tbody td:nth-child(5) {
+        order: -1;
+        flex: 0 0 100%;
+        padding-right: 68px; /* keep clear of ★ / 🔗 */
+        font-size: 15px;
+        font-weight: 700;
+        line-height: 1.35;
+        margin-bottom: 6px;
+    }
+    #resultsTable.lecture-cards tbody td:nth-child(5) .match-hint {
+        font-size: 12px;
+        font-weight: 400;
+        margin-top: 4px;
+    }
+    #resultsTable.lecture-cards tbody td:nth-child(5) .essence-hint { font-weight: 600; }
+
+    /* 2) Meta row: Date · Type · Length · Country · Lang (muted, compact) */
+    #resultsTable.lecture-cards tbody td:nth-child(3) { order: 1; }
+    #resultsTable.lecture-cards tbody td:nth-child(4) { order: 2; }
+    #resultsTable.lecture-cards tbody td:nth-child(10) { order: 3; }
+    #resultsTable.lecture-cards tbody td:nth-child(6) { order: 4; }
+    #resultsTable.lecture-cards tbody td:nth-child(7) { order: 5; }
+    #resultsTable.lecture-cards tbody td:nth-child(3),
+    #resultsTable.lecture-cards tbody td:nth-child(4),
+    #resultsTable.lecture-cards tbody td:nth-child(6),
+    #resultsTable.lecture-cards tbody td:nth-child(7),
+    #resultsTable.lecture-cards tbody td:nth-child(10) {
+        flex: 0 0 auto;
+        font-size: 13px;
+        color: var(--text-muted);
+    }
+    #resultsTable.lecture-cards tbody td:nth-child(4):not(:empty)::before,
+    #resultsTable.lecture-cards tbody td:nth-child(6):not(:empty)::before,
+    #resultsTable.lecture-cards tbody td:nth-child(7):not(:empty)::before,
+    #resultsTable.lecture-cards tbody td:nth-child(10):not(:empty)::before {
+        content: '\00b7';
+        margin: 0 6px;
+        color: var(--text-muted);
+    }
+
+    /* 3) Action row on its own line (::after = flex line break before chips) */
+    #resultsTable.lecture-cards tbody tr::after {
+        content: '';
+        order: 6;
+        flex-basis: 100%;
+        height: 0;
+    }
+    #resultsTable.lecture-cards tbody td:nth-child(8) { order: 7; }
+    #resultsTable.lecture-cards tbody td:nth-child(9) { order: 8; }
+    #resultsTable.lecture-cards tbody td:nth-child(11) { order: 9; }
+    #resultsTable.lecture-cards tbody td:nth-child(12) { order: 10; }
+    #resultsTable.lecture-cards tbody td:nth-child(13) { order: 11; }
+    #resultsTable.lecture-cards tbody td:nth-child(8),
+    #resultsTable.lecture-cards tbody td:nth-child(9),
+    #resultsTable.lecture-cards tbody td:nth-child(11),
+    #resultsTable.lecture-cards tbody td:nth-child(12),
+    #resultsTable.lecture-cards tbody td:nth-child(13) {
+        flex: 0 0 auto;
+        margin: 8px 8px 0 0;
+    }
+
+    /* Chips: ≥44px touch targets, WCAG AA ≥4.5:1 contrast.
+       !important is required to beat the inline styles ui.js sets for the
+       desktop look. */
+    #resultsTable.lecture-cards a.ext-chip,
+    #resultsTable.lecture-cards a.script-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        min-width: 56px;
+        padding: 0 14px;
+        border-radius: 22px;
+        box-sizing: border-box;
+        line-height: 1.2;
+        font-size: 13px !important;
+        font-weight: 700 !important;
+        text-decoration: none !important;
+    }
+    #resultsTable.lecture-cards a.ext-chip {
+        border: 1.5px solid var(--accent);
+        background: transparent;
+        color: #1a3a6b !important;              /* 9.9:1 on cream card */
+    }
+    #resultsTable.lecture-cards a.script-chip.script-orig {
+        border: none;
+        background: #1a3a6b;
+        color: #ffffff !important;              /* 11.3:1 — both themes */
+    }
+    #resultsTable.lecture-cards a.script-chip.script-raw {
+        border: 1.5px dashed #8a8377;
+        background: transparent;
+        color: #4a453d !important;              /* ~8:1 on cream */
+        font-weight: 600 !important;
+    }
+    #resultsTable.lecture-cards a.script-chip.script-dup {
+        border: 1.5px solid #1a4fa8;
+        background: transparent;
+        color: #1a4fa8 !important;              /* ~7.5:1 on cream */
+        font-size: 12px !important;
+    }
+    body.dark #resultsTable.lecture-cards a.ext-chip {
+        border-color: #8fb7ee;
+        color: #8fb7ee !important;              /* ~7:1 on dark card */
+    }
+    body.dark #resultsTable.lecture-cards a.script-chip.script-raw {
+        border-color: #6a655c;
+        color: #b9b2a4 !important;              /* ~7:1 on dark card */
+    }
+    body.dark #resultsTable.lecture-cards a.script-chip.script-dup {
+        border-color: #7ea6e8;
+        color: #7ea6e8 !important;              /* ~5.9:1 on dark card */
+    }
+
+    /* Empty state ("Enter search terms…" / "No results") inside card table */
+    #resultsTable.lecture-cards td.empty-result-message {
+        flex: 0 0 100%;
+        order: 0;
+        position: static;
+    }
+
+    /* Cards have nothing to swipe — never show the swipe hint on mobile */
+    #swipeHintMobile { display: none !important; }
 }
 
 /* ===== FAVORITES ===== */

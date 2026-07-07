@@ -541,4 +541,158 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(ratios.comboGold).toBeGreaterThanOrEqual(4.5);
   });
 
+  test('26. Mobile results have no horizontal overflow', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    // Wait for a REAL result row (13 cells), not the transient empty-state row
+    await page.waitForFunction(() => {
+      const tr = document.querySelector('#resultsTable.lecture-cards tbody tr');
+      return tr && tr.children.length === 13;
+    }, { timeout: 10000 });
+
+    // Document itself must not scroll horizontally (2px tolerance)
+    const doc = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(doc.scrollWidth).toBeLessThanOrEqual(doc.clientWidth + 2);
+
+    // The results container must not have inner horizontal scroll either
+    const cont = await page.evaluate(() => {
+      const el = document.querySelector('.results-container');
+      return { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth };
+    });
+    expect(cont.scrollWidth).toBeLessThanOrEqual(cont.clientWidth + 2);
+  });
+
+  test('27. Mobile card shows title in first position', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    // Wait for a REAL result row (13 cells), not the transient empty-state row
+    await page.waitForFunction(() => {
+      const tr = document.querySelector('#resultsTable.lecture-cards tbody tr');
+      return tr && tr.children.length === 13;
+    }, { timeout: 10000 });
+
+    const card = await page.evaluate(() => {
+      const tr = document.querySelector('#resultsTable.lecture-cards tbody tr');
+      const tds = Array.from(tr.children);
+      const title = tds[4]; // Original file name cell
+      const date = tds[2];  // Date cell
+      const cs = getComputedStyle(title);
+      const titleTop = title.getBoundingClientRect().top;
+      // topmost Y among other visible in-flow cells (meta + action rows)
+      const otherTops = tds
+        .filter((td, i) => i !== 4)
+        .filter((td) => {
+          const s = getComputedStyle(td);
+          return s.display !== 'none' && s.position !== 'absolute';
+        })
+        .map((td) => td.getBoundingClientRect().top);
+      return {
+        titleText: (title.textContent || '').trim(),
+        dateText: (date.textContent || '').trim(),
+        fontSizePx: parseFloat(cs.fontSize),
+        fontWeight: parseInt(cs.fontWeight, 10),
+        titleTop,
+        minOtherTop: Math.min.apply(null, otherTops),
+      };
+    });
+
+    // Title is the first visible text element of the card (above Date/meta)
+    expect(card.titleText.length).toBeGreaterThan(0);
+    expect(card.titleTop).toBeLessThan(card.minOtherTop);
+    // and it is the file name, not the date
+    expect(card.titleText).not.toBe(card.dateText);
+    expect(card.titleText).not.toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // readable: >= 14px and bold
+    expect(card.fontSizePx).toBeGreaterThanOrEqual(14);
+    expect(card.fontWeight).toBeGreaterThanOrEqual(600);
+  });
+
+  test('28. Desktop table unchanged (regression guard)', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    // Wait for a REAL result row (13 cells), not the transient empty-state row
+    await page.waitForFunction(() => {
+      const tr = document.querySelector('#resultsTable tbody tr');
+      return tr && tr.children.length === 13;
+    }, { timeout: 10000 });
+
+    const desktop = await page.evaluate(() => {
+      const table = document.getElementById('resultsTable');
+      const thead = table.querySelector('thead');
+      const tr = table.querySelector('tbody tr');
+      return {
+        tableDisplay: getComputedStyle(table).display,
+        theadDisplay: thead ? getComputedStyle(thead).display : 'missing',
+        rowDisplay: getComputedStyle(tr).display,
+        cellCount: tr.children.length,
+        headerCells: thead ? thead.querySelectorAll('th').length : 0,
+      };
+    });
+
+    expect(desktop.tableDisplay).toBe('table');
+    expect(desktop.theadDisplay).not.toBe('none');
+    expect(desktop.rowDisplay).toBe('table-row');
+    expect(desktop.cellCount).toBe(13); // ★ + 🔗 + 11 columns
+    expect(desktop.headerCells).toBeGreaterThan(10);
+
+    // thead quick buttons (By Date / By Topic / Newest) still visible on desktop
+    await expect(page.locator('.transcripts-block')).toBeVisible();
+  });
+
+  test('29. Mobile cards keep header quick buttons working', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => {
+      const tr = document.querySelector('#resultsTable.lecture-cards tbody tr');
+      return tr && tr.children.length === 13;
+    }, { timeout: 10000 });
+
+    // Extras (essence JSON) arriving later re-renders the whole table
+    // (app.js loadExtras().then(displayResults)) — wait for it so the DOM we
+    // measure is final and locators do not detach mid-assertion.
+    await page.waitForFunction(() => window.PPP && PPP.ui && PPP.ui.extrasReady(), { timeout: 30000 });
+
+    // The Transcripts & Translations block (count + 3 buttons) is visible above cards
+    await expect(page.locator('.transcripts-block')).toBeVisible();
+    const buttons = page.locator('.transcripts-block button');
+    await expect(buttons).toHaveCount(3);
+    for (let i = 0; i < 3; i++) {
+      const box = await buttons.nth(i).boundingBox();
+      expect(box).not.toBeNull();
+      expect(box.height).toBeGreaterThanOrEqual(44); // touch target
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(377); // inside 375px viewport (+2px)
+    }
+
+    // Clicking "By Topic" really opens the topics view
+    await page.click('.transcripts-block button[data-i18n="lectureTopics"]');
+    await page.waitForFunction(() => {
+      const list = document.getElementById('topicsList');
+      return list && getComputedStyle(list).display !== 'none' &&
+        list.querySelectorAll('.topic-item').length > 0;
+    }, { timeout: 15000 });
+    const topicCount = await page.locator('#topicsList .topic-item').count();
+    expect(topicCount).toBeGreaterThan(0);
+  });
+
 });
