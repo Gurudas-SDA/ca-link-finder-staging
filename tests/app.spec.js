@@ -386,4 +386,68 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     }
   });
 
+  test('20. Escape closes transcript modal', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Open a transcript (same path as test 8)
+    await page.evaluate(() => PPP.app.openHtmlTranscriptViewer('455', 'en'));
+    await page.waitForSelector('#transcriptModalOverlay.active', { timeout: 10000 });
+
+    // Press Escape — modal must close
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#transcriptModalOverlay')).not.toHaveClass(/active/, { timeout: 5000 });
+  });
+
+  test('21. loading placeholder never shows 0 links', async ({ page }) => {
+    await page.goto('./');
+
+    // Immediately (before app ready) the placeholder must not claim "0 links"
+    const early = await page.locator('#searchTerm').getAttribute('placeholder');
+    expect(early).not.toContain('among 0');
+    expect(early).not.toMatch(/(^|\s)0(\s|$)/);
+
+    // Keep sampling until ready — no intermediate state may show "0"
+    const seen = [];
+    for (let i = 0; i < 40; i++) {
+      const ph = await page.locator('#searchTerm').getAttribute('placeholder');
+      seen.push(ph || '');
+      const ready = await page.evaluate(() => {
+        const input = document.getElementById('searchTerm');
+        return input && !input.disabled && input.placeholder && input.placeholder.includes('9');
+      });
+      if (ready) break;
+      await page.waitForTimeout(500);
+    }
+    for (const ph of seen) {
+      expect(ph).not.toContain('among 0');
+      expect(ph).not.toMatch(/(^|\s)0(\s|$)/);
+    }
+
+    // After ready — placeholder must contain a count > 0
+    await waitForAppReady(page);
+    const finalPh = await page.locator('#searchTerm').getAttribute('placeholder');
+    const m = (finalPh || '').replace(/[,. ]/g, '').match(/(\d+)/);
+    expect(m).not.toBeNull();
+    expect(parseInt(m[1], 10)).toBeGreaterThan(0);
+  });
+
+  test('22. app is usable when extras.json is blocked', async ({ page }) => {
+    // Block the extras JSON entirely — app must still become usable
+    await page.route('**/ppp_lecture_extras.json*', r => r.abort());
+
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    const info = await page.locator('#resultsInfo strong').textContent();
+    expect(parseInt(info)).toBeGreaterThan(0);
+
+    const rows = await page.locator('#resultsTable tbody tr').count();
+    expect(rows).toBeGreaterThan(0);
+  });
+
 });

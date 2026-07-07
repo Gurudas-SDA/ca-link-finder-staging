@@ -933,8 +933,9 @@ PPP.ui = (function () {
         return ex.s || '';
     }
 
-    // Pre-load early (fire & forget)
-    loadExtras();
+    // NOTE (S94 perf fix): extras are NO LONGER pre-loaded at module load.
+    // app.js starts loadExtras() in the background AFTER the meta DB is ready,
+    // so the large extras JSON does not compete with meta.db for bandwidth.
 
     function openSummaryModal(title, lectureNr) {
         var overlay = document.getElementById('summaryModalOverlay');

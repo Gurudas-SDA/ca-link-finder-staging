@@ -17,7 +17,10 @@ module.exports = defineConfig({
     trace: 'off',
   },
   webServer: {
-    command: 'python -m http.server 8899',
+    // node instead of `python -m http.server`: python truncates large files on
+    // this machine (meta.db loses its last ~22 KB, ERR_CONNECTION_RESET) — the
+    // root cause of the historic slow/flaky test gate (S89). See tests/static-server.cjs.
+    command: 'node tests/static-server.cjs',
     port: 8899,
     reuseExistingServer: true,
     timeout: 60000,

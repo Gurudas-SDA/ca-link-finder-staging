@@ -198,6 +198,20 @@ PPP.app = (function () {
             if (e.key === 'Enter') doSearch();
         });
 
+        // Escape closes open modals (same close paths as the × buttons)
+        document.addEventListener('keydown', function (e) {
+            if (e.key !== 'Escape') return;
+            var tOverlay = document.getElementById('transcriptModalOverlay');
+            if (tOverlay && tOverlay.classList.contains('active')) {
+                closeTranscriptModal();
+                return;
+            }
+            var hOverlay = document.getElementById('helpModalOverlay');
+            if (hOverlay && hOverlay.classList.contains('active')) {
+                closeHelpModal();
+            }
+        });
+
         // Ensure metadata mode is active on start
         setSearchMode('metadata');
 
@@ -326,21 +340,21 @@ PPP.app = (function () {
         // Show progress bar
         ui.showLoading(i18n.t('loadingDB'));
 
-        var sqlitePromise = loadSqlite();
-
-        // When DB is ready but extras are still loading, switch indicator text
-        sqlitePromise.then(function () {
-            if (ui.extrasReady && !ui.extrasReady()) {
-                ui.setLoadingText(i18n.t('loadingExtras'));
-            }
-        }, function () { /* swallow — handled below */ });
-
-        var extrasPromise = (ui.loadExtras ? ui.loadExtras() : Promise.resolve());
-
-        Promise.all([sqlitePromise, extrasPromise]).then(function () {
+        loadSqlite().then(function () {
+            // App is USABLE as soon as the meta DB is ready — do not block
+            // readiness on the large extras JSON (S94 perf fix).
             ui.hideLoading();
             usingSqlite = true;
             onDataLoaded();
+
+            // Load extras (essence/summary/title translations) in the
+            // background AFTER the app is ready; refresh visible results
+            // when done so essence/summary data appears.
+            if (ui.loadExtras) {
+                ui.loadExtras().then(function () {
+                    if (allResults.length > 0) displayResults();
+                }).catch(function () { /* extras are optional */ });
+            }
         }).catch(function (sqliteErr) {
             console.warn('SQLite load failed, falling back to XLSX:', sqliteErr);
             ui.hideLoading();
@@ -352,10 +366,22 @@ PPP.app = (function () {
      * Load SQLite database via sql.js.
      */
     function loadSqlite() {
+        var openingShown = false;
         return db.initSqlJs().then(function () {
             return db.loadMetaDB(function (progress) {
                 ui.updateProgress(progress);
+                // Download complete — the silent part (opening the DB and
+                // running the initial SELECT) starts now. Tell the user.
+                if (progress >= 0.999 && !openingShown) {
+                    openingShown = true;
+                    ui.setLoadingText(i18n.t('openingDB'));
+                }
             });
+        }).then(function () {
+            if (!openingShown) {
+                openingShown = true;
+                ui.setLoadingText(i18n.t('openingDB'));
+            }
         }).then(function () {
             return db.getStatsAsync();
         }).then(function (stats) {
@@ -806,7 +832,12 @@ PPP.app = (function () {
             setComboDisplay(i18n.t('mostCitedVersesDisplay'));
         } else {
             var count = totalLectures || 0;
-            searchInput.placeholder = i18n.t('searchPlaceholder').replace('{count}', count.toLocaleString());
+            if (!dataLoaded && !count) {
+                // Still loading and no cached count — never show "among 0 links"
+                searchInput.placeholder = i18n.t('searchPlaceholderLoading');
+            } else {
+                searchInput.placeholder = i18n.t('searchPlaceholder').replace('{count}', count.toLocaleString());
+            }
             clearComboDisplay();
         }
         // Immediately show top 108 when that mode is selected
