@@ -2,3 +2,6 @@ node_modules/
 test-results/
 test-results.json
 playwright-report/
+
+# Local-only: synced from deploy/transcripts (not tracked — 246 MB, deploy is canonical)
+transcripts/
