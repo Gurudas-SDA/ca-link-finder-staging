@@ -695,4 +695,48 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(topicCount).toBeGreaterThan(0);
   });
 
+  test.describe('extras retry (SW blocked so page.route sees every request)', () => {
+    test.use({ serviceWorkers: 'block' });
+
+    test('30. Extras retry after failure — indicator shows, auto-retry restores essence', async ({ page }) => {
+    test.setTimeout(120000); // auto-retry fires 20 s after the first failure
+
+    // Abort the FIRST extras request (simulates a mobile network hiccup),
+    // let all subsequent requests through.
+    let extrasRequests = 0;
+    await page.route('**/ppp_lecture_extras.json*', route => {
+      extrasRequests++;
+      if (extrasRequests === 1) return route.abort();
+      return route.continue();
+    });
+
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // First attempt failed → extras NOT ready (the old bug cached {} forever)
+    // and the unobtrusive loading indicator is visible.
+    await expect(page.locator('#extrasLoadingInfo')).toBeVisible();
+    expect(await page.evaluate(() => PPP.ui.extrasReady())).toBe(false);
+
+    // Search works without extras; the indicator stays visible near results
+    // info UNLESS the 20 s auto-retry has already succeeded by now (locally
+    // the refetch is fast, so both orders are legal).
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    const retryDone = await page.evaluate(() => PPP.ui.extrasReady());
+    if (!retryDone) {
+      await expect(page.locator('#extrasLoadingInfo')).toBeVisible();
+    }
+
+    // The scheduled retry (20 s) refetches and succeeds this time.
+    await page.waitForFunction(() => window.PPP && PPP.ui && PPP.ui.extrasReady(), { timeout: 45000 });
+    expect(extrasRequests).toBeGreaterThanOrEqual(2);
+
+    // Visible results were refreshed: essence lines appear, indicator is gone.
+    await page.waitForSelector('.essence-hint', { timeout: 10000 });
+    await expect(page.locator('#extrasLoadingInfo')).toBeHidden();
+    });
+  });
+
 });

@@ -350,12 +350,10 @@ PPP.app = (function () {
 
             // Load extras (essence/summary/title translations) in the
             // background AFTER the app is ready; refresh visible results
-            // when done so essence/summary data appears.
-            if (ui.loadExtras) {
-                ui.loadExtras().then(function () {
-                    if (allResults.length > 0) displayResults();
-                }).catch(function () { /* extras are optional */ });
-            }
+            // when done so essence/summary data appears. On failure one
+            // automatic retry is scheduled (S95 fix — mobile network hiccup
+            // used to permanently hide essence/summary for the session).
+            startExtrasLoad();
         }).catch(function (sqliteErr) {
             console.warn('SQLite load failed, falling back to XLSX:', sqliteErr);
             ui.hideLoading();
@@ -768,6 +766,63 @@ PPP.app = (function () {
             }
         }
         return matched;
+    }
+
+    // ===== EXTRAS BACKGROUND LOAD (essence / summary / title translations) =====
+    // extras.json is large (~13 MB gzipped over the wire) and loads AFTER app
+    // readiness (S94 perf fix). Until it arrives, essence lines and summary
+    // links do not exist — show a small indicator and retry once on failure.
+    var _extrasRetryScheduled = false;
+
+    function _extrasIndicatorEl(create) {
+        var el = document.getElementById('extrasLoadingInfo');
+        if (!el && create) {
+            var info = document.getElementById('resultsInfo');
+            if (!info || !info.parentNode) return null;
+            el = document.createElement('div');
+            el.id = 'extrasLoadingInfo';
+            // Inline styles: one small muted line, no layout jump on removal.
+            el.style.cssText = 'font-size:0.8em;color:#888;margin-top:4px;';
+            info.parentNode.insertBefore(el, info.nextSibling);
+        }
+        return el;
+    }
+
+    function showExtrasIndicator() {
+        var el = _extrasIndicatorEl(true);
+        if (!el) return;
+        el.textContent = i18n.t('loadingExtras');
+        el.style.display = 'block';
+    }
+
+    function hideExtrasIndicator() {
+        var el = _extrasIndicatorEl(false);
+        if (el) el.style.display = 'none';
+    }
+
+    function startExtrasLoad() {
+        if (!ui.loadExtras) return;
+        if (ui.extrasReady && ui.extrasReady()) {
+            hideExtrasIndicator();
+            return;
+        }
+        showExtrasIndicator();
+        ui.loadExtras().then(function () {
+            if (!ui.extrasReady || ui.extrasReady()) {
+                // Loaded — remove the indicator and refresh visible results
+                // so essence lines / summary links appear.
+                hideExtrasIndicator();
+                if (allResults.length > 0) displayResults();
+            } else if (!_extrasRetryScheduled) {
+                // First attempt failed (e.g. network hiccup on mobile) —
+                // retry ONCE automatically after 20 s. Further retries happen
+                // on demand: openSummaryModal() calls loadExtras() again.
+                _extrasRetryScheduled = true;
+                setTimeout(startExtrasLoad, 20000);
+            } else {
+                hideExtrasIndicator();
+            }
+        }).catch(function () { hideExtrasIndicator(); /* extras are optional */ });
     }
 
     function displayResults() {

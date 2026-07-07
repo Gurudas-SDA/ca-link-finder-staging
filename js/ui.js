@@ -897,16 +897,22 @@ PPP.ui = (function () {
                     (v && v.extras ? ('?v=' + v.extras) : '');
                 return fetch(url);
             })
-            .then(function (r) { return r.ok ? r.json() : {}; })
+            .then(function (r) {
+                if (!r.ok) throw new Error('extras HTTP ' + r.status);
+                return r.json();
+            })
             .then(function (data) {
                 _extrasCache = data || {};
                 _extrasLoading = null;
                 return _extrasCache;
             })
             .catch(function () {
-                _extrasCache = {};
+                // Do NOT cache the failure (S95 fix): leave _extrasCache null
+                // so extrasReady() stays false and the NEXT loadExtras() call
+                // (app.js scheduled retry, or openSummaryModal on demand)
+                // fetches again. Return {} only as this call's result.
                 _extrasLoading = null;
-                return _extrasCache;
+                return {};
             });
         return _extrasLoading;
     }
