@@ -450,4 +450,95 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(rows).toBeGreaterThan(0);
   });
 
+  test('23. Keyboard focus is visible', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Tab through the first elements — at least one focused element must show
+    // a visible outline (the global :focus-visible ring)
+    let visibleOutlineFound = false;
+    for (let i = 0; i < 10; i++) {
+      await page.keyboard.press('Tab');
+      // some buttons have `transition: all 0.2s` which animates outline-width in
+      await page.waitForTimeout(300);
+      const visible = await page.evaluate(() => {
+        const el = document.activeElement;
+        if (!el || el === document.body) return false;
+        const cs = getComputedStyle(el);
+        return cs.outlineStyle !== 'none' && cs.outlineWidth !== '0px';
+      });
+      if (visible) { visibleOutlineFound = true; break; }
+    }
+    expect(visibleOutlineFound).toBe(true);
+  });
+
+  test('24. Search input has accessible name and lang switches', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Accessible name: placeholder changes, aria-label must be stable
+    const ariaLabel = await page.locator('#searchTerm').getAttribute('aria-label');
+    expect(ariaLabel).toBe('Search lectures');
+
+    // html[lang] must follow the UI language
+    await page.click('.lang-btn[data-lang="ru"]');
+    expect(await page.evaluate(() => document.documentElement.lang)).toBe('ru');
+
+    await page.click('.lang-btn[data-lang="en"]');
+    expect(await page.evaluate(() => document.documentElement.lang)).toBe('en');
+  });
+
+  test('25. Buttons meet AA contrast', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // WCAG relative-luminance contrast computed in-page from getComputedStyle.
+    // Gradients: every color stop of background-image must pass vs the text color.
+    const ratios = await page.evaluate(() => {
+      function lum(rgb) {
+        const f = (v) => {
+          v /= 255;
+          return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+        };
+        return 0.2126 * f(rgb[0]) + 0.7152 * f(rgb[1]) + 0.0722 * f(rgb[2]);
+      }
+      function contrast(c1, c2) {
+        const l1 = lum(c1), l2 = lum(c2);
+        const [hi, lo] = l1 > l2 ? [l1, l2] : [l2, l1];
+        return (hi + 0.05) / (lo + 0.05);
+      }
+      function parseColors(str) {
+        const out = [];
+        const re = /rgba?\((\d+(?:\.\d+)?),\s*(\d+(?:\.\d+)?),\s*(\d+(?:\.\d+)?)/g;
+        let m;
+        while ((m = re.exec(str))) out.push([+m[1], +m[2], +m[3]]);
+        return out;
+      }
+      function minContrast(sel) {
+        const el = document.querySelector(sel);
+        if (!el) return -1;
+        const cs = getComputedStyle(el);
+        const text = parseColors(cs.color)[0];
+        let bgs = [];
+        if (cs.backgroundImage && cs.backgroundImage !== 'none') {
+          bgs = parseColors(cs.backgroundImage);
+        }
+        if (!bgs.length) bgs = parseColors(cs.backgroundColor);
+        if (!text || !bgs.length) return -1;
+        return Math.min.apply(null, bgs.map((bg) => contrast(text, bg)));
+      }
+      return {
+        searchButton: minContrast('.search-bar button.search-button'),
+        modeButton: minContrast('.keywords-search-btn'),
+        comboSaffron: minContrast('.combo-btn-1'),
+        comboGold: minContrast('.combo-btn-3'),
+      };
+    });
+
+    expect(ratios.searchButton).toBeGreaterThanOrEqual(4.5);
+    expect(ratios.modeButton).toBeGreaterThanOrEqual(4.5);
+    expect(ratios.comboSaffron).toBeGreaterThanOrEqual(4.5);
+    expect(ratios.comboGold).toBeGreaterThanOrEqual(4.5);
+  });
+
 });

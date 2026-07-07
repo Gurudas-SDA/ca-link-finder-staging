@@ -2173,6 +2173,9 @@ PPP.app = (function () {
     function setLanguage(lang) {
         track('language', { lang: lang });
         i18n.setLanguage(lang);
+        // A11Y: keep the document language in sync (screen readers, hyphenation).
+        // Also covers initial load — init() calls setLanguage(savedLang).
+        document.documentElement.lang = lang;
         document.querySelectorAll('.lang-btn').forEach(function (btn) {
             btn.classList.toggle('active', btn.getAttribute('data-lang') === lang);
         });

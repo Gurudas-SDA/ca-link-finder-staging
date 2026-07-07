@@ -42,13 +42,13 @@
     <script defer src="https://cloud.umami.is/script.js" data-website-id="e50b4fd4-578a-4674-944d-4fefcb6999e1"></script>
 
     <!-- Application CSS -->
-    <link rel="stylesheet" href="css/styles.css?v=5d86b53e">
+    <link rel="stylesheet" href="css/styles.css?v=2d6332df">
 </head>
 <body>
 
     <!-- ===== HERO SECTION ===== -->
     <div class="hero">
-        <button class="theme-toggle" id="themeToggle" onclick="PPP.app.toggleTheme()" title="Dark / Light mode">☀️</button>
+        <button class="theme-toggle" id="themeToggle" onclick="PPP.app.toggleTheme()" title="Dark / Light mode" aria-label="Toggle dark mode">☀️</button>
         <!-- Chaitanya Academy Logo (SVG mandala + text) -->
         <div class="logo-wrap">
             <svg class="logo-mandala" viewBox="44 50 96 95" xmlns="http://www.w3.org/2000/svg">
@@ -102,7 +102,7 @@
         <div class="install-banner-content">
             <span class="install-text" id="installText" data-i18n="installBannerText">Install this app on your device</span>
             <button class="install-btn" id="installBtn" onclick="PPP.app.installApp()" data-i18n="installBtn">Show me how</button>
-            <button class="install-dismiss" onclick="PPP.app.dismissInstall()">&times;</button>
+            <button class="install-dismiss" onclick="PPP.app.dismissInstall()" aria-label="Close">&times;</button>
         </div>
     </div>
 
@@ -121,7 +121,7 @@
             <div class="search-row">
                 <button class="search-mode-btn active keywords-search-btn" data-mode="metadata" data-i18n="searchModeMetadata">Key words</button>
                 <div class="search-bar" style="flex:1;">
-                    <input type="text" id="searchTerm" placeholder="Loading..." disabled>
+                    <input type="text" id="searchTerm" placeholder="Loading..." aria-label="Search lectures" disabled>
                     <button class="search-button" onclick="PPP.app.search()" data-i18n="searchButton">Search</button>
                 </div>
             </div>
@@ -175,7 +175,7 @@
         <div class="help-modal" onclick="event.stopPropagation()">
             <div class="help-modal-header">
                 <h2 id="helpModalTitle">How to use the search field?</h2>
-                <button class="help-modal-close" onclick="PPP.app.closeHelpModal()">&times;</button>
+                <button class="help-modal-close" onclick="PPP.app.closeHelpModal()" aria-label="Close">&times;</button>
             </div>
             <div class="help-modal-body" id="helpModalBody"></div>
         </div>
@@ -187,7 +187,7 @@
             <div class="transcript-modal-header">
                 <h2 id="transcriptModalTitle">Transcript</h2>
                 <button type="button" id="transcriptDownloadBtn" class="transcript-download-btn" style="display:none;" title="Download" onclick="PPP.app.downloadTranscript()">&#8615; Download</button>
-                <button class="help-modal-close" onclick="PPP.app.closeTranscriptModal()">&times;</button>
+                <button class="help-modal-close" onclick="PPP.app.closeTranscriptModal()" aria-label="Close">&times;</button>
             </div>
             <div class="transcript-modal-body" id="transcriptModalBody"></div>
         </div>
@@ -198,7 +198,7 @@
         <div class="transcript-modal" onclick="event.stopPropagation()">
             <div class="transcript-modal-header">
                 <h2 id="summaryModalTitle"></h2>
-                <button class="help-modal-close" onclick="PPP.ui.closeSummaryModal()">&times;</button>
+                <button class="help-modal-close" onclick="PPP.ui.closeSummaryModal()" aria-label="Close">&times;</button>
             </div>
             <div class="transcript-modal-body" id="summaryModalBody" style="font-size:15px;line-height:1.7;"></div>
         </div>
@@ -207,12 +207,12 @@
     <!-- ===== APPLICATION SCRIPTS ===== -->
     <!-- Load order matters: utils first, then i18n, db, search, ui, app last -->
     <script src="js/utils.js?v=1eaf600f"></script>
-    <script src="js/i18n.js?v=6c7b1aa7"></script>
+    <script src="js/i18n.js?v=8b57adad"></script>
     <script src="js/db.js?v=e11862f2"></script>
     <script src="js/search.js?v=f57ebe43"></script>
-    <script src="js/ui.js?v=2fdfe769"></script>
+    <script src="js/ui.js?v=617d6e0a"></script>
     <script src="js/favorites.js?v=7c80f4ac"></script>
-    <script src="js/app.js?v=7293e9a7"></script>
+    <script src="js/app.js?v=cdd1a4f0"></script>
 
 </body>
 </html>

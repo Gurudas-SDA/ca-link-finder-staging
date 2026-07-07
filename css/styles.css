@@ -31,6 +31,23 @@
     --radius-sm: 6px;
     /* Tulasi green */
     --tulasi: #2e7d32;
+    /* ===== A11Y BUTTON COLORS =====
+       Darker gold/saffron/blue shades for buttons with WHITE text.
+       Every value >= 4.5:1 against #fff (WCAG AA normal text):
+       gold #8f6a09 4.96 | gold-light #976e09 4.62 | gold-dark #7a5c08 6.25
+       saffron #aa5210 5.35 | saffron-light #b45e14 4.61 | saffron-dark #9c4a0e 6.18
+       blue #1a3a6b 11.28 | blue-light #2a4f8a 8.13 | blue-dark #0f2847 14.84 */
+    --btn-gold: #8f6a09;
+    --btn-gold-light: #976e09;
+    --btn-gold-dark: #7a5c08;
+    --btn-saffron: #aa5210;
+    --btn-saffron-light: #b45e14;
+    --btn-saffron-dark: #9c4a0e;
+    --btn-blue: #1a3a6b;
+    --btn-blue-light: #2a4f8a;
+    --btn-blue-dark: #0f2847;
+    /* Keyboard focus ring — 4.98:1 vs --bg (needs >= 3:1 non-text) */
+    --focus-ring: #aa5210;
 }
 
 /* ===== DARK MODE ===== */
@@ -54,6 +71,8 @@ body.dark {
     --shadow-md: 0 4px 12px rgba(0,0,0,0.25), 0 2px 4px rgba(0,0,0,0.15);
     --shadow-lg: 0 10px 30px rgba(0,0,0,0.35), 0 4px 8px rgba(0,0,0,0.2);
     --tulasi: #4caf50;
+    /* Focus ring on dark surfaces — #f4a54b is 8.39:1 vs #1a1a2e */
+    --focus-ring: #f4a54b;
 }
 body.dark .hero {
     background: linear-gradient(160deg, #0a0a1a 0%, #111133 40%, #1a1a44 100%);
@@ -111,7 +130,7 @@ body.dark .nav-button:disabled {
     color: #5a5a7a;
 }
 body.dark .fav-count-badge {
-    background: var(--primary-dark);
+    background: var(--btn-gold);
     color: #fff;
 }
 body.dark ::-webkit-scrollbar-thumb { background: #4a4a6a; }
@@ -319,18 +338,18 @@ h1 {
     transition: all 0.2s ease;
     letter-spacing: 0.2px;
     white-space: nowrap;
-    background: linear-gradient(135deg, var(--primary), var(--primary-light));
+    background: linear-gradient(135deg, var(--btn-gold), var(--btn-gold-light));
     color: #fff;
     box-shadow: 0 2px 6px rgba(184,134,11,0.3);
 }
 .search-quick-buttons button:hover {
     transform: translateY(-1px);
-    background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+    background: linear-gradient(135deg, var(--btn-gold-dark), var(--btn-gold));
     box-shadow: 0 4px 10px rgba(184,134,11,0.4);
 }
 /* Active state for mode-toggle buttons in the unified row */
 .search-quick-buttons .search-mode-btn.active {
-    background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+    background: linear-gradient(135deg, var(--btn-gold-dark), var(--btn-gold));
     box-shadow: 0 2px 6px rgba(139,105,20,0.45), inset 0 0 0 2px rgba(255,255,255,0.35);
 }
 /* Unified combo button row — merged touching buttons with alternating gold */
@@ -359,14 +378,14 @@ h1 {
     text-shadow: 0 1px 1px rgba(0,0,0,0.15);
 }
 .search-quick-buttons .combo-btn-1 {
-    background: linear-gradient(135deg, #e8842c, #f4a54b);
+    background: linear-gradient(135deg, #aa5210, #b45e14);
     border-radius: 22px 0 0 22px;
 }
 .search-quick-buttons .combo-btn-2 {
-    background: linear-gradient(135deg, #cf7020, #e8842c);
+    background: linear-gradient(135deg, #9c4a0e, #aa5210);
 }
 .search-quick-buttons .combo-btn-3 {
-    background: linear-gradient(135deg, #b8860b, #d4a843);
+    background: linear-gradient(135deg, #8f6a09, #976e09);
 }
 .search-quick-buttons .combo-btn-4 {
     background: linear-gradient(135deg, #2a4f8a, #3a5fa0);
@@ -375,7 +394,7 @@ h1 {
     background: linear-gradient(135deg, #1a3a6b, #2a4f8a);
 }
 .search-quick-buttons .combo-btn-6 {
-    background: linear-gradient(135deg, #8b6914, #a87f0d);
+    background: linear-gradient(135deg, #7a5c08, #8b6914);
     border-radius: 0 22px 22px 0;
 }
 .search-quick-buttons .combo-btn:hover {
@@ -446,7 +465,7 @@ h1 {
     pointer-events: none;
 }
 .search-bar button.search-button {
-    background: linear-gradient(135deg, #b8860b, #d4a843);
+    background: linear-gradient(135deg, var(--btn-gold), var(--btn-gold-light));
     color: #fff;
     border: none;
     padding: 10px 22px;
@@ -458,7 +477,7 @@ h1 {
     white-space: nowrap;
 }
 .search-bar button.search-button:hover {
-    background: linear-gradient(135deg, #8b6914, #b8860b);
+    background: linear-gradient(135deg, var(--btn-gold-dark), var(--btn-gold));
 }
 
 /* ===== HELP BUTTON (left of search bar) ===== */
@@ -468,7 +487,7 @@ h1 {
     gap: 8px;
 }
 .help-search-btn {
-    background: linear-gradient(135deg, var(--primary), var(--primary-light));
+    background: linear-gradient(135deg, var(--btn-gold), var(--btn-gold-light));
     color: #fff;
     border: none;
     padding: 7px 14px;
@@ -482,7 +501,7 @@ h1 {
     letter-spacing: 0.3px;
 }
 .help-search-btn:hover {
-    background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+    background: linear-gradient(135deg, var(--btn-gold-dark), var(--btn-gold));
 }
 .help-search-btn-small {
     padding: 2px 10px !important;
@@ -497,7 +516,7 @@ h1 {
     border: 1px solid rgba(139,105,20,0.2) !important;
 }
 .keywords-search-btn {
-    background: linear-gradient(135deg, #b8860b, #d4a843) !important;
+    background: linear-gradient(135deg, var(--btn-gold), var(--btn-gold-light)) !important;
     color: #fff !important;
     border: none !important;
     padding: 10px 18px !important;
@@ -806,7 +825,7 @@ h1 {
     line-height: 1.4;
 }
 .top-left-buttons button {
-    background: linear-gradient(135deg, var(--primary), var(--primary-light));
+    background: linear-gradient(135deg, var(--btn-gold), var(--btn-gold-light));
     color: #fff;
     border: 1px solid rgba(0,0,0,0.08);
     padding: 5px 11px;
@@ -819,7 +838,7 @@ h1 {
     box-shadow: 0 2px 6px rgba(139,105,20,0.25);
 }
 .top-left-buttons button:hover {
-    background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+    background: linear-gradient(135deg, var(--btn-gold-dark), var(--btn-gold));
     transform: translateY(-1px);
 }
 #sourcesList {
@@ -904,7 +923,7 @@ h1 {
 .recommendations-hide-btn {
     display: block;
     width: 100%;
-    background: linear-gradient(135deg, var(--accent), #2a4f8a);
+    background: linear-gradient(135deg, var(--btn-blue), var(--btn-blue-light));
     color: #fff;
     border: none;
     padding: 10px 14px;
@@ -921,14 +940,14 @@ h1 {
     letter-spacing: 0.2px;
 }
 .recommendations-hide-btn:hover {
-    background: linear-gradient(135deg, #1a3a6b, var(--accent));
+    background: linear-gradient(135deg, var(--btn-blue-dark), var(--btn-blue));
 }
 
 /* Full-width saffron "hide" button inside verse sources list (red text) */
 .verse-sources-hide-btn {
     display: block;
     width: 100%;
-    background: linear-gradient(135deg, var(--saffron), var(--saffron-light));
+    background: linear-gradient(135deg, var(--btn-saffron), var(--btn-saffron-light));
     color: #fff;
     border: none;
     padding: 10px 14px;
@@ -945,7 +964,7 @@ h1 {
     letter-spacing: 0.2px;
 }
 .verse-sources-hide-btn:hover {
-    background: linear-gradient(135deg, #cf7020, var(--saffron));
+    background: linear-gradient(135deg, var(--btn-saffron-dark), var(--btn-saffron));
 }
 
 #topicsListTitle, #recommendationsListTitle {
@@ -986,7 +1005,7 @@ h1 {
     color: var(--text);
 }
 .topic-search-btn, .recommendation-search-btn {
-    background: linear-gradient(135deg, var(--saffron), var(--saffron-light)) !important;
+    background: linear-gradient(135deg, var(--btn-saffron), var(--btn-saffron-light)) !important;
     color: #fff !important;
     border: none !important;
     padding: 4px 8px !important;
@@ -1002,13 +1021,13 @@ h1 {
     text-align: center !important;
 }
 .topic-search-btn:hover, .recommendation-search-btn:hover {
-    background: linear-gradient(135deg, #cf7020, var(--saffron)) !important;
+    background: linear-gradient(135deg, var(--btn-saffron-dark), var(--btn-saffron)) !important;
 }
 #recommendationsList .recommendation-search-btn, #topicsList .topic-search-btn {
-    background: linear-gradient(135deg, var(--accent), #2a4f8a) !important;
+    background: linear-gradient(135deg, var(--btn-blue), var(--btn-blue-light)) !important;
 }
 #recommendationsList .recommendation-search-btn:hover, #topicsList .topic-search-btn:hover {
-    background: linear-gradient(135deg, #1a3a6b, var(--accent)) !important;
+    background: linear-gradient(135deg, var(--btn-blue-dark), var(--btn-blue)) !important;
 }
 
 /* ===== RESULTS TABLE ===== */
@@ -1166,12 +1185,12 @@ th.transcripts-block {
     font-size: 11px !important;
 }
 .nav-button {
-    background: linear-gradient(135deg, var(--accent), #2a4f8a);
+    background: linear-gradient(135deg, var(--btn-blue), var(--btn-blue-light));
     color: #fff;
     box-shadow: 0 2px 4px rgba(26,58,107,0.2);
 }
 .nav-button:hover:not(:disabled) {
-    background: linear-gradient(135deg, var(--accent-dark), var(--accent));
+    background: linear-gradient(135deg, var(--btn-blue-dark), var(--btn-blue));
     transform: translateY(-1px);
     box-shadow: 0 3px 8px rgba(26,58,107,0.3);
 }
@@ -1183,7 +1202,7 @@ th.transcripts-block {
     transform: none;
 }
 .current-page {
-    background: linear-gradient(135deg, var(--primary), var(--primary-light)) !important;
+    background: linear-gradient(135deg, var(--btn-gold), var(--btn-gold-light)) !important;
     color: #fff !important;
     font-weight: 700 !important;
     cursor: default !important;
@@ -1357,6 +1376,21 @@ th.transcripts-block {
     #pagination { flex-wrap: wrap; justify-content: center; }
     .fav-cell { width: 22px; }
     .fav-star { font-size: 16px; }
+    /* A11Y: 44px minimum touch targets for primary interactive controls.
+       Desktop look is unchanged — applies only inside this mobile breakpoint. */
+    .search-quick-buttons .combo-btn,
+    .search-quick-buttons button,
+    .search-mode-btn,
+    .keywords-search-btn,
+    .search-bar button.search-button,
+    .lang-btn,
+    .features-btn,
+    .help-search-btn,
+    #pagination button {
+        min-height: 44px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+    }
 }
 
 /* ===== FAVORITES ===== */
@@ -1401,7 +1435,7 @@ th.transcripts-block {
     transition: background 0.15s;
 }
 .transcript-share-bubble:hover {
-    background: var(--primary-dark, #8b6914);
+    background: var(--btn-gold-dark, #7a5c08);
 }
 .transcript-deep-highlight {
     background: linear-gradient(135deg, #fce9b8, #f5d68a);
@@ -1471,7 +1505,7 @@ body.dark .transcript-deep-highlight {
 }
 .save-to-input:focus { border-color: var(--primary); }
 .save-to-ok {
-    background: var(--primary); color: #fff; border: none;
+    background: var(--btn-gold); color: #fff; border: none;
     border-radius: 6px; width: 28px; height: 28px;
     cursor: pointer; font-size: 14px; font-weight: 700;
 }
@@ -1536,7 +1570,7 @@ body.dark .transcript-deep-highlight {
         max-width: 90%;
         width: max-content;
         padding: 12px 20px;
-        background: linear-gradient(135deg, var(--accent), #2a4f8a);
+        background: linear-gradient(135deg, var(--btn-blue), var(--btn-blue-light));
         color: #fff;
         border-radius: 999px;
         box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
@@ -1763,4 +1797,21 @@ body.dark .transcript-deep-highlight {
 .combo-display-tooltip.visible {
     opacity: 1;
     visibility: visible;
+}
+
+/* ===== ACCESSIBILITY: KEYBOARD FOCUS INDICATOR =====
+   The app historically used `outline: none` on inputs; instead of removing
+   outlines we restore a visible ring ONLY for keyboard focus (:focus-visible).
+   Mouse/touch clicks do NOT show the ring — browsers only match
+   :focus-visible for keyboard-driven focus on these elements.
+   Placed at the end of the file so it wins the cascade over earlier
+   `outline: none` declarations of equal specificity. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+    outline: 3px solid var(--focus-ring, var(--saffron));
+    outline-offset: 2px;
 }

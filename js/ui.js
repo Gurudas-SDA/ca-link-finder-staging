@@ -178,6 +178,7 @@ PPP.ui = (function () {
                 var btn = document.createElement('button');
                 btn.className = 'fav-star' + (PPP.favorites.isFavorite(nr) ? ' active' : '');
                 btn.setAttribute('data-nr', nr);
+                btn.setAttribute('aria-label', t('saveTo'));
                 btn.innerHTML = '&#9733;';
                 btn.onclick = function (e) {
                     e.stopPropagation();
@@ -198,7 +199,8 @@ PPP.ui = (function () {
                 shareBtn.setAttribute('data-title', (row['Original file name'] || '').toString().trim());
                 shareBtn.setAttribute('data-subject', (row['Subject'] || '').toString().trim());
                 shareBtn.innerHTML = '&#128279;'; // 🔗
-                shareBtn.title = 'Copy link';
+                shareBtn.title = t('copyLink');
+                shareBtn.setAttribute('aria-label', t('copyLink'));
                 shareBtn.onclick = function (e) {
                     var el = e.currentTarget;
                     PPP.app.copyShareLink(
