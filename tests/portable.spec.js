@@ -120,4 +120,14 @@ test.describe('CA-Portable — offline build smoke test', () => {
     expect(dataRowCount).toBeGreaterThan(0);
   });
 
+  // Regression guard: the "32 Features" button opens a directory URL
+  // (guide/<lang>/). The portable server must serve that directory's
+  // index.html rather than 404 (GitHub Pages auto-resolves this; the local
+  // Node server must do it explicitly). See scripts/build_portable.py handler.
+  test('guide/ directory route returns 200 (offline directory index)', async ({ page }) => {
+    expect(baseUrl, 'portable server URL captured from stdout').toBeTruthy();
+    const resp = await page.request.get(baseUrl + 'guide/en/');
+    expect(resp.status(), 'GET /guide/en/ must serve index.html, not 404').toBe(200);
+  });
+
 });
