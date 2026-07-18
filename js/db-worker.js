@@ -11,8 +11,8 @@
 var SQL = null;
 var databases = {};  // { dbName: SQL.Database }
 
-var WASM_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0/sql-wasm.wasm';
-var SQL_JS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0/sql-wasm.js';
+var WASM_CDN = 'vendor/sql-wasm.wasm';
+var SQL_JS_CDN = 'vendor/sql-wasm.js';
 
 // Load sql.js in Worker context
 importScripts(SQL_JS_CDN);
@@ -151,6 +151,30 @@ function fetchWithProgress(dbName, url) {
 }
 
 /**
+ * Open a database from a gzipped ArrayBuffer (offline IDB path).
+ * Decompresses inside the Worker with the native DecompressionStream, then
+ * builds the SQL.Database off the main thread.
+ */
+function openGz(dbName, buffer) {
+    if (typeof DecompressionStream !== 'function') {
+        return Promise.reject(new Error('DecompressionStream unavailable in worker'));
+    }
+    return new Response(
+        new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'))
+    ).arrayBuffer().then(function (decompressed) {
+        databases[dbName] = new SQL.Database(new Uint8Array(decompressed));
+    });
+}
+
+/**
+ * Open a database from an already-decompressed ArrayBuffer (fallback used
+ * when the main thread had to decompress because openGz failed here).
+ */
+function openBuffer(dbName, buffer) {
+    databases[dbName] = new SQL.Database(new Uint8Array(buffer));
+}
+
+/**
  * Execute a SQL query and return results as array of objects.
  */
 function runQuery(dbName, sql, params) {
@@ -193,6 +217,25 @@ self.onmessage = function (e) {
                 self.postMessage({ id: id, cmd: 'loadDB', result: true, dbName: msg.dbName });
             }).catch(function (err) {
                 self.postMessage({ id: id, cmd: 'loadDB', error: err.message, dbName: msg.dbName });
+            });
+            break;
+
+        case 'openGz':
+            initEngine().then(function () {
+                return openGz(msg.dbName, msg.buffer);
+            }).then(function () {
+                self.postMessage({ id: id, cmd: 'openGz', result: true, dbName: msg.dbName });
+            }).catch(function (err) {
+                self.postMessage({ id: id, cmd: 'openGz', error: err.message, dbName: msg.dbName });
+            });
+            break;
+
+        case 'openBuffer':
+            initEngine().then(function () {
+                openBuffer(msg.dbName, msg.buffer);
+                self.postMessage({ id: id, cmd: 'openBuffer', result: true, dbName: msg.dbName });
+            }).catch(function (err) {
+                self.postMessage({ id: id, cmd: 'openBuffer', error: err.message, dbName: msg.dbName });
             });
             break;
 

@@ -1,0 +1,408 @@
+// @ts-check
+// PWA offline-library test suite (supersedes the temporary smoke-offline.spec.js).
+//
+// Covers the full offline feature: first-install UX (confirmation prompt,
+// progress, install click-guard), instant second visits with zero data
+// network, full offline operation behind the service worker (shell from
+// ca-shell cache, data from IndexedDB, requiresInternet guard on external
+// links), delta updates (manifest diff -> download -> sha256 verify -> apply
+// -> update note), resumable installs across page reloads, and the legacy
+// network fallback for browsers without DecompressionStream.
+//
+// Readiness signal: the placeholder-based waitForAppReady from app.spec.js is
+// a false positive on repeat visits (count comes instantly from the cached
+// ppp_total_lectures) — the offline layer's own PPP.offlineStatus.dataReady
+// flag is the reliable signal and is used throughout this file.
+const { test, expect } = require('@playwright/test');
+const fs = require('fs');
+const path = require('path');
+const zlib = require('zlib');
+const crypto = require('crypto');
+
+// Real manifest from disk — used to build the delta fixture and to pick
+// concrete packs for the resume scenario (never hardcode pack ids: the
+// manifest regenerates with every DB build).
+const MANIFEST_PATH = path.join(__dirname, '..', 'data', 'manifest.json');
+const realManifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+
+// Full install over localhost takes ~7-10 s; give every test generous room.
+test.setTimeout(120000);
+
+// ===== helpers =====
+
+/** Auto-start the REAL install flow without the confirmation click. */
+function addAutoInstallHook(page) {
+  return page.addInitScript(() => {
+    try { localStorage.setItem('ppp_auto_install', '1'); } catch (e) {}
+  });
+}
+
+/**
+ * Reliable readiness: the offline layer sets PPP.offlineStatus.dataReady
+ * when the app is fully open from IndexedDB (both after a fresh install and
+ * on repeat visits).
+ */
+async function waitForDataReady(page, timeout = 110000) {
+  await page.waitForFunction(
+    () => window.PPP && PPP.offlineStatus && PPP.offlineStatus.dataReady === true,
+    { timeout }
+  );
+}
+
+/** Run a metadata search and assert it returns > 0 results. */
+async function expectSearchWorks(page, term = 'tattva') {
+  await page.fill('#searchTerm', term);
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+  const info = await page.locator('#resultsInfo strong').textContent();
+  expect(parseInt(info)).toBeGreaterThan(0);
+}
+
+/**
+ * From the installed IndexedDB library pick one premium EN transcript nr and
+ * one raw-ONLY nr (raw:en:{nr} with no t:en:{nr} counterpart).
+ */
+async function findIdbTranscriptNrs(page) {
+  const nrs = await page.evaluate(async () => {
+    const idb = await PPP.offlineStore.open();
+    const keys = await new Promise((resolve, reject) => {
+      const tx = idb.transaction('files', 'readonly');
+      const req = tx.objectStore('files').getAllKeys();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    const premKeys = keys.filter(k => String(k).startsWith('t:en:'));
+    const premSet = new Set(premKeys.map(k => String(k).slice(5)));
+    const rawOnly = keys
+      .filter(k => String(k).startsWith('raw:en:'))
+      .map(k => String(k).slice(7))
+      .find(nr => !premSet.has(nr));
+    return {
+      totalFiles: keys.length,
+      premNr: premKeys.length ? String(premKeys[0]).slice(5) : null,
+      rawOnlyNr: rawOnly || null,
+    };
+  });
+  expect(nrs.totalFiles).toBeGreaterThan(10000);
+  expect(nrs.premNr).toBeTruthy();
+  expect(nrs.rawOnlyNr).toBeTruthy();
+  return nrs;
+}
+
+test.describe('PWA offline library', () => {
+
+  test('P1. First install UX: prompt, progress, click-guard toast, ready after install', async ({ page }) => {
+    // NO ppp_auto_install hook — the real first-run confirmation UI.
+    await page.goto('./');
+
+    // Confirmation prompt: i18n installPrompt (default lang EN) with the
+    // manifest size in MB, plus the Download button (i18n installButton).
+    const btn = page.locator('#installOfflineBtn');
+    await expect(btn).toBeVisible({ timeout: 20000 });
+    const label = await page.locator('#progressBar .progress-label').textContent();
+    expect(label).toContain('Download the full library for offline use');
+    expect(label).toMatch(/\(\d+ MB\)/);
+    await expect(btn).toHaveText('Download');
+
+    // Click starts the install: button goes away, progress switches to the
+    // downloadingAll text with a live MB counter.
+    await btn.click();
+    await expect(btn).toBeHidden();
+    await page.waitForFunction(() => {
+      const l = document.querySelector('#progressBar .progress-label');
+      return l && /Downloading offline library/.test(l.textContent) && /MB/.test(l.textContent);
+    }, { timeout: 20000 });
+
+    // DURING the install any interaction outside the progress area answers
+    // with the stillDownloading toast (capture-phase click guard).
+    await page.locator('.search-mode-btn[data-mode="citations"]').click({ force: true });
+    await expect(page.locator('#uiToast')).toContainText(/Still downloading — \d+%/, { timeout: 5000 });
+
+    // Install completes -> app opens from IDB and is fully usable.
+    await waitForDataReady(page);
+    const installed = await page.evaluate(async () =>
+      !!(await PPP.offlineStore.getState('localManifest')));
+    expect(installed).toBe(true);
+    await expect(page.locator('#searchTerm')).toBeEnabled();
+    await expectSearchWorks(page);
+  });
+
+  test('P3. Full offline with SW: shell from cache, data from IDB, requiresInternet guard', async ({ page, context }) => {
+    await addAutoInstallHook(page);
+    await page.goto('./');
+    await waitForDataReady(page);
+
+    // Wait for the service worker to be active AND the ca-shell precache to
+    // be populated (precache runs inside the install event, so an active
+    // worker implies a complete cache — verify index.html is really there).
+    // NOTE: waitForFunction must NOT get an async predicate — the pending
+    // Promise it returns each poll is truthy, ending the wait vacuously.
+    // Poll from Node instead.
+    await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+    const cacheDeadline = Date.now() + 60000;
+    let shellCached = false;
+    while (Date.now() < cacheDeadline && !shellCached) {
+      shellCached = await page.evaluate(async () => {
+        const names = await caches.keys();
+        const shell = names.find(n => n.indexOf('ca-shell-') === 0);
+        if (!shell) return false;
+        const cache = await caches.open(shell);
+        const keys = await cache.keys();
+        if (keys.length < 10) return false;
+        const idx = await cache.match(new URL('index.html', location.href).toString(), { ignoreSearch: true });
+        return !!idx;
+      });
+      if (!shellCached) await page.waitForTimeout(500);
+    }
+    expect(shellCached).toBe(true);
+
+    // Go fully offline and reload: the shell must come from the SW cache and
+    // the data from IndexedDB.
+    await context.setOffline(true);
+    try {
+      await page.reload();
+      await expect(page).toHaveTitle(/Chaitanya Academy/);
+      await waitForDataReady(page, 30000);
+
+      // Search works offline.
+      await expectSearchWorks(page, 'krishna');
+
+      // Premium transcript is served from IDB (no network available at all).
+      const nrs = await findIdbTranscriptNrs(page);
+      await page.evaluate((nr) => PPP.app.openHtmlTranscriptViewer(nr, 'en'), nrs.premNr);
+      await page.waitForFunction(() => {
+        const body = document.getElementById('transcriptModalBody');
+        return body && body.textContent && body.textContent.length > 200;
+      }, { timeout: 15000 });
+      const premTitle = await page.locator('#transcriptModalTitle').textContent();
+      expect(premTitle).not.toContain('[Raw]');
+      expect(premTitle).not.toContain('not found');
+      await page.keyboard.press('Escape');
+
+      // Raw-only lecture renders with the [Raw] marker and non-empty body.
+      await page.evaluate((nr) => PPP.app.openHtmlTranscriptViewer(nr, 'en'), nrs.rawOnlyNr);
+      await page.waitForFunction(() => {
+        const t = document.getElementById('transcriptModalTitle');
+        return t && t.textContent && t.textContent.indexOf('[Raw]') === 0;
+      }, { timeout: 15000 });
+      const rawLen = await page.evaluate(() =>
+        document.getElementById('transcriptModalBody').textContent.length);
+      expect(rawLen).toBeGreaterThan(100);
+      await page.keyboard.press('Escape');
+
+      // External MP3/Drive/YouTube chip: offline click is intercepted and
+      // answers with the requiresInternet toast instead of navigating.
+      await page.waitForSelector('a.ext-chip', { timeout: 10000 });
+      const mp3Chip = page.locator('a.ext-chip', { hasText: 'Mp3' });
+      const chip = (await mp3Chip.count()) > 0 ? mp3Chip.first() : page.locator('a.ext-chip').first();
+      await chip.click({ force: true });
+      await expect(page.locator('#uiToast')).toContainText('Requires an internet connection', { timeout: 5000 });
+    } finally {
+      await context.setOffline(false);
+    }
+  });
+
+  // Service-worker-free block: page.route must deterministically see every
+  // request (same technique as app.spec.js test 30) for the network-abort,
+  // delta-fixture, resume and legacy scenarios.
+  test.describe('deterministic network (SW blocked)', () => {
+    test.use({ serviceWorkers: 'block' });
+
+    test('P2. Second visit instant with ZERO data network', async ({ page, context }) => {
+      await addAutoInstallHook(page);
+      await page.goto('./');
+      await waitForDataReady(page);
+
+      // New page in the SAME context (same IndexedDB): block every data
+      // file, pack and transcript — only manifest.json (delta check) and
+      // shell assets may pass.
+      const page2 = await context.newPage();
+      const dataRequests = [];
+      page2.on('request', req => {
+        if (/\/(packs\/|transcripts\/|data\/ppp_)/.test(req.url())) dataRequests.push(req.url());
+      });
+      await page2.route(/\/(packs\/|transcripts\/|data\/ppp_)/, route => route.abort());
+
+      const t0 = Date.now();
+      await page2.goto('./');
+      await waitForDataReady(page2, 30000);
+      const elapsed = Date.now() - t0;
+      expect(elapsed).toBeLessThan(15000); // instant open from IDB, no re-download
+
+      await expectSearchWorks(page2);
+
+      // Summaries/essence available: extras cache filled from core:extras in
+      // IDB (network extras are blocked above, so IDB is the only source).
+      await page2.waitForFunction(() => window.PPP && PPP.ui && PPP.ui.extrasReady(), { timeout: 30000 });
+
+      // Not a single data/pack/transcript request went to the network.
+      expect(dataRequests).toEqual([]);
+      await page2.close();
+    });
+
+    test('P4. Delta update: manifest diff -> download -> sha256 verify -> apply -> note', async ({ page, context }) => {
+      await addAutoInstallHook(page);
+      await page.goto('./');
+      await waitForDataReady(page);
+
+      // Build the fixture: a tiny valid gzip JSON replacing core:extras, with
+      // REAL size + sha256 computed here, and a manifest whose extras entry
+      // points at it. This exercises the entire delta path end-to-end.
+      const fixtureObj = { '455': { essence: 'PWA-DELTA-FIXTURE' } };
+      const fixtureJson = JSON.stringify(fixtureObj);
+      const fixtureGz = zlib.gzipSync(Buffer.from(fixtureJson, 'utf8'));
+      const fixtureSha = crypto.createHash('sha256').update(fixtureGz).digest('hex');
+      const mutated = JSON.parse(JSON.stringify(realManifest));
+      mutated.generated = '2099-01-01 00:00:00';
+      mutated.core.extras = {
+        path: realManifest.core.extras.path,
+        hash: fixtureSha.slice(0, 10),
+        sha256: fixtureSha,
+        size: fixtureGz.length,
+        raw: Buffer.byteLength(fixtureJson, 'utf8'),
+      };
+
+      const page2 = await context.newPage();
+      await page2.route('**/data/manifest.json*', route => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(mutated),
+      }));
+      await page2.route('**/data/ppp_lecture_extras.json.gz*', route => route.fulfill({
+        status: 200,
+        contentType: 'application/gzip',
+        body: fixtureGz,
+      }));
+
+      await page2.goto('./');
+      await waitForDataReady(page2, 30000);
+
+      // updatedItems note appears (extras = 1 changed item; auto-hides in 6 s).
+      await page2.waitForSelector('#updateNoteInfo', { state: 'visible', timeout: 30000 });
+      await expect(page2.locator('#updateNoteInfo')).toHaveText('Updated: 1 items');
+
+      // The fence advanced: localManifest in IDB is now the mutated manifest,
+      // and core:extras decompresses to EXACTLY the fixture content.
+      const after = await page2.evaluate(async () => {
+        const local = await PPP.offlineStore.getState('localManifest');
+        const extrasText = await PPP.offlineStore.getText('core:extras');
+        return { hash: local.core.extras.hash, generated: local.generated, extrasText };
+      });
+      expect(after.hash).toBe(mutated.core.extras.hash);
+      expect(after.generated).toBe('2099-01-01 00:00:00');
+      expect(after.extrasText).toBe(fixtureJson);
+
+      // The running app reloaded the extras cache from the fresh IDB copy.
+      await page2.waitForFunction(() => window.PPP && PPP.ui && PPP.ui.extrasReady(), { timeout: 30000 });
+      const essence = await page2.evaluate(() => {
+        const e = PPP.ui.getExtras ? PPP.ui.getExtras('455') : null;
+        return e && e.essence;
+      });
+      if (essence !== null && essence !== undefined) {
+        expect(essence).toBe('PWA-DELTA-FIXTURE');
+      }
+      await page2.close();
+    });
+
+    test('P5. Resume: interrupted install continues without re-downloading finished packs', async ({ page, context }) => {
+      test.setTimeout(240000);
+
+      // Persistently block ONE (the smallest) pack on the first page; every
+      // other item completes and its durable resume state lands in IDB.
+      const packsBySize = realManifest.packs.slice().sort((a, b) => a.size - b.size);
+      const blockedPack = packsBySize[0];
+      const expectedDonePacks = realManifest.packs.length - 1;
+
+      await addAutoInstallHook(page);
+      await page.route('**/' + blockedPack.path + '*', route => route.abort());
+      await page.goto('./');
+
+      // Wait until everything EXCEPT the blocked pack is durably completed
+      // (the failed item makes firstInstall reject for this session, but the
+      // surviving pool runner keeps finishing the remaining items and the
+      // install state snapshots commit atomically with each item).
+      // (Node-side poll — see the async-predicate note in P3.)
+      const deadline = Date.now() + 180000;
+      let installState = null;
+      for (;;) {
+        installState = await page.evaluate(async () => {
+          if (!(window.PPP && PPP.offlineStore)) return null;
+          return PPP.offlineStore.getState('install').catch(() => null);
+        });
+        if (installState &&
+            Object.keys(installState.completedCore || {}).length === 3 &&
+            Object.keys(installState.completedPacks || {}).length >= expectedDonePacks) break;
+        if (Date.now() > deadline) break;
+        await page.waitForTimeout(500);
+      }
+      expect(installState).not.toBeNull();
+      expect(Object.keys(installState.completedCore || {}).length).toBe(3);
+      expect(Object.keys(installState.completedPacks || {}).length)
+        .toBeGreaterThanOrEqual(expectedDonePacks);
+
+      // Sanity: the install did NOT complete (blocked pack missing, no manifest).
+      const midState = await page.evaluate(async () => ({
+        localManifest: !!(await PPP.offlineStore.getState('localManifest')),
+        install: await PPP.offlineStore.getState('install'),
+      }));
+      expect(midState.localManifest).toBe(false);
+      expect(midState.install.completedPacks[blockedPack.id]).toBeUndefined();
+
+      // "Reload": close the page, open a new one WITHOUT the abort route.
+      await page.close();
+      const page2 = await context.newPage();
+      const packRequests = [];
+      page2.on('request', req => {
+        if (req.url().includes('/packs/')) packRequests.push(req.url());
+      });
+
+      await page2.goto('./');
+      await waitForDataReady(page2, 60000);
+      const done = await page2.evaluate(async () => ({
+        localManifest: !!(await PPP.offlineStore.getState('localManifest')),
+        install: await PPP.offlineStore.getState('install'),
+      }));
+      expect(done.localManifest).toBe(true);   // install completed
+      expect(done.install).toBeNull();         // resume state cleaned up
+
+      // Progress did NOT restart: the ONLY pack fetched on the second page is
+      // the previously blocked one — zero requests for any completed pack.
+      expect(packRequests.length).toBeGreaterThanOrEqual(1);
+      for (const url of packRequests) {
+        expect(url).toContain(blockedPack.id);
+      }
+
+      await expectSearchWorks(page2);
+      await page2.close();
+    });
+
+    test('P6. Legacy fallback: no DecompressionStream -> network SQLite path, no install prompt', async ({ page }) => {
+      // Simulate an old browser: offlineStore.supported() must return false.
+      await page.addInitScript(() => {
+        try { delete window.DecompressionStream; } catch (e) {}
+        try { Object.defineProperty(window, 'DecompressionStream', { value: undefined }); } catch (e) {}
+      });
+
+      const metaRequest = page.waitForRequest('**/data/ppp_meta.db*', { timeout: 60000 });
+      await page.goto('./');
+
+      // Legacy path really hits the network for the meta DB.
+      await metaRequest;
+
+      // Legacy readiness: placeholder unlocks with the lecture count (valid on
+      // a first visit — no cached count in this fresh context).
+      await page.waitForFunction(() => {
+        const input = document.getElementById('searchTerm');
+        return input && !input.disabled && input.placeholder && input.placeholder.includes('9');
+      }, { timeout: 90000 });
+
+      // No offline install prompt and no offline status — pure legacy mode.
+      await expect(page.locator('#installOfflineBtn')).toHaveCount(0);
+      const offlineStatus = await page.evaluate(() => window.PPP && PPP.offlineStatus);
+      expect(offlineStatus).toBeFalsy();
+
+      await expectSearchWorks(page);
+    });
+  });
+
+});

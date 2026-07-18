@@ -27,22 +27,20 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Chaitanya Academy">
 
-    <!-- Google Fonts: Cormorant Garamond (scholarly serif) + Inter (clean body) -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600;700;800&family=Montserrat:wght@400;800&display=swap" rel="stylesheet">
+    <!-- Fonts (vendored locally): Cormorant Garamond (scholarly serif) + Inter (clean body) + Montserrat -->
+    <link rel="stylesheet" href="css/fonts/fonts.css">
 
-    <!-- External libraries -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <!-- External libraries (vendored locally) -->
+    <script src="js/vendor/papaparse.min.js"></script>
+    <script src="js/vendor/xlsx.full.min.js"></script>
     <!-- sql.js (standard, no FTS5 — uses LIKE search on normalized columns) -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0/sql-wasm.js"></script>
+    <script src="js/vendor/sql-wasm.js"></script>
 
     <!-- Analytics (Umami — cookie-free, GDPR-compliant) -->
     <script defer src="https://cloud.umami.is/script.js" data-website-id="e50b4fd4-578a-4674-944d-4fefcb6999e1"></script>
 
     <!-- Application CSS -->
-    <link rel="stylesheet" href="css/styles.css?v=07603881">
+    <link rel="stylesheet" href="css/styles.css?v=3cf1b4fa">
 </head>
 <body>
 
@@ -84,7 +82,8 @@
         </div>
 
         <div class="language-switcher">
-            <button class="features-btn" onclick="PPP.app.openGuide()" data-i18n="featuresBtn">Features</button>
+            <button class="features-btn" onclick="PPP.app.toggleFeaturesMenu(event)" data-i18n="featuresBtn">Features</button>
+            <div id="featuresMenu" class="features-menu" hidden></div>
             <button class="lang-btn active" onclick="PPP.app.setLanguage('en')" data-lang="en">EN</button>
             <button class="lang-btn" onclick="PPP.app.setLanguage('ru')" data-lang="ru">RU</button>
             <button class="lang-btn" onclick="PPP.app.setLanguage('lv')" data-lang="lv">LV</button>
@@ -120,6 +119,7 @@
             </div>
             <div class="search-row">
                 <button class="search-mode-btn active keywords-search-btn" data-mode="metadata" data-i18n="searchModeMetadata">Key words</button>
+                <button class="search-mode-btn text-search-btn" data-mode="sentences" data-i18n="searchModeSentences">Text</button>
                 <div class="search-bar" style="flex:1;">
                     <input type="text" id="searchTerm" placeholder="Loading..." aria-label="Search lectures" disabled>
                     <button class="search-button" onclick="PPP.app.search()" data-i18n="searchButton">Search</button>
@@ -129,7 +129,17 @@
                 <button class="help-search-btn help-search-btn-small" onclick="PPP.app.openHelpModal()" data-i18n="helpButton">How to use search?</button>
                 <span id="timer" class="timer"></span>
             </div>
-            <div id="resultsInfo"></div>
+            <!-- Results header row: count on the left, "Download selected" button on the right
+                 (closer to the transcript columns). Flex row so the button right-aligns on the
+                 same line; wraps below on narrow widths. -->
+            <div class="results-header-row">
+                <div id="resultsInfo"></div>
+                <!-- Multi-select transcripts → ZIP: one persistent button (shown only when lecture results exist).
+                     Disabled until ≥1 transcript checkbox is ticked; label then shows the count. -->
+                <div id="selectToggleWrap" style="display:none;">
+                    <button type="button" id="downloadSelectedBtn" class="download-selected-btn disabled" onclick="PPP.app.openDownloadPanel()" data-i18n="downloadSelectedBtn" disabled>Download selected transcripts</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -204,15 +214,36 @@
         </div>
     </div>
 
+    <!-- ===== SELECT / ZIP FLOATING PANEL (opens at TOP of page on button click) ===== -->
+    <div id="selectActionBar" class="select-action-bar" style="display:none;" role="region" aria-label="Selected transcripts download">
+        <div class="select-bar-row">
+            <span id="selectCount" class="select-count" aria-live="polite"></span>
+            <input type="text" id="zipNameInput" class="zip-name-input" aria-label="ZIP file name" data-i18n-placeholder="zipNamePlaceholder" placeholder="Janmastami lectures">
+            <button type="button" id="zipDownloadBtn" class="search-button zip-download-btn" onclick="PPP.app.downloadSelectedZip()" data-i18n="downloadZip">Download (ZIP)</button>
+            <button type="button" id="selectClearBtn" class="zip-clear-btn" onclick="PPP.app.closeDownloadPanel()" data-i18n="clearSelection">Cancel</button>
+        </div>
+        <div id="zipProgressRow" class="zip-progress-row" style="display:none;">
+            <div class="zip-progress-outer"><div id="zipProgressFill" class="zip-progress-fill"></div></div>
+            <span id="zipProgressText" class="zip-progress-text" aria-live="polite"></span>
+            <button type="button" id="zipCancelBtn" class="zip-clear-btn" onclick="PPP.app.cancelZipDownload()" data-i18n="clearSelection">Cancel</button>
+        </div>
+        <div id="zipSummaryRow" class="zip-summary-row" style="display:none;" aria-live="polite"></div>
+    </div>
+
     <!-- ===== APPLICATION SCRIPTS ===== -->
     <!-- Load order matters: utils first, then i18n, db, search, ui, app last -->
     <script src="js/utils.js?v=1eaf600f"></script>
-    <script src="js/i18n.js?v=8b57adad"></script>
-    <script src="js/db.js?v=e11862f2"></script>
-    <script src="js/search.js?v=f57ebe43"></script>
-    <script src="js/ui.js?v=ff014e6d"></script>
+    <script src="js/i18n.js?v=258332f0"></script>
+    <script src="js/offline-store.js?v=d6ff5ddd"></script>
+    <script src="js/downloader.js?v=b29bccae"></script>
+    <script src="js/db.js?v=5bd9a706"></script>
+    <script src="js/search.js?v=c989b9e1"></script>
+    <script src="js/ui.js?v=c5d0dddd"></script>
     <script src="js/favorites.js?v=7c80f4ac"></script>
-    <script src="js/app.js?v=2bd5a55d"></script>
+    <script src="js/config.js?v=732be8cf"></script>
+    <script src="js/vendor/jszip.min.js?v=acc7e414"></script>
+    <script src="guide/menu-data.js?v=1"></script>
+    <script src="js/app.js?v=5d70091e"></script>
 
 </body>
 </html>

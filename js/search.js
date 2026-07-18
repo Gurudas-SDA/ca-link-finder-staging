@@ -382,10 +382,79 @@ PPP.search = (function () {
         return { sql: sql, params: params, mode: 'citations' };
     }
 
+    /**
+     * Build SQL query for transcript sentence search (Advanced / "In Transcripts" mode).
+     * Searches the self-contained sentences DB (ppp_sentences_en.db).
+     *
+     * Same matching rules as the lecture-name search:
+     *   - `;`  = AND groups, `//` = OR alternatives (parsed.orGroups).
+     *   - Each alternative is diacritic-folded (removeDiacritics + lower), split into
+     *     words; every word must co-occur in the SAME sentence (word AND).
+     *   - Prefix filters (subject:/lang:/@source/has:) are IGNORED in this mode — the
+     *     sentences DB carries no such metadata (documented v1 limitation).
+     *
+     * WHOLE-WORD matching: each word matches s.sentence_search LIKE '% word %'.
+     * sentence_search is diacritic-folded, lowercased, with every run of non-
+     * alphanumeric chars collapsed to a single space and padded with one leading/
+     * trailing space (built by scripts/build_sentences_db.py to_search()). So
+     * `rice` matches the whole word `rice` only, NOT `price`/`priceless`.
+     * Words are sanitized to [a-z0-9] the same way the column is built; a term
+     * with internal punctuation (e.g. a hyphen) splits into multiple ANDed words.
+     *
+     * Returns { sql, countSql, params } — or null when there is no free-text term.
+     * The main query takes a $limit param (default 500); callers may override it
+     * (e.g. the Excel export re-runs with a very high limit for the full result set).
+     */
+    function buildTranscriptSQL(parsed) {
+        if (!parsed.orGroups || parsed.orGroups.length === 0) {
+            return null;
+        }
+
+        var params = {};
+        var paramIdx = 0;
+        var conditions = [];
+
+        parsed.orGroups.forEach(function (group) {
+            var groupConds = group.map(function (term) {
+                var normalized = utils.removeDiacritics(term.toLowerCase());
+                // Sanitize to alphanumeric words exactly like the sentence_search
+                // column: split on any non [a-z0-9] run, drop empties. Internal
+                // punctuation (e.g. a hyphen) yields multiple ANDed words.
+                var words = normalized.split(/[^a-z0-9]+/).filter(Boolean);
+                if (words.length === 0) return null;
+                // Each word must appear as a WHOLE WORD in the same sentence (AND).
+                var wordConds = words.map(function (word) {
+                    var key = '$tw' + (paramIdx++);
+                    params[key] = '% ' + word + ' %';
+                    return "s.sentence_search LIKE " + key;
+                });
+                return "(" + wordConds.join(" AND ") + ")";
+            }).filter(Boolean);
+            if (groupConds.length > 0) {
+                conditions.push('(' + groupConds.join(' OR ') + ')');
+            }
+        });
+
+        if (conditions.length === 0) {
+            return null;
+        }
+
+        var where = conditions.join(' AND ');
+        var sql = "SELECT s.ts, s.nr, s.seq, s.sentence, l.name AS name, l.url AS url, l.tier AS tier, l.date AS date " +
+                  "FROM sentences s LEFT JOIN lectures l ON s.nr = l.nr " +
+                  "WHERE " + where +
+                  " ORDER BY CASE WHEN l.date='unknown' OR l.date IS NULL THEN 1 ELSE 0 END, l.date DESC, s.nr, s.seq ASC LIMIT $limit";
+        var countSql = "SELECT COUNT(*) AS n, COUNT(DISTINCT s.nr) AS lectures FROM sentences s WHERE " + where;
+        params.$limit = 500;
+
+        return { sql: sql, countSql: countSql, params: params };
+    }
+
     return {
         parseSearchQuery: parseSearchQuery,
         buildMetaSQL: buildMetaSQL,
         buildCitationSQL: buildCitationSQL,
+        buildTranscriptSQL: buildTranscriptSQL,
         searchInMemory: searchInMemory,
         SEARCH_COLS: SEARCH_COLS,
         HIDDEN_COLS: HIDDEN_COLS

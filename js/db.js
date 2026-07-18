@@ -19,7 +19,7 @@ PPP.db = (function () {
     var SQL = null;
     var databases = {};  // { dbName: SQL.Database } — only used in fallback mode
 
-    var WASM_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0/sql-wasm.wasm';
+    var WASM_CDN = 'js/vendor/sql-wasm.wasm';
 
     // DB name constants
     var META = 'meta';
@@ -41,13 +41,16 @@ PPP.db = (function () {
 
     /**
      * Send a message to Worker and return a Promise for the response.
+     * Optional `transfer` is a transferable list (e.g. an ArrayBuffer that
+     * should move, not copy, to the Worker).
      */
-    function workerCall(cmd, data) {
+    function workerCall(cmd, data, transfer) {
         return new Promise(function (resolve, reject) {
             var id = ++msgId;
             pendingCallbacks[id] = { resolve: resolve, reject: reject };
             var msg = Object.assign({ id: id, cmd: cmd }, data || {});
-            worker.postMessage(msg);
+            if (transfer && transfer.length) worker.postMessage(msg, transfer);
+            else worker.postMessage(msg);
         });
     }
 
@@ -235,13 +238,111 @@ PPP.db = (function () {
         return promise;
     }
 
+    // ===== OFFLINE (IndexedDB) GZ PATH =====
+
+    function _mainThreadDecompress(gzArrayBuffer) {
+        return new Response(
+            new Blob([gzArrayBuffer]).stream().pipeThrough(new DecompressionStream('gzip'))
+        ).arrayBuffer();
+    }
+
+    /**
+     * Raw open of a gzipped DB buffer into `dbName` (no dedup bookkeeping).
+     * Happy path: transfer a COPY of the gz buffer to the Worker (the
+     * original stays usable for the fallback chain). Fallbacks:
+     *   worker openGz fails → decompress on main thread → worker openBuffer
+     *   worker unusable      → main-thread SQL.Database (existing pattern)
+     */
+    function _openGzInto(dbName, gzArrayBuffer) {
+        if (useWorker) {
+            var copy = gzArrayBuffer.slice(0);
+            return workerCall('openGz', { dbName: dbName, buffer: copy }, [copy])
+                .catch(function (err) {
+                    console.warn('Worker openGz failed, decompressing on main thread:', err);
+                    return _mainThreadDecompress(gzArrayBuffer).then(function (buf) {
+                        if (useWorker && worker) {
+                            return workerCall('openBuffer', { dbName: dbName, buffer: buf }, [buf]);
+                        }
+                        return initSqlJsFallback().then(function () {
+                            databases[dbName] = new SQL.Database(new Uint8Array(buf));
+                        });
+                    });
+                });
+        }
+        return initSqlJsFallback().then(function () {
+            return _mainThreadDecompress(gzArrayBuffer);
+        }).then(function (buf) {
+            databases[dbName] = new SQL.Database(new Uint8Array(buf));
+        });
+    }
+
+    /**
+     * Open a database from a gzipped ArrayBuffer (offline store path), with
+     * the same dedup bookkeeping as loadDB().
+     */
+    function openDBFromGz(dbName, gzArrayBuffer) {
+        if (loadedDBs[dbName]) return Promise.resolve();
+        if (!useWorker && databases[dbName]) return Promise.resolve();
+        if (loadingDBs[dbName]) return loadingDBs[dbName];
+
+        var promise = _openGzInto(dbName, gzArrayBuffer).then(function () {
+            loadedDBs[dbName] = true;
+            delete loadingDBs[dbName];
+        }).catch(function (err) {
+            delete loadingDBs[dbName];
+            throw err;
+        });
+        loadingDBs[dbName] = promise;
+        return promise;
+    }
+
+    /**
+     * True when the offline store module is available and usable.
+     */
+    function _offlineStoreUsable() {
+        return !!(window.PPP && PPP.offlineStore && PPP.offlineStore.supported());
+    }
+
+    /**
+     * Try the offline store first for a core DB; null → caller uses network.
+     */
+    function _tryOfflineCore(coreKey, dbName) {
+        if (!_offlineStoreUsable()) return Promise.resolve(false);
+        return PPP.offlineStore.getGz(coreKey).then(function (gz) {
+            if (!gz) return false;
+            return openDBFromGz(dbName, gz).then(function () { return true; });
+        }).catch(function (err) {
+            console.warn('Offline ' + coreKey + ' open failed, using network:', err);
+            return false;
+        });
+    }
+
+    /**
+     * Force-reopen the meta DB from the offline store (delta updates: the
+     * IDB copy changed while this session has the old bytes open). Bypasses
+     * the loadedDBs dedup on purpose. Resolves true when reloaded.
+     */
+    function reloadMetaFromStore() {
+        if (!_offlineStoreUsable()) return Promise.resolve(false);
+        return PPP.offlineStore.getGz('core:meta').then(function (gz) {
+            if (!gz) return false;
+            return _openGzInto(META, gz).then(function () { return true; });
+        });
+    }
+
     /**
      * Fetch and open the metadata database.
+     * NEW first path: the offline store (IndexedDB, no network). The legacy
+     * network path stays for unsupported browsers / not-yet-installed state.
      */
     function loadMetaDB(progressCallback) {
-        return getDbVersions().then(function (versions) {
-            var v = versions.meta ? '?v=' + versions.meta : '';
-            return loadDB(META, 'data/ppp_meta.db' + v, progressCallback);
+        if (loadedDBs[META]) return Promise.resolve();
+        return _tryOfflineCore('core:meta', META).then(function (opened) {
+            if (opened) return;
+            return getDbVersions().then(function (versions) {
+                var v = versions.meta ? '?v=' + versions.meta : '';
+                return loadDB(META, 'data/ppp_meta.db' + v, progressCallback);
+            });
         });
     }
 
@@ -254,6 +355,22 @@ PPP.db = (function () {
         return getDbVersions().then(function (versions) {
             var v = versions[lang] ? '?v=' + versions[lang] : '';
             return loadDB(dbName, 'data/ppp_transcripts_html_' + lang + '.db' + v, progressCallback);
+        });
+    }
+
+    /**
+     * Lazy-load the transcript-sentence database (Advanced / "In Transcripts" search).
+     * Self-contained DB (sentences + lectures tables). Cache-bust via versions.sentences,
+     * but tolerate a missing key (db-versions.json may not yet list "sentences").
+     */
+    function loadSentencesDB(progressCallback) {
+        if (loadedDBs['sentences_en']) return Promise.resolve();
+        return _tryOfflineCore('core:sentences', 'sentences_en').then(function (opened) {
+            if (opened) return;
+            return getDbVersions().then(function (versions) {
+                var v = versions.sentences ? '?v=' + versions.sentences : '';
+                return loadDB('sentences_en', 'data/ppp_sentences_en.db' + v, progressCallback);
+            });
         });
     }
 
@@ -299,6 +416,10 @@ PPP.db = (function () {
 
     function queryHtmlAsync(lang, sql, params) {
         return queryAsync('html_' + (lang || 'en'), sql, params);
+    }
+
+    function querySentencesAsync(sql, params) {
+        return queryAsync('sentences_en', sql, params);
     }
 
     /**
@@ -348,6 +469,10 @@ PPP.db = (function () {
         return !!loadedDBs[dbName] || !!databases[dbName];
     }
 
+    function isSentencesLoaded() {
+        return !!loadedDBs['sentences_en'] || !!databases['sentences_en'];
+    }
+
     /**
      * Check if Worker mode is active.
      */
@@ -358,7 +483,10 @@ PPP.db = (function () {
     return {
         initSqlJs: initSqlJs,
         loadMetaDB: loadMetaDB,
+        openDBFromGz: openDBFromGz,
+        reloadMetaFromStore: reloadMetaFromStore,
         loadHtmlDB: loadHtmlDB,
+        loadSentencesDB: loadSentencesDB,
         // Sync queries (fallback mode only)
         queryMeta: queryMeta,
         queryHtmlTranscripts: queryHtmlTranscripts,
@@ -366,11 +494,13 @@ PPP.db = (function () {
         // Async queries (both modes)
         queryMetaAsync: queryMetaAsync,
         queryHtmlAsync: queryHtmlAsync,
+        querySentencesAsync: querySentencesAsync,
         getStatsAsync: getStatsAsync,
         queryAsync: queryAsync,
         // State checks
         isMetaLoaded: isMetaLoaded,
         isHtmlLoaded: isHtmlLoaded,
+        isSentencesLoaded: isSentencesLoaded,
         getDbVersions: getDbVersions,
         isWorkerMode: isWorkerMode
     };

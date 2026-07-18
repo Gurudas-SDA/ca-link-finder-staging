@@ -20,6 +20,18 @@ function trackConsoleErrors(page) {
   return errors;
 }
 
+// Offline PWA startup: on a fresh profile the app shows a download-confirmation
+// button before installing the full offline library into IndexedDB. The
+// ppp_auto_install=1 localStorage hook (see app.js startFirstInstallFlow) skips
+// only the button click and runs the REAL install flow — every test below
+// therefore exercises the genuine offline startup path against the local
+// static server before the app becomes ready.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    try { localStorage.setItem('ppp_auto_install', '1'); } catch (e) {}
+  });
+});
+
 test.describe('CA Link Finder — Daily Health Check', () => {
 
   test('1. App loads and SQLite DB initializes', async ({ page }) => {
@@ -701,6 +713,13 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     test('30. Extras retry after failure — indicator shows, auto-retry restores essence', async ({ page }) => {
     test.setTimeout(120000); // auto-retry fires 20 s after the first failure
 
+    // Force the LEGACY startup path (network SQLite + network extras): with
+    // the offline library installed, extras are served from IndexedDB and the
+    // network hiccup under test could never happen. Blocking the manifest is
+    // itself a real production scenario — the app must gracefully fall back
+    // to the legacy network load when the manifest is unreachable.
+    await page.route('**/data/manifest.json*', route => route.abort());
+
     // Abort the FIRST extras request (simulates a mobile network hiccup),
     // let all subsequent requests through.
     let extrasRequests = 0;
@@ -737,6 +756,222 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.waitForSelector('.essence-hint', { timeout: 10000 });
     await expect(page.locator('#extrasLoadingInfo')).toBeHidden();
     });
+  });
+
+  test('31. Sentence search (In Transcripts) — whole-word match + Excel button', async ({ page }) => {
+    // Lazy-loads the ~60 MB sentences DB on first search; allow extra time.
+    test.setTimeout(120000);
+
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // The install banner (if it ever appears) overlaps the mode buttons — hide it.
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    // Switch to the sentence-search mode.
+    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+
+    // Search for a whole word that has a near substring twin ("price"/"priceless").
+    await page.fill('#searchTerm', 'rice');
+    await page.keyboard.press('Enter');
+
+    // Summary line: "Found N sentences in M lectures — showing first K".
+    await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
+    const summary = await page.locator('#resultsInfo strong').textContent();
+    expect(summary).toMatch(/Found \d+ sentences in \d+ lectures/);
+
+    // Results table has rows.
+    const rows = await page.locator('#resultsTable tbody tr').count();
+    expect(rows).toBeGreaterThan(0);
+
+    // Whole-word semantics: every rendered sentence contains the whole word
+    // "rice", and none contains the substring-only twin "priceless".
+    const sentences = await page.locator('#resultsTable tbody tr td:nth-child(2)').allTextContents();
+    expect(sentences.length).toBeGreaterThan(0);
+    const wholeWordRice = /(^|[^a-z])rice([^a-z]|$)/i;
+    for (const s of sentences) {
+      expect(s.toLowerCase()).not.toContain('priceless');
+      expect(s).toMatch(wholeWordRice);
+    }
+
+    // Download Excel button is present.
+    await expect(page.locator('#resultsInfo button', { hasText: 'Download Excel' })).toBeVisible();
+  });
+
+  test('26. Multi-select transcripts (per language) download as one named ZIP', async ({ page }) => {
+    // Serve the premium per-lecture HTML same-origin so the ZIP is built from the
+    // in-app premium path (no dependency on the live Drive API in the test).
+    await page.route('**/transcripts/en/*.html', route =>
+      route.fulfill({
+        status: 200,
+        contentType: 'text/html; charset=utf-8',
+        body: '<p>Mock premium transcript body for offline ZIP test.</p>'
+      })
+    );
+
+    await page.goto('./');
+    await waitForAppReady(page);
+    // Ensure English (premium path used above targets transcripts/en/).
+    await page.click('.lang-btn[data-lang="en"]');
+
+    // Search to get lecture rows.
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+
+    // No "Select" toggle any more — per-language checkboxes are ALWAYS visible.
+    await expect(page.locator('#selectModeBtn')).toHaveCount(0);
+    await page.waitForSelector('.select-checkbox[data-lang="en"]', { timeout: 10000 });
+
+    // Before any checkbox is ticked the "Download selected" button is disabled.
+    const dlBtn = page.locator('#downloadSelectedBtn');
+    await expect(dlBtn).toBeVisible();
+    await expect(dlBtn).toBeDisabled();
+
+    // Tick two EN transcript checkboxes on two DIFFERENT lectures (the model
+    // selects "<nr>|<lang>" pairs, not whole lectures).
+    const enBoxes = page.locator('.select-checkbox[data-lang="en"]');
+    await expect(enBoxes.nth(1)).toBeVisible(); // need at least two EN transcripts
+    const nr0 = await enBoxes.nth(0).getAttribute('data-nr');
+    const nr1 = await enBoxes.nth(1).getAttribute('data-nr');
+    expect(nr0).not.toBe(nr1);                  // two distinct lectures
+    await enBoxes.nth(0).check();
+    await enBoxes.nth(1).check();
+
+    // Now the button is ENABLED and shows the count "Download selected (2)".
+    await expect(dlBtn).toBeEnabled();
+    await expect(dlBtn).toContainText('(2)');
+
+    // Clicking it opens the download panel at the TOP with the name input.
+    await dlBtn.click();
+    const bar = page.locator('#selectActionBar');
+    await expect(bar).toBeVisible();
+    await expect(page.locator('#zipNameInput')).toBeVisible();
+    await expect(page.locator('#selectCount')).toContainText('2 transcripts');
+
+    // Name the ZIP.
+    await page.fill('#zipNameInput', 'Janmastami test 2026');
+
+    // Click download and capture the browser download event.
+    const [download] = await Promise.all([
+      page.waitForEvent('download', { timeout: 30000 }),
+      page.click('#zipDownloadBtn'),
+    ]);
+
+    const fname = download.suggestedFilename();
+    expect(fname).toMatch(/\.zip$/);
+    expect(fname).toBe('Janmastami_test_2026.zip');
+  });
+
+  test('27. Feature #33 (ZIP download) is discoverable in app + guide', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // App "Features" button reflects the new count (33).
+    await expect(page.locator('[data-i18n="featuresBtn"]')).toContainText('33');
+
+    // After a search, the persistent "Download selected" button carries a
+    // non-empty localized tooltip (title).
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    const dlTitle = await page.locator('#downloadSelectedBtn').getAttribute('title');
+    expect(dlTitle && dlTitle.trim().length).toBeGreaterThan(0);
+
+    // The EN guide renders 33 feature cards and includes a ZIP-download card.
+    // (Static test server has no directory index — request index.html explicitly.)
+    await page.goto('/guide/en/index.html');
+    await page.waitForSelector('.card', { timeout: 10000 });
+    const cardCount = await page.locator('.card').count();
+    expect(cardCount).toBe(33);
+    await expect(page.locator('.card h3', { hasText: 'ZIP' })).toHaveCount(1);
+  });
+
+  test('32. Features button opens grouped dropdown menu', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const menu = page.locator('#featuresMenu');
+    await expect(menu).toBeHidden();
+
+    // Clicking the Features button reveals the menu.
+    await page.locator('.features-btn').click();
+    await expect(menu).toBeVisible();
+
+    // "All functions" link points at the full guide.
+    const all = menu.locator('.fm-all');
+    await expect(all).toHaveCount(1);
+    const allHref = await all.getAttribute('href');
+    expect(allHref).toMatch(/guide\/en\/index\.html$/);
+
+    // Grouped list: 9 group headings, several item links.
+    await expect(menu.locator('.fm-group')).toHaveCount(9);
+    const itemCount = await menu.locator('.fm-item').count();
+    expect(itemCount).toBe(33);
+
+    // Each item deep-links to a specific function anchor.
+    const firstItemHref = await menu.locator('.fm-item').first().getAttribute('href');
+    expect(firstItemHref).toMatch(/guide\/en\/index\.html#item-\d+$/);
+
+    // Function numbers are NOT displayed in the visible text.
+    const groupText = await menu.locator('.fm-group').first().textContent();
+    expect(groupText && groupText.trim().length).toBeGreaterThan(0);
+
+    // Escape closes the menu.
+    await page.keyboard.press('Escape');
+    await expect(menu).toBeHidden();
+  });
+
+  test('33. Features menu closes on backdrop click', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const menu = page.locator('#featuresMenu');
+    await page.locator('.features-btn').click();
+    await expect(menu).toBeVisible();
+
+    // Click the modal backdrop (overlay corner, away from the centered panel).
+    await menu.click({ position: { x: 5, y: 5 } });
+    await expect(menu).toBeHidden();
+  });
+
+  test('34. Raw transcript disclaimer: warning header + line break in all 6 languages', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const result = await page.evaluate(() => {
+      const i18n = window.PPP.i18n;
+      const esc = window.PPP.utils.escapeHtml;
+      const langs = ['en', 'ru', 'lv', 'it', 'fr', 'es'];
+      const out = {};
+      for (const lng of langs) {
+        i18n.setLanguage(lng);
+        const body = i18n.t('rawTranscriptBody');
+        // Same render the Raw modal uses (app.js): split '\n' -> escaped lines joined by <br>.
+        const rendered = '<p>' + body.split('\n').map(function (ln) { return esc(ln); }).join('<br>') + '</p>';
+        out[lng] = { body: body, rendered: rendered };
+      }
+      i18n.setLanguage('en');
+      return out;
+    });
+
+    // Every language: the body carries a "!!!" warning header on its own first line,
+    // and the modal render turns that newline into a <br> so the header stands alone.
+    for (const lng of ['en', 'ru', 'lv', 'it', 'fr', 'es']) {
+      expect(result[lng].body, lng + ' body has a newline').toContain('\n');
+      expect(result[lng].body.split('\n')[0], lng + ' first line is a "!!!" warning').toContain('!!!');
+      expect(result[lng].rendered, lng + ' render inserts <br>').toContain('<br>');
+      // The warning header must render before the <br> (i.e. as the first line).
+      const beforeBr = result[lng].rendered.split('<br>')[0];
+      expect(beforeBr, lng + ' warning header is on the first rendered line').toContain('!!!');
+    }
+
+    // Spot-check the Latvian wording Rājan specified.
+    expect(result.lv.body).toContain('BRĪDINĀJUMS!!!');
+    expect(result.lv.body).toContain('garāks par 20 minūtēm');
   });
 
 });

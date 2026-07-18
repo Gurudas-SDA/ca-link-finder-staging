@@ -52,6 +52,14 @@ PPP.app = (function () {
     var lastSearchTerm = '';
     var allResults = [];
     var matchHints = new Map();
+    // ===== MULTI-SELECT → ZIP STATE =====
+    // Checkboxes are ALWAYS visible next to selectable transcript chips (no
+    // select-mode). Ticking any checkbox enables the "Download selected (N)"
+    // button; clicking that button opens the top download panel.
+    var selectedNrs = new Set();        // Set of "<nr>|<lang>" keys (per lecture x language) selected for ZIP
+    var _selResultsRef = null;          // identity of the result set selection belongs to
+    var _zipAbort = null;               // AbortController for an in-flight ZIP download
+    var _panelOpen = false;             // is the top download panel currently open?
     var dataLoaded = false;
     var usingSqlite = false;        // true if SQLite loaded successfully
     var searchMode = 'metadata';    // 'metadata', 'citations', or 'citationsTop'
@@ -147,6 +155,32 @@ PPP.app = (function () {
         if (rt) rt.style.display = '';
     }
 
+    // ===== NETWORK STATE =====
+    // Tiny shared flag + listeners: offline guards (ZIP, Drive, MP3 links)
+    // read PPP.net.online instead of probing navigator each time, and the
+    // #connectionStatus line shows a badge while offline.
+    var net = { online: navigator.onLine };
+    PPP.net = net;
+
+    function _renderConnectionState() {
+        var el = document.getElementById('connectionStatus');
+        if (!el) return;
+        if (net.online) {
+            el.textContent = '';
+        } else {
+            el.textContent = i18n.t('offlineBadge');
+        }
+    }
+
+    window.addEventListener('online', function () {
+        net.online = true;
+        _renderConnectionState();
+    });
+    window.addEventListener('offline', function () {
+        net.online = false;
+        _renderConnectionState();
+    });
+
     // ===== PWA =====
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('sw.js').catch(function () {});
@@ -177,6 +211,7 @@ PPP.app = (function () {
 
     function init() {
         initTheme();
+        _renderConnectionState();
 
         var savedLang = localStorage.getItem('preferredLanguage') || 'en';
         setLanguage(savedLang);
@@ -334,10 +369,42 @@ PPP.app = (function () {
     }
 
     /**
-     * Primary load: SQLite via sql.js.
-     * Fallback: XLSX from Google Sheets.
+     * Startup dispatcher.
+     * NEW (offline PWA): when the browser supports the offline store
+     * (IndexedDB + DecompressionStream + SW) the app runs from the installed
+     * IndexedDB library — first visit shows a confirmation button, downloads
+     * everything once, later visits open instantly from IDB and check for
+     * delta updates in the background.
+     * Unsupported browsers keep the EXACT legacy behavior (network SQLite,
+     * XLSX/CSV fallback).
      */
     function loadData() {
+        var store = PPP.offlineStore;
+        if (!store || !store.supported() || !PPP.downloader) {
+            loadDataLegacy();
+            return;
+        }
+        store.open().then(function () {
+            return store.getState('localManifest');
+        }).then(function (localManifest) {
+            if (localManifest) {
+                // Installed — open instantly from IDB, then check for deltas.
+                return openFromIdb().then(function () {
+                    if (navigator.onLine) backgroundUpdateCheck();
+                });
+            }
+            return startFirstInstallFlow();
+        }).catch(function (err) {
+            console.warn('Offline store startup failed, using legacy load:', err);
+            loadDataLegacy();
+        });
+    }
+
+    /**
+     * Legacy load path (pre-offline behavior, unchanged): network SQLite via
+     * sql.js, XLSX/CSV fallback. Kept for browsers without the offline store.
+     */
+    function loadDataLegacy() {
         // Show progress bar
         ui.showLoading(i18n.t('loadingDB'));
 
@@ -357,12 +424,44 @@ PPP.app = (function () {
         }).catch(function (sqliteErr) {
             console.warn('SQLite load failed, falling back to XLSX:', sqliteErr);
             ui.hideLoading();
+            // Offline guard: the XLSX/CSV fallback is remote-only — pointless
+            // (and noisy) without a connection.
+            if (!net.online) {
+                ui.showLoading(i18n.t('requiresInternet'));
+                return;
+            }
             loadXlsxFallback();
         });
     }
 
     /**
-     * Load SQLite database via sql.js.
+     * Shared post-open chain: stats, in-memory DB[] array, last-update line.
+     */
+    function _loadMetaIntoApp() {
+        return db.getStatsAsync().then(function (stats) {
+            totalLectures = parseInt(stats.total_lectures || '0', 10);
+            try { if (totalLectures > 0) localStorage.setItem('ppp_total_lectures', String(totalLectures)); } catch (e) {}
+
+            // Also populate DB[] array for backward-compatible features
+            return db.queryMetaAsync('SELECT * FROM lectures');
+        }).then(function (allRows) {
+            DB = allRows.map(mapSqlRowToUI);
+            return db.queryMetaAsync("SELECT value AS last_update FROM stats WHERE key = 'db_updated'");
+        }).then(function (dateRows) {
+            if (dateRows && dateRows.length && dateRows[0].last_update) {
+                var d = dateRows[0].last_update.replace(/\./g, '-');
+                var el = document.getElementById('dbLastUpdate');
+                if (el) {
+                    el.setAttribute('data-last-update', d);
+                    el.textContent = (i18n.t('lastUpdate') || 'Last update') + ': ' + d;
+                    el.style.display = '';
+                }
+            }
+        });
+    }
+
+    /**
+     * Load SQLite database via sql.js (legacy network path).
      */
     function loadSqlite() {
         var openingShown = false;
@@ -382,25 +481,161 @@ PPP.app = (function () {
                 ui.setLoadingText(i18n.t('openingDB'));
             }
         }).then(function () {
-            return db.getStatsAsync();
-        }).then(function (stats) {
-            totalLectures = parseInt(stats.total_lectures || '0', 10);
-            try { if (totalLectures > 0) localStorage.setItem('ppp_total_lectures', String(totalLectures)); } catch (e) {}
+            return _loadMetaIntoApp();
+        });
+    }
 
-            // Also populate DB[] array for backward-compatible features
-            return db.queryMetaAsync('SELECT * FROM lectures');
-        }).then(function (allRows) {
-            DB = allRows.map(mapSqlRowToUI);
-            return db.queryMetaAsync("SELECT value AS last_update FROM stats WHERE key = 'db_updated'");
-        }).then(function (dateRows) {
-            if (dateRows && dateRows.length && dateRows[0].last_update) {
-                var d = dateRows[0].last_update.replace(/\./g, '-');
-                var el = document.getElementById('dbLastUpdate');
-                if (el) {
-                    el.setAttribute('data-last-update', d);
-                    el.textContent = (i18n.t('lastUpdate') || 'Last update') + ': ' + d;
-                    el.style.display = '';
-                }
+    // ===== OFFLINE LIBRARY (first install / open-from-IDB / delta updates) =====
+
+    /**
+     * Open the app entirely from the installed IndexedDB library. Same
+     * stats/SELECT flow as the legacy path — only the bytes come from IDB.
+     */
+    function openFromIdb() {
+        ui.showLoading(i18n.t('openingDB'));
+        return db.initSqlJs().then(function () {
+            return db.loadMetaDB(); // IDB-first inside db.js
+        }).then(function () {
+            return _loadMetaIntoApp();
+        }).then(function () {
+            ui.hideLoading();
+            usingSqlite = true;
+            onDataLoaded();
+            // Offline-ready status for the (separate) SW step: data is served
+            // from IDB; the shell is offline-capable once a SW controls us.
+            PPP.offlineStatus = {
+                dataReady: true,
+                shellReady: !!(navigator.serviceWorker && navigator.serviceWorker.controller)
+            };
+            startExtrasLoad(); // reads core:extras from IDB (ui.js)
+        });
+    }
+
+    /**
+     * First-run flow: fetch the manifest, show the download-confirmation
+     * button (explicit Rājan decision — no silent 200 MB downloads), then
+     * install with a single byte-weighted progress bar.
+     */
+    function startFirstInstallFlow() {
+        if (!navigator.onLine) {
+            // First run offline — nothing to open yet; explain, and retry
+            // automatically the moment a connection appears.
+            ui.showLoading(i18n.t('offlineFirstRun').replace('{size}', '200'));
+            window.addEventListener('online', function retryInstall() {
+                window.removeEventListener('online', retryInstall);
+                loadData();
+            });
+            return Promise.resolve();
+        }
+        return PPP.downloader.fetchManifest().then(function (manifest) {
+            var sizeMB = Math.round(manifest.totals.bytes / (1024 * 1024));
+            // TEST HOOK: Playwright sets localStorage ppp_auto_install=1 so
+            // headless runs exercise the REAL install flow without a click.
+            var auto = false;
+            try { auto = localStorage.getItem('ppp_auto_install') === '1'; } catch (e) {}
+            if (auto) return beginInstall(manifest);
+            showInstallPrompt(manifest, sizeMB);
+        }).catch(function (err) {
+            console.warn('Manifest fetch failed, using legacy load:', err);
+            loadDataLegacy();
+        });
+    }
+
+    function showInstallPrompt(manifest, sizeMB) {
+        ui.showLoading(i18n.t('installPrompt').replace('{size}', sizeMB));
+        ui.updateProgress(0);
+        var bar = document.getElementById('progressBar');
+        if (!bar) return;
+        var old = document.getElementById('installOfflineBtn');
+        if (old) old.remove();
+        var btn = document.createElement('button');
+        btn.id = 'installOfflineBtn';
+        btn.type = 'button';
+        btn.className = 'search-button';
+        btn.style.marginTop = '8px';
+        btn.textContent = i18n.t('installButton');
+        btn.onclick = function () {
+            btn.remove();
+            beginInstall(manifest);
+        };
+        bar.appendChild(btn);
+    }
+
+    // Capture-phase click interceptor active DURING the first install:
+    // interactions outside the loading area answer with a "still
+    // downloading — X%" toast instead of half-working on missing data.
+    var _installPct = 0;
+    function _installGuardHandler(e) {
+        var bar = document.getElementById('progressBar');
+        if (bar && bar.contains(e.target)) return;
+        var el = e.target.closest ? e.target.closest('button, input, a, select') : null;
+        if (!el) return;
+        e.preventDefault();
+        e.stopPropagation();
+        ui.toast(i18n.t('stillDownloading').replace('{pct}', _installPct));
+    }
+
+    function beginInstall(manifest) {
+        _installPct = 0;
+        document.addEventListener('click', _installGuardHandler, true);
+        ui.showLoading(i18n.t('downloadingAll'));
+        ui.updateProgress(0);
+
+        var totalMB = Math.round(manifest.totals.bytes / (1024 * 1024));
+        return PPP.downloader.firstInstall(function (p) {
+            var frac = p.totalBytes ? p.loadedBytes / p.totalBytes : 0;
+            _installPct = Math.round(frac * 100);
+            ui.updateProgress(frac);
+            ui.setLoadingText(i18n.t('downloadingAll') + ' ' +
+                Math.round(p.loadedBytes / (1024 * 1024)) + ' / ' + totalMB + ' MB');
+        }).then(function () {
+            document.removeEventListener('click', _installGuardHandler, true);
+            PPP.offlineStore.requestPersist();
+            return openFromIdb();
+        }).catch(function (err) {
+            document.removeEventListener('click', _installGuardHandler, true);
+            console.error('Offline install failed:', err);
+            if (err && err.notEnoughStorage) {
+                ui.showLoading(i18n.t('notEnoughStorage').replace('{size}', totalMB));
+                return;
+            }
+            // Partial progress is durable (resume state) — next start resumes.
+            // For THIS session, fall back to the legacy network path so the
+            // user is never stuck on a broken screen.
+            ui.hideLoading();
+            loadDataLegacy();
+        });
+    }
+
+    /**
+     * Background delta check (installed state, online). Applies changed
+     * packs/core files to IDB, then refreshes the running app in place.
+     */
+    function backgroundUpdateCheck() {
+        PPP.downloader.checkForUpdates().then(function (res) {
+            if (!res || !res.changedItems) return;
+            ui.showUpdateNote(i18n.t('updatedItems').replace('{n}', res.changedItems));
+            if (res.coreChanged && res.coreChanged.meta) {
+                // Re-open the meta DB from the fresh IDB copy and re-run the
+                // in-memory load; refresh visible results in place.
+                db.reloadMetaFromStore().then(function (reloaded) {
+                    if (!reloaded) return;
+                    return _loadMetaIntoApp().then(function () {
+                        // Refresh the count placeholder and visible results in
+                        // place (no onDataLoaded — that would re-run deep-link
+                        // handling and clear the current view).
+                        var input = document.getElementById('searchTerm');
+                        if (input && searchMode === 'metadata') {
+                            var count = totalLectures || DB.length;
+                            input.placeholder = i18n.t('searchPlaceholder').replace('{count}', count.toLocaleString());
+                        }
+                        if (allResults.length > 0) displayResults();
+                    });
+                }).catch(function (e) { console.warn('Meta refresh failed:', e); });
+            }
+            if (res.coreChanged && res.coreChanged.extras) {
+                if (ui.clearExtrasCache) ui.clearExtrasCache();
+                startExtrasLoad();
             }
         });
     }
@@ -669,6 +904,9 @@ PPP.app = (function () {
 
     function performSearch() {
         var startTime = performance.now();
+        // Multi-select UI belongs to the lecture table only. Hide it now; lecture
+        // modes call displayResults() which re-shows the toggle for the fresh set.
+        _showSelectToggle(false);
         // Clear verse position data on new search
         activeVersePositions = {};
         activeVerseReference = '';
@@ -680,6 +918,11 @@ PPP.app = (function () {
 
         if (searchMode === 'citations') {
             performCitationSearch(startTime);
+            return;
+        }
+
+        if (searchMode === 'sentences') {
+            performSentenceSearch(startTime);
             return;
         }
 
@@ -829,12 +1072,27 @@ PPP.app = (function () {
         var startIndex = (currentPage - 1) * pageSize;
         var endIndex = Math.min(currentPage * pageSize, totalResults);
 
+        // A new result set clears the selection. Every loader (search, favorites,
+        // by-date, …) assigns a FRESH allResults array, so an identity change means
+        // "new search". Pagination and language switches re-render the SAME array,
+        // so the selection persists across pages within one result set.
+        if (allResults !== _selResultsRef) {
+            _selResultsRef = allResults;
+            selectedNrs.clear();
+            // Let the zip-name default repopulate from the new search term.
+            var _zi = document.getElementById('zipNameInput');
+            if (_zi) _zi.value = '';
+        }
+
         document.getElementById('resultsInfo').innerHTML =
             '<strong>' + totalResults + ' ' + i18n.t('filesFound') + '</strong>&nbsp;&nbsp;&nbsp;' +
             i18n.t('showingResults') + ' ' + (totalResults === 0 ? 0 : (startIndex + 1)) + '-' + endIndex;
 
         ui.renderResults(allResults, lastSearchTerm, startIndex, endIndex, matchHints);
         ui.renderPagination(totalResults, currentPage, pageSize, changePage);
+
+        _showSelectToggle(totalResults > 0);
+        _updateSelectBar();
     }
 
     function changePage(p) {
@@ -843,6 +1101,340 @@ PPP.app = (function () {
             currentPage = p;
             displayResults();
         }
+    }
+
+    // ===========================================================================
+    // MULTI-SELECT TRANSCRIPTS -> ONE NAMED ZIP
+    // Use case: search a topic, tick the lectures you want, download every
+    // transcript in one named .zip for offline theme-searching. No transcript is
+    // ever preloaded — raw/premium bodies are fetched ONLY on demand here.
+    // ===========================================================================
+
+    // --- ui.js reads these to render + reflect the per-language checkboxes ---
+    function _selKey(nr, lang) { return String(nr) + '|' + String(lang).toLowerCase(); }
+    function isSelectedPair(nr, lang) { return selectedNrs.has(_selKey(nr, lang)); }
+
+    // A transcript language cell is selectable when it holds a real premium OR raw
+    // value — not empty, not N/A, not a duplicate pointer, not "Not relevant".
+    function _langCellAvailable(val) {
+        var v = (val || '').toString().trim();
+        if (!v || v === 'N/A' || v === '0') return false;
+        var EXCLUDE = {
+            'Not relevant': 1, 'Neattiecas': 1, 'Не относится': 1,
+            'Duplicate': 1, 'Dublikāts': 1, 'Дубликат': 1, 'Дубикат': 1
+        };
+        return !EXCLUDE[v];
+    }
+
+    // Distinct lecture count behind the currently selected pairs.
+    function _distinctNrCount() {
+        var seen = {};
+        selectedNrs.forEach(function (k) { seen[k.split('|')[0]] = 1; });
+        return Object.keys(seen).length;
+    }
+
+    // Show/hide the "Download selected" button wrapper. Shown only when the
+    // current result set has lecture rows; hidden (and panel closed) otherwise.
+    function _showSelectToggle(show) {
+        var wrap = document.getElementById('selectToggleWrap');
+        if (wrap) wrap.style.display = show ? '' : 'none';
+        if (!show) closeDownloadPanel();
+        _updateDownloadSelectedBtn();
+    }
+
+    // Reflect the selection count on the persistent "Download selected" button:
+    // disabled + base label at 0; enabled + "Download selected (N)" at ≥1.
+    function _updateDownloadSelectedBtn() {
+        var btn = document.getElementById('downloadSelectedBtn');
+        if (!btn) return;
+        btn.title = i18n.t('downloadSelectedTip');   // localized tooltip; re-set on language change
+        var n = selectedNrs.size;
+        if (n > 0) {
+            btn.disabled = false;
+            btn.classList.remove('disabled');
+            btn.textContent = i18n.t('downloadSelectedBtnN').replace('{n}', n);
+        } else {
+            btn.disabled = true;
+            btn.classList.add('disabled');
+            btn.textContent = i18n.t('downloadSelectedBtn');
+        }
+    }
+
+    // Toggle one (lecture x language) transcript in/out of the selection.
+    function toggleSelectPair(nr, lang, checked) {
+        var key = _selKey(nr, lang);
+        if (checked) selectedNrs.add(key); else selectedNrs.delete(key);
+        _updateDownloadSelectedBtn();
+        _updateSelectBar();   // refresh panel count if it is open
+    }
+
+    // Clear the whole selection (unchecks every box on re-render) and close panel.
+    function clearSelection() {
+        selectedNrs.clear();
+        closeDownloadPanel();
+        if (allResults.length > 0) displayResults();
+        else _updateDownloadSelectedBtn();
+    }
+
+    function _defaultZipName() {
+        var base = _sanitizeFilename(lastSearchTerm || '');
+        if (!base || base === 'transcript') {
+            var d = new Date();
+            var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+            base = 'transcripts_' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate());
+        }
+        return base;
+    }
+
+    // Open the top download panel (only meaningful when ≥1 transcript is selected).
+    function openDownloadPanel() {
+        if (selectedNrs.size === 0) return;   // button is disabled in this state
+        _panelOpen = true;
+        var bar = document.getElementById('selectActionBar');
+        if (bar) { bar.removeAttribute('data-summary'); bar.style.display = ''; }
+        var progRow = document.getElementById('zipProgressRow');
+        if (progRow) progRow.style.display = 'none';
+        _updateSelectBar();   // fills count + default zip name
+        var input = document.getElementById('zipNameInput');
+        if (input) { input.placeholder = i18n.t('zipNamePlaceholder'); if (!input.value) input.value = _defaultZipName(); input.focus(); }
+    }
+
+    // Close/dismiss the panel. Keeps the selection intact so the button stays
+    // enabled and the panel can be reopened.
+    function closeDownloadPanel() {
+        _panelOpen = false;
+        var bar = document.getElementById('selectActionBar');
+        if (bar) { bar.style.display = 'none'; bar.removeAttribute('data-summary'); }
+    }
+
+    // Refresh the panel body (count + zip-name default) while it is open.
+    function _updateSelectBar() {
+        if (!_panelOpen) return;
+        var bar = document.getElementById('selectActionBar');
+        if (!bar) return;
+        if (bar.getAttribute('data-summary') === '1') return; // keep post-download summary
+        var count = selectedNrs.size;
+        if (count === 0) { closeDownloadPanel(); return; } // nothing left to download
+        var summaryRow = document.getElementById('zipSummaryRow');
+        if (summaryRow) { summaryRow.style.display = 'none'; summaryRow.textContent = ''; }
+        var countEl = document.getElementById('selectCount');
+        if (countEl) countEl.textContent = i18n.t('nSelectedPairs')
+            .replace('{t}', count)
+            .replace('{l}', _distinctNrCount());
+        var input = document.getElementById('zipNameInput');
+        if (input) {
+            input.placeholder = i18n.t('zipNamePlaceholder');
+            if (!input.value) input.value = _defaultZipName();
+        }
+        bar.style.display = '';
+    }
+
+    // --- progress + summary UI ---
+    function _setZipDownloading(on) {
+        var row = document.getElementById('zipProgressRow');
+        if (row) row.style.display = on ? '' : 'none';
+        var dlBtn = document.getElementById('zipDownloadBtn');
+        if (dlBtn) dlBtn.disabled = !!on;
+    }
+
+    function _setZipProgress(done, total) {
+        var fill = document.getElementById('zipProgressFill');
+        if (fill) fill.style.width = (total ? Math.round(done / total * 100) : 0) + '%';
+        var txt = document.getElementById('zipProgressText');
+        if (txt) txt.textContent = i18n.t('downloadingProgress').replace('{done}', done).replace('{total}', total);
+    }
+
+    // ZIP-assembly phase (after all fetches): reuse the progress row for "Creating ZIP…".
+    function _setZipCreating(percent) {
+        var p = percent || 0;
+        var row = document.getElementById('zipProgressRow');
+        if (row) row.style.display = '';
+        var fill = document.getElementById('zipProgressFill');
+        if (fill) fill.style.width = p + '%';
+        var txt = document.getElementById('zipProgressText');
+        if (txt) txt.textContent = i18n.t('zipCreating').replace('{percent}', p);
+    }
+
+    function _showZipSummary(msg) {
+        var bar = document.getElementById('selectActionBar');
+        var row = document.getElementById('zipSummaryRow');
+        if (row) { row.textContent = msg; row.style.display = ''; }
+        if (bar) { bar.style.display = ''; bar.setAttribute('data-summary', '1'); }
+    }
+
+    function _zipTargetLang() {
+        return (i18n.getLanguage && i18n.getLanguage()) || 'en';
+    }
+
+    function _findDbRowByNr(nr) {
+        nr = String(nr);
+        for (var i = 0; i < DB.length; i++) {
+            if ((DB[i]['Nr.'] || '').toString().trim() === nr) return DB[i];
+        }
+        return null;
+    }
+
+    // Batch-fetch title + raw EN Drive URL for every selected nr up front.
+    function _fetchZipMeta(nrs) {
+        if (usingSqlite && db && db.queryMetaAsync) {
+            var placeholders = nrs.map(function () { return '?'; }).join(',');
+            var sql = "SELECT nr, original_file_name, script_en_url FROM lectures WHERE nr IN (" + placeholders + ")";
+            return db.queryMetaAsync(sql, nrs).then(function (rows) {
+                var map = {};
+                rows.forEach(function (r) {
+                    map[String(r.nr)] = { title: r.original_file_name || '', enUrl: r.script_en_url || '' };
+                });
+                return map;
+            }).catch(function () { return {}; });
+        }
+        // In-memory fallback (no SQLite): read titles/URLs from the mapped DB array.
+        var m = {};
+        nrs.forEach(function (nr) {
+            var row = _findDbRowByNr(nr);
+            if (row) m[String(nr)] = {
+                title: (row['Original file name'] || '').toString(),
+                enUrl: (row['Script_EN_url'] || '').toString()
+            };
+        });
+        return Promise.resolve(m);
+    }
+
+    // Add one lecture's transcript to the zip.
+    // Returns true (added), 'unavailable' (nothing offline), or throws on abort.
+    function _addOneToZip(zip, folder, nr, lang, meta, signal) {
+        var title = (meta && meta.title ? meta.title : ('Nr_' + nr)).toString();
+        var safeTitle = _sanitizeFilename(title);
+        return fetch('transcripts/' + lang + '/' + encodeURIComponent(String(nr)) + '.html', { signal: signal })
+            .then(function (r) { return r.ok ? r.text() : ''; })
+            .then(function (html) {
+                if (html && html.trim()) {
+                    // Premium per-lecture HTML (same-origin) — wrap into a standalone doc.
+                    var doc = _buildHtmlDoc({ nr: nr, lang: lang, title: title, html: html });
+                    // nr in the filename prevents collisions when two lectures share a title.
+                    zip.file(folder + '/Nr_' + nr + '_' + safeTitle + '_' + lang + '.html', doc);
+                    return true;
+                }
+                // Premium missing (404 / empty). Raw fallback exists only in EN.
+                if (lang === 'en') {
+                    var id = _driveIdFromUrl(meta && meta.enUrl);
+                    if (!id) return 'unavailable';
+                    var key = (PPP.config && PPP.config.driveApiKey) || '';
+                    var url = 'https://www.googleapis.com/drive/v3/files/' + id + '?alt=media&key=' + encodeURIComponent(key);
+                    return fetch(url, { signal: signal }).then(function (rr) {
+                        if (rr.status === 200) {
+                            return rr.text().then(function (txt) {
+                                zip.file(folder + '/Nr_' + nr + '_' + safeTitle + '_EN_raw.txt', txt);
+                                return true;
+                            });
+                        }
+                        return 'unavailable';
+                    });
+                }
+                return 'unavailable';
+            });
+    }
+
+    function downloadSelectedZip(zipName) {
+        // Offline guard: ZIP assembly fetches transcript bodies (and raw
+        // fallbacks from the Drive API) over the network.
+        if (!net.online) {
+            ui.toast(i18n.t('requiresInternet'));
+            return Promise.resolve();
+        }
+        if (typeof JSZip === 'undefined') {
+            _showZipSummary(i18n.t('zipNothing'));
+            return Promise.resolve();
+        }
+        var pairs = Array.from(selectedNrs);   // "<nr>|<lang>" keys
+        if (pairs.length === 0) return Promise.resolve();
+
+        // Codex fix #3: warn before very large selections (memory / slowness).
+        if (pairs.length > 100) {
+            if (!window.confirm(i18n.t('zipLargeWarn').replace('{n}', pairs.length))) return Promise.resolve();
+        }
+
+        var input = document.getElementById('zipNameInput');
+        var name = (zipName != null ? zipName : (input ? input.value : '')) || _defaultZipName();
+        var folder = _sanitizeFilename(name);
+
+        // One batched meta lookup for every DISTINCT nr in the selection.
+        var nrSet = {};
+        pairs.forEach(function (p) { nrSet[p.split('|')[0]] = 1; });
+        var nrs = Object.keys(nrSet);
+
+        var zip = new JSZip();
+        var abort = new AbortController();
+        _zipAbort = abort;                     // Codex fix #1: capture the local controller
+        var total = pairs.length, done = 0, included = 0, unavailable = 0;
+
+        _setZipDownloading(true);
+        _setZipProgress(0, total);
+
+        return _fetchZipMeta(nrs).then(function (metaByNr) {
+            var idx = 0;
+            var CONCURRENCY = 4;
+
+            function worker() {
+                if (abort.signal.aborted || idx >= pairs.length) return Promise.resolve();
+                var parts = pairs[idx++].split('|');
+                var myNr = parts[0], myLang = parts[1];
+                return _addOneToZip(zip, folder, myNr, myLang, metaByNr[myNr] || {}, abort.signal)
+                    .then(function (ok) {
+                        if (ok === true) included++; else unavailable++;
+                    })
+                    .catch(function () {
+                        // Aborted or per-item network error — count it and move on.
+                        unavailable++;
+                    })
+                    .then(function () {
+                        done++;
+                        _setZipProgress(done, total);
+                        return worker();
+                    });
+            }
+
+            var runners = [];
+            for (var k = 0; k < Math.min(CONCURRENCY, pairs.length); k++) runners.push(worker());
+            return Promise.all(runners);
+        }).then(function () {
+            // Codex fix #1: a cancel or a newer download replaced us — never mutate
+            // shared UI/global state that now belongs to a different run.
+            if (_zipAbort !== abort) return;
+            if (abort.signal.aborted) { _setZipDownloading(false); _zipAbort = null; return; }
+            if (included === 0) {
+                _setZipDownloading(false); _zipAbort = null;
+                _showZipSummary(i18n.t('zipNothing'));
+                return;
+            }
+            // Codex fix #2: stay busy THROUGH generateAsync; show "Creating ZIP… %".
+            return zip.generateAsync({ type: 'blob' }, function (meta) {
+                if (_zipAbort !== abort) return;              // superseded/cancelled: don't touch UI
+                _setZipCreating(Math.round(meta.percent));
+            }).then(function (blob) {
+                if (_zipAbort !== abort) return;             // superseded during ZIP assembly
+                _setZipDownloading(false);
+                _zipAbort = null;
+                _triggerBlobDownload(blob, folder + '.zip');
+                track('zip-download', { included: included, unavailable: unavailable, pairs: total });
+                _showZipSummary(i18n.t('zipSummary')
+                    .replace('{included}', included)
+                    .replace('{unavailable}', unavailable));
+                // Close the panel cleanly after the summary has been shown briefly.
+                setTimeout(function () { if (_zipAbort == null) closeDownloadPanel(); }, 3500);
+            });
+        }).catch(function (err) {
+            if (_zipAbort !== abort) return;   // guard shared state for a superseded run
+            _setZipDownloading(false);
+            _zipAbort = null;
+            console.error('ZIP download failed:', err);
+            _showZipSummary(i18n.t('zipNothing'));
+        });
+    }
+
+    function cancelZipDownload() {
+        if (_zipAbort) _zipAbort.abort();
+        _setZipDownloading(false);
+        _zipAbort = null;
     }
 
     // ===== SEARCH MODE TOGGLE =====
@@ -877,6 +1469,10 @@ PPP.app = (function () {
             allResults = [];
             totalResults = 0;
             lastSearchTerm = '';
+            // Reset the transcript selection: clear picks, hide the button + panel.
+            selectedNrs.clear();
+            closeDownloadPanel();
+            _showSelectToggle(false);
         }
         // Update search placeholder based on mode
         var searchInput = document.getElementById('searchTerm');
@@ -1791,7 +2387,13 @@ PPP.app = (function () {
         // Content-Disposition: attachment. Chrome saves the original DOCX without
         // leaving the page. drive.usercontent.google.com is NOT registered for the
         // Android Drive app intent filter, so the file lands directly in Downloads.
-        if (driveId) {
+        // Offline guard: the Drive download needs the network. Fall through to
+        // the client-side HTML fallback when we have the content locally.
+        if (driveId && !net.online && !ctx.html) {
+            ui.toast(i18n.t('requiresInternet'));
+            return;
+        }
+        if (driveId && net.online) {
             var dlUrl = 'https://drive.usercontent.google.com/download?id=' + encodeURIComponent(driveId) + '&export=download';
             var a = document.createElement('a');
             a.href = dlUrl;
@@ -1828,18 +2430,39 @@ PPP.app = (function () {
         body.innerHTML = '<div class="transcript-loading"><div class="transcript-spinner"></div><span>Opening transcript...</span></div>';
         overlay.classList.add('active');
 
-        // Phase 2: fetch a single per-lecture HTML file instead of loading the whole
-        // language SQLite DB. Falls back via duplicate detection (meta DB → original
-        // nr → fetch that file) when the requested nr has no own HTML file.
+        // Offline-first lookup order (installed IndexedDB library):
+        //   1. IDB premium t:{lang}:{nr}
+        //   2. duplicate-lecture fallback (meta DB → original nr → IDB retry)
+        //   3. raw:en:{nr} from IDB (EN only) — rendered with a [Raw] marker
+        //   4. network per-lecture HTML file (legacy path, online only)
+        //   5. offline message
+        var _storeUsable = !!(PPP.offlineStore && PPP.offlineStore.supported());
+        var isRawContent = false;
+
+        function storeGet(key) {
+            if (!_storeUsable) return Promise.resolve(null);
+            return PPP.offlineStore.getText(key).catch(function () { return null; });
+        }
+
         function fetchTranscriptFile(nr) {
+            if (!net.online) return Promise.resolve('');
             return fetch('transcripts/' + lang + '/' + encodeURIComponent(String(nr)) + '.html')
                 .then(function (r) { return r.ok ? r.text() : ''; })
                 .catch(function () { return ''; });
         }
 
-        var firstFetch = fetchTranscriptFile(lectureNr).then(function (html) {
+        // IDB + network lookup for one nr (premium content).
+        function getPremium(nr) {
+            return storeGet('t:' + lang + ':' + String(nr)).then(function (txt) {
+                if (txt) return txt;
+                return fetchTranscriptFile(nr);
+            });
+        }
+
+        var firstFetch = getPremium(lectureNr).then(function (html) {
             if (html) return [{ html_content: html }];
-            // Duplicate-lecture fallback (matches the prior SQLite logic via meta DB)
+            // Duplicate-lecture fallback (matches the prior SQLite logic via
+            // meta DB) — retry IDB (then network) with the ORIGINAL nr.
             var urlCol = 'script_' + lang + '_url';
             return db.queryMetaAsync(
                 "SELECT " + urlCol + " AS url FROM lectures WHERE nr = $nr LIMIT 1",
@@ -1853,14 +2476,32 @@ PPP.app = (function () {
                 );
             }).then(function (origRows) {
                 if (origRows.length === 0) return [];
-                return fetchTranscriptFile(origRows[0].nr).then(function (h) {
+                return getPremium(origRows[0].nr).then(function (h) {
                     return h ? [{ html_content: h }] : [];
                 });
             });
+        }).then(function (rows) {
+            // Raw EN transcript from the offline library (raw-only lectures).
+            if (rows.length === 0 && lang === 'en') {
+                return storeGet('raw:en:' + String(lectureNr)).then(function (rawTxt) {
+                    if (rawTxt) {
+                        isRawContent = true;
+                        return [{ html_content: rawTxt }];
+                    }
+                    return rows;
+                });
+            }
+            return rows;
         });
 
         firstFetch.then(function (rows) {
             if (rows.length === 0) {
+                if (!net.online) {
+                    // Nothing in IDB and no network — honest offline message.
+                    title.textContent = i18n.t('requiresInternet');
+                    body.textContent = i18n.t('requiresInternet');
+                    return;
+                }
                 if (driveUrl) {
                     // Raw transcript: HTML not in-app, but the txt exists on Drive.
                     var rawTitle = (i18n.t && i18n.t('rawTranscriptTitle')) || 'Raw transcript (txt)';
@@ -1868,7 +2509,7 @@ PPP.app = (function () {
                         'This is a Raw transcript, available only in txt format. Open it from Google Drive.';
                     var openLabel = (i18n.t && i18n.t('openInGoogleDrive')) || 'Open in Google Drive';
                     title.textContent = rawTitle;
-                    body.innerHTML = '<p>' + utils.escapeHtml(rawBody) + '</p><p><a href="' + driveUrl +
+                    body.innerHTML = '<p>' + rawBody.split('\n').map(function (ln) { return utils.escapeHtml(ln); }).join('<br>') + '</p><p><a href="' + driveUrl +
                         '" target="_blank" rel="noopener" style="color:var(--saffron)">' +
                         utils.escapeHtml(openLabel) + ' \u2197</a></p>';
                 } else {
@@ -1885,16 +2526,39 @@ PPP.app = (function () {
             ).then(function (meta) {
                 var row = meta[0] || {};
                 var origName = row.original_file_name || ('Nr.' + lectureNr);
-                title.textContent = origName + (reference ? ' — ' + reference : '');
+                var rawPrefix = isRawContent ? ('[' + i18n.t('rawLabel') + '] ') : '';
+                title.textContent = rawPrefix + origName + (reference ? ' — ' + reference : '');
                 var resolvedDriveUrl = driveUrl || row['script_' + lang + '_url'] || '';
                 return { origName: origName, driveUrl: resolvedDriveUrl };
             }).catch(function () {
-                title.textContent = 'Nr.' + lectureNr + (reference ? ' — ' + reference : '');
+                var rawPrefix = isRawContent ? ('[' + i18n.t('rawLabel') + '] ') : '';
+                title.textContent = rawPrefix + 'Nr.' + lectureNr + (reference ? ' — ' + reference : '');
                 return { origName: 'Nr_' + lectureNr, driveUrl: driveUrl || '' };
             }).then(function (info) {
                 // Insert HTML content
                 var htmlContent = rows[0].html_content || '';
                 body.innerHTML = htmlContent;
+
+                // Raw transcript: keep the Google Drive source as a discreet
+                // secondary line above the content.
+                if (isRawContent && info.driveUrl) {
+                    var driveLine = document.createElement('p');
+                    driveLine.style.cssText = 'font-size:0.85em;color:#888;margin:0 0 10px;';
+                    var driveA = document.createElement('a');
+                    driveA.href = info.driveUrl;
+                    driveA.target = '_blank';
+                    driveA.rel = 'noopener';
+                    driveA.style.color = 'var(--saffron)';
+                    driveA.textContent = i18n.t('openInGoogleDrive') + ' ↗';
+                    driveA.onclick = function (e) {
+                        if (!net.online) {
+                            e.preventDefault();
+                            ui.toast(i18n.t('requiresInternet'));
+                        }
+                    };
+                    driveLine.appendChild(driveA);
+                    body.insertBefore(driveLine, body.firstChild);
+                }
 
                 // Enable download button (DOCX from Drive if available, else client-side HTML)
                 if ((htmlContent || info.driveUrl) && dlBtn) {
@@ -2132,6 +2796,87 @@ PPP.app = (function () {
         });
     }
 
+    // ===== ADVANCED TRANSCRIPT (SENTENCE) SEARCH =====
+    // Stored so the "Download Excel" button can re-run the query uncapped.
+    var _sentenceParsed = null;
+    var _sentenceTerm = '';
+
+    function performSentenceSearch(startTime) {
+        var parsed = search.parseSearchQuery(lastSearchTerm);
+        var q = search.buildTranscriptSQL(parsed);
+        if (!q) {
+            // No free-text term — nothing to search on.
+            document.getElementById('resultsInfo').innerHTML = '';
+            document.getElementById('timer').textContent = '';
+            ui.renderSentenceResults([], lastSearchTerm, { total: 0, lectures: 0, shown: 0 });
+            return;
+        }
+
+        _sentenceParsed = parsed;
+        _sentenceTerm = lastSearchTerm;
+
+        ui.showLoading(i18n.t('loadingTranscripts'));
+        ui.updateProgress(0);
+
+        db.loadSentencesDB(function (p) { ui.updateProgress(p); }).then(function () {
+            ui.hideLoading();
+            // COUNT first (totals for the summary line), then the capped page query.
+            return db.querySentencesAsync(q.countSql, q.params).then(function (countRows) {
+                var c = countRows[0] || {};
+                var n = c.n || 0;
+                var lectures = c.lectures || 0;
+                return db.querySentencesAsync(q.sql, q.params).then(function (rows) {
+                    var elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
+                    document.getElementById('timer').textContent = i18n.t('elapsedTime') + ' ' + elapsed + ' ' + i18n.t('seconds');
+                    track('search', { query: lastSearchTerm, mode: 'sentences', results: n });
+                    ui.renderSentenceResults(rows, lastSearchTerm, { total: n, lectures: lectures, shown: rows.length });
+                });
+            });
+        }).catch(function (err) {
+            ui.hideLoading();
+            console.error('Sentence search error:', err);
+            document.getElementById('resultsInfo').innerHTML = '<strong>Error: ' + utils.escapeHtml(err.message) + '</strong>';
+        });
+    }
+
+    // Re-run the stored sentence query with a very high limit and export to Excel.
+    function exportSentencesExcel() {
+        if (!_sentenceParsed) return;
+        var q = search.buildTranscriptSQL(_sentenceParsed);
+        if (!q) return;
+        q.params.$limit = 100000;
+
+        db.querySentencesAsync(q.sql, q.params).then(function (rows) {
+            if (typeof XLSX === 'undefined') {
+                console.error('XLSX library not available');
+                return;
+            }
+            var data = rows.map(function (r) {
+                return {
+                    Timestamp: r.ts || '',
+                    Sentence: r.sentence || '',
+                    Tier: r.tier || '',
+                    'Lecture nr': r.nr,
+                    'Lecture name': r.name || '',
+                    'Script_EN URL': r.url || ''
+                };
+            });
+            var ws = XLSX.utils.json_to_sheet(data);
+            var wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, 'Sentences');
+
+            var safeQuery = (_sentenceTerm || 'search').replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'search';
+            var d = new Date();
+            var dateStr = d.getFullYear() + '-' +
+                ('0' + (d.getMonth() + 1)).slice(-2) + '-' +
+                ('0' + d.getDate()).slice(-2);
+            XLSX.writeFile(wb, 'transcript_search_' + safeQuery + '_' + dateStr + '.xlsx');
+            track('export-excel', { query: _sentenceTerm, mode: 'sentences', rows: rows.length });
+        }).catch(function (err) {
+            console.error('Excel export error:', err);
+        });
+    }
+
     // ===== TOP 108 CITATIONS =====
     function showTopCitations() {
         if (!usingSqlite) {
@@ -2239,6 +2984,11 @@ PPP.app = (function () {
             var key = el.getAttribute('data-i18n');
             var val = i18n.t(key);
             if (val !== key) el.textContent = val;
+        });
+        document.querySelectorAll('[data-i18n-placeholder]').forEach(function (el) {
+            var pkey = el.getAttribute('data-i18n-placeholder');
+            var pval = i18n.t(pkey);
+            if (pval !== pkey) el.placeholder = pval;
         });
         var luEl = document.getElementById('dbLastUpdate');
         if (luEl && luEl.getAttribute('data-last-update')) {
@@ -2357,20 +3107,131 @@ PPP.app = (function () {
         showVerseLectures: showVerseLectures,
         showTopCitations: showTopCitations,
         hideTopCitations: hideTopCitations,
+        exportSentencesExcel: exportSentencesExcel,
         openTranscriptAtVerse: openTranscriptAtVerse,
         openHtmlTranscriptViewer: openHtmlTranscriptViewer,
         closeTranscriptModal: closeTranscriptModal,
         downloadTranscript: downloadTranscript,
         showFavorites: showFavorites,
         updateFavoritesCount: updateFavoritesCount,
+        // Multi-select transcripts -> ZIP
+        isSelectedPair: isSelectedPair,
+        toggleSelectPair: toggleSelectPair,
+        openDownloadPanel: openDownloadPanel,
+        closeDownloadPanel: closeDownloadPanel,
+        clearSelection: clearSelection,
+        downloadSelectedZip: downloadSelectedZip,
+        cancelZipDownload: cancelZipDownload,
         copyShareLink: copyShareLink,
         buildShareUrl: buildShareUrl,
         toggleTheme: toggleTheme,
         openGuide: function () {
             var lang = localStorage.getItem('preferredLanguage') || 'en';
-            window.open('guide/' + lang + '/', '_blank');
+            window.open('guide/' + lang + '/index.html', '_blank');
+        },
+        toggleFeaturesMenu: function (ev) {
+            if (ev) ev.stopPropagation();
+            var menu = document.getElementById('featuresMenu');
+            if (!menu) return;
+
+            // Currently open -> close.
+            if (!menu.hidden) {
+                closeFeaturesMenu();
+                return;
+            }
+
+            var lang = i18n.getLanguage() || localStorage.getItem('preferredLanguage') || 'en';
+            var data = window.PPP_GUIDE_MENU && window.PPP_GUIDE_MENU[lang];
+            if (!data) {
+                // No menu data available -> fall back to the full guide.
+                this.openGuide();
+                return;
+            }
+
+            var base = 'guide/' + lang + '/index.html';
+            menu.innerHTML = '';
+
+            // Centered modal panel.
+            var panel = document.createElement('div');
+            panel.className = 'features-modal';
+
+            // Header: title + close button.
+            var header = document.createElement('div');
+            header.className = 'fm-header';
+            var h2 = document.createElement('h2');
+            h2.textContent = i18n.t('featuresBtn');
+            var closeBtn = document.createElement('button');
+            closeBtn.className = 'fm-close';
+            closeBtn.type = 'button';
+            closeBtn.setAttribute('aria-label', 'Close');
+            closeBtn.textContent = '×';
+            closeBtn.addEventListener('click', closeFeaturesMenu);
+            header.appendChild(h2);
+            header.appendChild(closeBtn);
+            panel.appendChild(header);
+
+            // "All functions" link at the top.
+            var all = document.createElement('a');
+            all.className = 'fm-all';
+            all.href = base;
+            all.target = '_blank';
+            all.rel = 'noopener';
+            all.textContent = i18n.t('allFunctions');
+            panel.appendChild(all);
+
+            // Groups A-I, each a heading with its function names beneath.
+            var groups = data.groups || [];
+            var items = data.items || [];
+            groups.forEach(function (grp) {
+                var heading = document.createElement('div');
+                heading.className = 'fm-group';
+                heading.textContent = grp.name;
+                panel.appendChild(heading);
+
+                items.filter(function (it) { return it.g === grp.l; })
+                    .forEach(function (it) {
+                        var a = document.createElement('a');
+                        a.className = 'fm-item';
+                        a.href = base + '#item-' + it.n;
+                        a.target = '_blank';
+                        a.rel = 'noopener';
+                        a.textContent = it.t;
+                        panel.appendChild(a);
+                    });
+            });
+
+            menu.appendChild(panel);
+            menu.hidden = false;
+            // Defer wiring the backdrop-click handler so the current click that
+            // opened the menu does not immediately close it.
+            setTimeout(function () {
+                menu.addEventListener('click', onFeaturesOverlayClick);
+                document.addEventListener('keydown', onFeaturesKeydown);
+            }, 0);
         }
     };
+
+    // ---- Features menu helpers (module-private, single set of handlers) ----
+    function closeFeaturesMenu() {
+        var menu = document.getElementById('featuresMenu');
+        if (menu) {
+            menu.hidden = true;
+            menu.innerHTML = '';
+            menu.removeEventListener('click', onFeaturesOverlayClick);
+        }
+        document.removeEventListener('keydown', onFeaturesKeydown);
+    }
+
+    function onFeaturesOverlayClick(e) {
+        // Close only when the backdrop itself is clicked, not the panel/links.
+        if (e.target === e.currentTarget) closeFeaturesMenu();
+    }
+
+    function onFeaturesKeydown(e) {
+        if (e.key === 'Escape' || e.key === 'Esc') {
+            closeFeaturesMenu();
+        }
+    }
 })();
 
 // ===== Auto-init on DOM ready =====

@@ -242,11 +242,98 @@ button, input, select, textarea, table {
 
 /* Language Switcher */
 .language-switcher {
+    position: relative;
     display: flex;
     justify-content: center;
     gap: 4px;
     margin: 12px 0 16px;
 }
+
+/* ===== Features menu — centered modal (opened by the "33 Features" button) ===== */
+.features-menu {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+    background: rgba(0,0,0,0.45);
+}
+.features-menu[hidden] { display: none; }
+.features-modal {
+    width: 100%;
+    max-width: 380px;
+    max-height: 80vh;
+    overflow-y: auto;
+    padding: 8px;
+    background: var(--surface);
+    border-radius: var(--radius);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+    text-align: left;
+}
+.features-modal .fm-header {
+    position: sticky;
+    top: -8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: -8px -8px 4px;
+    padding: 12px 16px 11px;
+    background: #d0342c;
+    border-radius: var(--radius) var(--radius) 0 0;
+    box-shadow: 0 2px 8px rgba(208,52,44,0.35);
+}
+.features-modal .fm-header h2 {
+    margin: 0;
+    font-family: "Cormorant Garamond", Georgia, serif;
+    font-size: 19px;
+    font-weight: 700;
+    color: #fff;
+}
+.features-modal .fm-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    line-height: 1;
+    cursor: pointer;
+    color: rgba(255,255,255,0.85);
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+.features-modal .fm-close:hover { color: #fff; background: rgba(255,255,255,0.18); }
+.features-menu .fm-all {
+    display: block;
+    padding: 8px 10px;
+    font-family: "Cormorant Garamond", Georgia, serif;
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--primary);
+    text-decoration: none;
+    border-bottom: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 2px;
+}
+.features-menu .fm-all:hover { background: var(--bg-warm); }
+.features-menu .fm-group {
+    margin-top: 10px;
+    padding: 5px 10px 3px;
+    font-family: "Cormorant Garamond", Georgia, serif;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--primary);
+    border-bottom: 1px solid var(--border-light);
+}
+.features-menu .fm-item {
+    display: block;
+    padding: 5px 10px;
+    font-size: 12.5px;
+    color: var(--text);
+    text-decoration: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+.features-menu .fm-item:hover { color: var(--primary); background: var(--bg-warm); }
 .features-btn {
     background: #d0342c;
     color: #fff;
@@ -536,6 +623,29 @@ h1 {
 .keywords-search-btn.active {
     box-shadow: 0 2px 6px rgba(139,105,20,0.45), inset 0 0 0 2px rgba(255,255,255,0.35);
 }
+/* Text mode toggle — paired with Key words, matches its styling.
+   Desktop: middle segment of the connected pill (square corners). */
+.text-search-btn {
+    background: linear-gradient(135deg, var(--btn-gold), var(--btn-gold-light)) !important;
+    color: #fff !important;
+    border: none !important;
+    padding: 10px 18px !important;
+    border-radius: 0 !important;
+    font-weight: 700 !important;
+    font-size: 13px !important;
+    letter-spacing: 0.3px !important;
+    cursor: pointer;
+    white-space: nowrap;
+    box-shadow: 0 2px 6px rgba(184,134,11,0.3);
+    transition: all 0.2s;
+    margin: 0 !important;
+}
+.text-search-btn:hover {
+    filter: brightness(1.05);
+}
+.text-search-btn.active {
+    box-shadow: 0 2px 6px rgba(139,105,20,0.45), inset 0 0 0 2px rgba(255,255,255,0.35);
+}
 .search-row {
     display: flex;
     gap: 0 !important;
@@ -802,6 +912,25 @@ h1 {
     font-size: 13px;
     color: var(--primary-dark);
     text-align: center;
+}
+/* Results header row: count (left) + "Download selected" button (right corner,
+   closer to the transcript columns) on one line. When the button wrapper is
+   display:none it drops out of flow entirely — no empty gap. Wraps below on
+   narrow widths (flex-wrap) so it never overflows or overlaps the count. */
+.results-header-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 6px;
+}
+.results-header-row #resultsInfo {
+    flex: 1 1 auto;
+    margin-top: 0;
+}
+.results-header-row #selectToggleWrap {
+    margin-left: auto;
+    margin-top: 0;
 }
 
 /* ===== UTILITY BUTTONS (overlay on table header row — aligned with Transcripts label) ===== */
@@ -1376,6 +1505,9 @@ th.transcripts-block {
     .install-btn { padding: 6px 14px; font-size: 12px; }
     .language-switcher { gap: 4px; }
     .lang-btn { padding: 5px 10px; font-size: 11px; }
+    /* Centered features modal: let the panel use the full narrow width. */
+    .features-menu { padding: 12px; }
+    .features-modal { max-width: 100%; max-height: 85vh; }
     #pagination { flex-wrap: wrap; justify-content: center; }
     .fav-cell { width: 22px; }
     .fav-star { font-size: 16px; }
@@ -1894,12 +2026,13 @@ body.dark .transcript-deep-highlight {
     /* Search card grid layout for mobile */
     .search-card {
         display: grid !important;
-        grid-template-columns: minmax(0, auto) minmax(0, 1fr) minmax(0, auto);
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
         grid-template-areas:
-            "combo combo combo"
-            "input input input"
-            "keywords howto search"
-            "info info info";
+            "combo    combo"
+            "keywords text"
+            "input    input"
+            "howto    search"
+            "info     info";
         gap: 6px !important;
         align-items: center;
         min-width: 0;
@@ -1921,6 +2054,17 @@ body.dark .transcript-deep-highlight {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+    }
+    .search-row .text-search-btn {
+        grid-area: text;
+        border-radius: 22px !important;
+        padding: 8px 12px !important;
+        min-width: 0;
+        max-width: 100%;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        justify-self: stretch;
     }
     .search-row .search-bar button.search-button {
         min-width: 0;
@@ -1966,8 +2110,10 @@ body.dark .transcript-deep-highlight {
     .search-time .timer {
         display: none !important;
     }
-    #resultsInfo {
+    .results-header-row {
         grid-area: info;
+    }
+    #resultsInfo {
         text-align: center;
     }
 }
@@ -2032,4 +2178,157 @@ textarea:focus-visible,
 [tabindex]:focus-visible {
     outline: 3px solid var(--focus-ring, var(--saffron));
     outline-offset: 2px;
+}
+
+/* ===========================================================================
+   MULTI-SELECT TRANSCRIPTS -> ZIP
+   Select toggle (near #resultsInfo), per-row checkbox, and the floating
+   bottom action bar with progress. Theme-aware via existing CSS variables.
+   =========================================================================== */
+
+/* --- One persistent "Download selected transcripts" button above results --- */
+#selectToggleWrap {
+    margin-top: 8px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+.download-selected-btn {
+    background: var(--saffron);
+    color: #fff;
+    border: 1.5px solid var(--saffron);
+    border-radius: 20px;
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, opacity 0.15s;
+}
+.download-selected-btn:hover:not(.disabled):not(:disabled) {
+    filter: brightness(1.05);
+}
+.download-selected-btn.disabled,
+.download-selected-btn:disabled {
+    background: var(--surface);
+    color: var(--text-muted);
+    border-color: var(--border);
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
+/* --- Per-language selection checkbox: ALWAYS rendered before each selectable
+   transcript chip. Small + unobtrusive so normal browsing isn't cluttered. */
+.select-checkbox {
+    width: 14px;
+    height: 14px;
+    margin: 0 4px 0 0;
+    cursor: pointer;
+    vertical-align: middle;
+    accent-color: var(--saffron);
+    opacity: 0.7;
+    flex: none;
+}
+.select-checkbox:hover,
+.select-checkbox:checked {
+    opacity: 1;
+}
+
+/* --- Floating download panel (opens at the TOP of the page on button click) --- */
+.select-action-bar {
+    position: fixed;
+    left: 50%;
+    top: 0;
+    transform: translateX(-50%);
+    width: 100%;
+    max-width: 760px;
+    box-sizing: border-box;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 14px 14px;
+    box-shadow: var(--shadow-lg);
+    padding: 12px 16px;
+    z-index: 1200;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.select-bar-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.select-count {
+    font-weight: 800;
+    color: var(--text);
+    white-space: nowrap;
+}
+.zip-name-input {
+    flex: 1 1 160px;
+    min-width: 120px;
+    padding: 8px 12px;
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+}
+.zip-download-btn {
+    flex: none;
+    white-space: nowrap;
+}
+.zip-clear-btn {
+    flex: none;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.zip-clear-btn:hover {
+    color: var(--vermillion);
+    border-color: var(--vermillion);
+}
+
+/* --- Progress row --- */
+.zip-progress-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+.zip-progress-outer {
+    flex: 1 1 auto;
+    height: 8px;
+    background: var(--border-light);
+    border-radius: 6px;
+    overflow: hidden;
+}
+.zip-progress-fill {
+    height: 100%;
+    width: 0;
+    background: linear-gradient(90deg, var(--saffron), var(--saffron-light));
+    transition: width 0.2s ease;
+}
+.zip-progress-text {
+    font-size: 13px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    min-width: 90px;
+}
+
+/* --- Post-download summary --- */
+.zip-summary-row {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--tulasi);
+}
+
+@media (max-width: 640px) {
+    .select-action-bar { border-radius: 0 0 12px 12px; padding: 10px 12px; }
+    .zip-name-input { flex-basis: 100%; order: 3; }
 }

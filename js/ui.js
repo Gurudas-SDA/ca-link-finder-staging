@@ -13,6 +13,27 @@ PPP.ui = (function () {
     var columnHeaders = ['Date', 'Type', 'Original file name', 'Country', 'Lang.', 'Links', 'Dwnld.', 'Length', 'Script_EN', 'Script_LV', 'Script_RU'];
 
     /**
+     * Build a per-language selection checkbox. ALWAYS rendered next to each
+     * selectable transcript chip (no select-mode). Carries data-nr + data-lang;
+     * toggling adds/removes "<nr>|<lang>" from the selection Set.
+     */
+    function _makeSelCheckbox(nr, lang, langLabel) {
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'select-checkbox';
+        cb.setAttribute('data-nr', nr);
+        cb.setAttribute('data-lang', lang);
+        cb.checked = !!(PPP.app.isSelectedPair && PPP.app.isSelectedPair(nr, lang));
+        cb.setAttribute('aria-label', t('selectTranscriptAria').replace('{lang}', (langLabel || lang).toString().toUpperCase()));
+        cb.onclick = function (e) { e.stopPropagation(); };
+        cb.onchange = function (e) {
+            var el = e.currentTarget;
+            PPP.app.toggleSelectPair(el.getAttribute('data-nr'), el.getAttribute('data-lang'), el.checked);
+        };
+        return cb;
+    }
+
+    /**
      * Get localized column header name.
      */
     function getColumnHeader(colName) {
@@ -179,6 +200,9 @@ PPP.ui = (function () {
             var starTd = tr.insertCell();
             starTd.className = 'fav-cell';
             var nr = (row['Nr.'] || '').toString().trim();
+            // Per-language multi-select checkboxes now live BEFORE each transcript
+            // chip (script-orig / script-raw) in the Script_* columns — see
+            // _makeSelCheckbox() below. Duplicates (script-dup) are not selectable.
             if (nr && PPP.favorites) {
                 var btn = document.createElement('button');
                 btn.className = 'fav-star' + (PPP.favorites.isFavorite(nr) ? ' active' : '');
@@ -274,6 +298,11 @@ PPP.ui = (function () {
                                     el.getAttribute('data-ref')
                                 );
                             };
+                            // Per-language checkbox ALWAYS rendered before selectable
+                            // chips (premium or raw). Duplicates stay non-selectable.
+                            if (!isDuplicate) {
+                                td.appendChild(_makeSelCheckbox(row._lectureNr, langCode, langLabel));
+                            }
                             td.appendChild(viewBtn);
                             } // end else (not-relevant check)
                         }
@@ -329,6 +358,11 @@ PPP.ui = (function () {
                                     window.open(dUrl, '_blank');
                                 }
                             };
+                            // Per-language checkbox ALWAYS rendered before selectable
+                            // chips (premium or raw). Duplicates stay non-selectable.
+                            if (!isDuplicate) {
+                                td.appendChild(_makeSelCheckbox(lectNr, langCode, langLabel));
+                            }
                             td.appendChild(viewBtn);
                             } // end else (not-relevant check)
                         }
@@ -345,6 +379,13 @@ PPP.ui = (function () {
                             a.className = 'ext-chip'; // S94: mobile card chip styling hook
                             a.target = '_blank';
                             a.rel = 'noopener';
+                            // Offline guard: MP3/YouTube/Drive links need the network.
+                            a.onclick = function (e) {
+                                if (window.PPP && PPP.net && !PPP.net.online) {
+                                    e.preventDefault();
+                                    toast(t('requiresInternet'));
+                                }
+                            };
                             td.appendChild(a);
                         } else if (val && val !== 'N/A' && val !== '0' && val !== '') {
                             td.textContent = label;
@@ -398,64 +439,81 @@ PPP.ui = (function () {
     }
 
     /**
-     * Render transcript search results with snippets.
+     * Render advanced transcript (sentence) search results.
+     * rows: [{ ts, nr, seq, sentence, name, url, tier, date }]
+     * totals: { total, lectures, shown }
+     * Columns: Timestamp | Sentence | Tier | Lecture nr | Lecture name | Script_EN URL.
      */
-    function renderTranscriptResults(rows, searchTermStr) {
-        var container = document.getElementById('resultsTable');
-        container.innerHTML = '';
-        container.classList.remove('lecture-cards'); // not the 13-col lecture table
+    function renderSentenceResults(rows, searchTermStr, totals) {
+        totals = totals || {};
+        var searchTerms = searchTermStr ? searchTermStr.split(';').map(function (s) { return s.trim(); }).filter(Boolean) : [];
 
-        if (rows.length === 0) {
-            container.innerHTML = '<div class="empty-result-message">' + t('noTranscriptResults') + '</div>';
-            return;
+        // Summary line + Download Excel button above the table.
+        var info = document.getElementById('resultsInfo');
+        if (info) {
+            if (rows && rows.length > 0) {
+                var summary = t('sentenceResultsSummary')
+                    .replace('{n}', totals.total != null ? totals.total : rows.length)
+                    .replace('{m}', totals.lectures != null ? totals.lectures : '')
+                    .replace('{k}', totals.shown != null ? totals.shown : rows.length);
+                info.innerHTML = '<strong>' + utils.escapeHtml(summary) + '</strong> ' +
+                    '<button type="button" class="search-button" style="margin-left:10px;" ' +
+                    'onclick="PPP.app.exportSentencesExcel()">' + utils.escapeHtml(t('downloadExcel')) + '</button>';
+            } else {
+                info.innerHTML = '';
+            }
         }
 
-        var searchTerms = searchTermStr ? searchTermStr.split(';').map(function (s) { return s.trim(); }).filter(Boolean) : [];
-        var table = document.createElement('table');
-        table.id = 'resultsTable';
-        table.style.width = '100%';
+        var table = document.getElementById('resultsTable');
+        table.classList.remove('lecture-cards'); // not the 13-col lecture table
 
-        var thead = table.createTHead();
-        var hr = thead.insertRow();
-        ['Date', 'Lecture', 'Snippet'].forEach(function (h) {
-            var th = document.createElement('th');
-            th.textContent = h;
-            hr.appendChild(th);
-        });
+        var html = '<thead><tr>' +
+            '<th>Timestamp</th>' +
+            '<th>Sentence</th>' +
+            '<th>Tier</th>' +
+            '<th>Lecture nr</th>' +
+            '<th>Lecture name</th>' +
+            '<th>Script_EN URL</th>' +
+            '</tr></thead><tbody>';
 
-        var tbody = table.createTBody();
-        rows.forEach(function (row) {
-            var tr = tbody.insertRow();
-            var tdDate = tr.insertCell();
-            tdDate.textContent = row.date || row.Date || '';
+        if (!rows || rows.length === 0) {
+            html += '<tr><td colspan="6" class="empty-result-message">' + t('noTranscriptResults') + '</td></tr>';
+        } else {
+            rows.forEach(function (row) {
+                var ts = utils.escapeHtml(row.ts || '');
+                var sentence = highlightSearchTerms(row.sentence || '', searchTerms);
+                var tier = utils.escapeHtml(row.tier || '');
+                var nr = row.nr;
+                var nameText = row.name || ('Nr.' + nr);
 
-            var tdName = tr.insertCell();
-            var lectureName = row.original_file_name || row['Original file name'] || '';
-            var lectureNr = row.nr || row['Nr.'] || '';
-            if (lectureNr && hasSummary(lectureNr)) {
-                var link = document.createElement('a');
-                link.href = '#';
-                link.textContent = lectureName;
-                link.style.cssText = 'color:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;';
-                link.addEventListener('click', function (e) {
-                    e.preventDefault();
-                    PPP.ui.openSummaryModal(lectureName, lectureNr);
-                });
-                tdName.appendChild(link);
-            } else {
-                tdName.textContent = lectureName;
-            }
+                var nameCell;
+                if (nr != null && nr !== '') {
+                    var nrInt = parseInt(nr, 10);
+                    var openCall = "PPP.app.openHtmlTranscriptViewer(" + nrInt + ", 'en'); return false;";
+                    nameCell = '<a href="#" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;" ' +
+                        'onclick="' + openCall + '">' + utils.escapeHtml(nameText) + '</a>';
+                } else {
+                    nameCell = utils.escapeHtml(nameText);
+                }
 
-            var tdSnippet = tr.insertCell();
-            var text = row.text_content || row.text || row.content || '';
-            var snippet = getSnippet(text, searchTerms, 120);
-            tdSnippet.innerHTML = highlightSearchTerms(snippet, searchTerms);
-            tdSnippet.style.fontSize = '12px';
-            tdSnippet.style.lineHeight = '1.5';
-        });
+                var urlCell = '';
+                if (row.url) {
+                    urlCell = '<a href="' + utils.escapeHtml(row.url) + '" target="_blank" rel="noopener">' +
+                        utils.escapeHtml(row.url) + '</a>';
+                }
 
-        container.parentNode.replaceChild(table, container);
-        table.id = 'resultsTable';
+                html += '<tr>' +
+                    '<td>' + ts + '</td>' +
+                    '<td>' + sentence + '</td>' +
+                    '<td>' + tier + '</td>' +
+                    '<td>' + utils.escapeHtml(String(nr != null ? nr : '')) + '</td>' +
+                    '<td>' + nameCell + '</td>' +
+                    '<td style="font-size:0.85em;word-break:break-all;">' + urlCell + '</td>' +
+                    '</tr>';
+            });
+        }
+        html += '</tbody>';
+        table.innerHTML = html;
     }
 
     /**
@@ -885,13 +943,11 @@ PPP.ui = (function () {
     var _extrasCache = null;
     var _extrasLoading = null;
 
-    function loadExtras() {
-        if (_extrasCache) return Promise.resolve(_extrasCache);
-        if (_extrasLoading) return _extrasLoading;
+    function _loadExtrasNetwork() {
         var versionsP = (window.PPP && PPP.db && PPP.db.getDbVersions)
             ? PPP.db.getDbVersions()
             : Promise.resolve({});
-        _extrasLoading = versionsP
+        return versionsP
             .then(function (v) {
                 var url = 'data/ppp_lecture_extras.json' +
                     (v && v.extras ? ('?v=' + v.extras) : '');
@@ -900,6 +956,22 @@ PPP.ui = (function () {
             .then(function (r) {
                 if (!r.ok) throw new Error('extras HTTP ' + r.status);
                 return r.json();
+            });
+    }
+
+    function loadExtras() {
+        if (_extrasCache) return Promise.resolve(_extrasCache);
+        if (_extrasLoading) return _extrasLoading;
+        // Offline-first: the installed library keeps extras gzipped in the
+        // IndexedDB store (core:extras). Network stays as the fallback for
+        // unsupported browsers / not-yet-installed state.
+        var offlineP = (window.PPP && PPP.offlineStore && PPP.offlineStore.supported())
+            ? PPP.offlineStore.getText('core:extras').catch(function () { return null; })
+            : Promise.resolve(null);
+        _extrasLoading = offlineP
+            .then(function (txt) {
+                if (txt) return JSON.parse(txt);
+                return _loadExtrasNetwork();
             })
             .then(function (data) {
                 _extrasCache = data || {};
@@ -915,6 +987,15 @@ PPP.ui = (function () {
                 return {};
             });
         return _extrasLoading;
+    }
+
+    /**
+     * Drop the in-memory extras cache (delta update replaced core:extras in
+     * the offline store) so the next loadExtras() re-reads fresh data.
+     */
+    function clearExtrasCache() {
+        _extrasCache = null;
+        _extrasLoading = null;
     }
 
     function getExtras(nr) {
@@ -977,6 +1058,46 @@ PPP.ui = (function () {
         });
     }
 
+    // ===== TOASTS & UPDATE NOTES =====
+
+    var _toastTimer = null;
+
+    /**
+     * Small transient message, bottom center. Reuses the .copy-toast styling.
+     */
+    function toast(text) {
+        var el = document.getElementById('uiToast');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'uiToast';
+            el.className = 'copy-toast';
+            document.body.appendChild(el);
+        }
+        el.textContent = text;
+        el.classList.add('show');
+        if (_toastTimer) clearTimeout(_toastTimer);
+        _toastTimer = setTimeout(function () { el.classList.remove('show'); }, 3000);
+    }
+
+    /**
+     * Discreet one-line note (delta update summary) styled like the
+     * extrasLoadingInfo indicator; auto-hides after 6 s.
+     */
+    function showUpdateNote(text) {
+        var el = document.getElementById('updateNoteInfo');
+        if (!el) {
+            var info = document.getElementById('resultsInfo');
+            if (!info || !info.parentNode) return;
+            el = document.createElement('div');
+            el.id = 'updateNoteInfo';
+            el.style.cssText = 'font-size:0.8em;color:#888;margin-top:4px;';
+            info.parentNode.insertBefore(el, info.nextSibling);
+        }
+        el.textContent = text;
+        el.style.display = 'block';
+        setTimeout(function () { el.style.display = 'none'; }, 6000);
+    }
+
     function closeSummaryModal(e) {
         var overlay = document.getElementById('summaryModalOverlay');
         if (!overlay) return;
@@ -987,7 +1108,7 @@ PPP.ui = (function () {
 
     return {
         renderResults: renderResults,
-        renderTranscriptResults: renderTranscriptResults,
+        renderSentenceResults: renderSentenceResults,
         renderCitationResults: renderCitationResults,
         renderCitationStats: renderCitationStats,
         renderPagination: renderPagination,
@@ -1002,6 +1123,9 @@ PPP.ui = (function () {
         updateProgress: updateProgress,
         loadExtras: loadExtras,
         extrasReady: extrasReady,
+        clearExtrasCache: clearExtrasCache,
+        toast: toast,
+        showUpdateNote: showUpdateNote,
         getColumnHeader: getColumnHeader,
         columnHeaders: columnHeaders,
         openSummaryModal: openSummaryModal,
