@@ -167,6 +167,7 @@ PPP.ui = (function () {
         // 13-column lecture table into cards. Other tables (citations,
         // transcript snippets) keep the classic table layout.
         table.classList.add('lecture-cards');
+        table.classList.remove('sentence-mode');
         var thead = table.createTHead();
         // Count: only lectures with at least one ORIGINAL transcript (EN/LV/RU non-duplicate)
         var DUP_LABELS = { 'Duplicate': 1, 'Dublikāts': 1, 'Дубликат': 1, 'Дубикат': 1 };
@@ -439,10 +440,48 @@ PPP.ui = (function () {
     }
 
     /**
+     * Build the sentence-mode <thead> markup (shared by the empty frame and
+     * the populated results render, so the header — and its "different
+     * environment" styling via the sentence-mode class — never lags behind
+     * what's actually in the table).
+     */
+    function _sentenceTheadHtml() {
+        return '<thead><tr>' +
+            '<th></th>' +
+            '<th>' + utils.escapeHtml(t('sentColTime')) + '</th>' +
+            '<th>' + utils.escapeHtml(t('sentColSentence')) + '</th>' +
+            '<th>' + utils.escapeHtml(t('sentColTier')) + '</th>' +
+            '<th>' + utils.escapeHtml(t('sentColLecture')) + '</th>' +
+            '<th>' + utils.escapeHtml(t('colDwnld')) + '</th>' +
+            '<th>' + utils.escapeHtml(t('sentColScript')) + '</th>' +
+            '</tr></thead>';
+    }
+
+    /**
+     * Render the empty sentence-mode frame — shown IMMEDIATELY when the user
+     * switches to "In Text" mode, before any search has run, so the results
+     * area changes look (localized headers + distinct header tone) the
+     * instant the mode button is pressed rather than only after a search.
+     */
+    function renderEmptySentenceTable() {
+        var table = document.getElementById('resultsTable');
+        table.classList.remove('lecture-cards');
+        table.classList.add('sentence-mode');
+        var html = _sentenceTheadHtml() + '<tbody>' +
+            '<tr><td colspan="7" class="empty-result-message">' + utils.escapeHtml(t('sentEmptyHint')) + '</td></tr>' +
+            '</tbody>';
+        table.innerHTML = html;
+    }
+
+    /**
      * Render advanced transcript (sentence) search results.
      * rows: [{ ts, nr, seq, sentence, name, url, tier, date }]
      * totals: { total, lectures, shown }
-     * Columns: Timestamp | Sentence | Tier | Lecture nr | Lecture name | Script_EN URL.
+     * Columns: [select] | Time | Sentence | Quality(Tier) | Lecture name | Dwnld. | Script_EN.
+     * (Lecture nr stays only in data-nr / the ZIP selection key space — not
+     * its own visible column. Full Script_EN URL text is Excel-export only,
+     * see PPP.app.exportSentencesExcel — the table shows a compact chip like
+     * the metadata table does.)
      */
     function renderSentenceResults(rows, searchTermStr, totals, foldedWords) {
         totals = totals || {};
@@ -467,16 +506,9 @@ PPP.ui = (function () {
 
         var table = document.getElementById('resultsTable');
         table.classList.remove('lecture-cards'); // not the 13-col lecture table
+        table.classList.add('sentence-mode');
 
-        var html = '<thead><tr>' +
-            '<th></th>' +
-            '<th>Timestamp</th>' +
-            '<th>Sentence</th>' +
-            '<th>Tier</th>' +
-            '<th>Lecture nr</th>' +
-            '<th>Lecture name</th>' +
-            '<th>Script_EN URL</th>' +
-            '</tr></thead><tbody>';
+        var html = _sentenceTheadHtml() + '<tbody>';
 
         if (!rows || rows.length === 0) {
             html += '<tr><td colspan="7" class="empty-result-message">' + t('noTranscriptResults') + '</td></tr>';
@@ -498,36 +530,30 @@ PPP.ui = (function () {
                     nameCell = utils.escapeHtml(nameText);
                 }
 
-                var urlCell = '';
-                if (row.url) {
-                    if (utils.isSafeUrl(row.url)) {
-                        urlCell = '<a href="' + utils.escapeHtml(row.url) + '" target="_blank" rel="noopener">' +
-                            utils.escapeHtml(row.url) + '</a>';
-                    } else {
-                        urlCell = utils.escapeHtml(row.url);
-                    }
-                }
-
-                // data-nr on the row lets us drop in the multi-select checkbox as a
-                // DOM node (below) — the checkbox reuses the SAME "<nr>|en" selection
-                // key space as the metadata-table checkboxes and the existing ZIP flow.
-                html += '<tr data-nr="' + utils.escapeHtml(String(nr != null ? nr : '')) + '">' +
+                // data-nr on the row lets us drop in the multi-select checkbox
+                // (below) — same "<nr>|en" selection key space as the metadata
+                // table's checkboxes and the existing ZIP flow. data-en-url
+                // carries the Script_EN Drive URL for the compact chip cell
+                // (built below, needs a closure so it can't go in the HTML
+                // string like the checkbox onchange handler).
+                html += '<tr data-nr="' + utils.escapeHtml(String(nr != null ? nr : '')) +
+                    '" data-en-url="' + utils.escapeHtml(encodeURIComponent(row.url || '')) + '">' +
                     '<td class="sel-cell"></td>' +
                     '<td>' + ts + '</td>' +
                     '<td>' + sentence + '</td>' +
                     '<td>' + tier + '</td>' +
-                    '<td>' + utils.escapeHtml(String(nr != null ? nr : '')) + '</td>' +
                     '<td>' + nameCell + '</td>' +
-                    '<td style="font-size:0.85em;word-break:break-all;">' + urlCell + '</td>' +
+                    '<td class="dwnld-cell"></td>' +
+                    '<td class="script-cell"></td>' +
                     '</tr>';
             });
         }
         html += '</tbody>';
         table.innerHTML = html;
 
-        // Per-row selection checkbox — built as a DOM node (innerHTML can't host
-        // the onchange closure _makeSelCheckbox() needs) and dropped into the
-        // empty first <td> reserved above. English-only (sentences DB is EN).
+        // Per-row selection checkbox + Dwnld/Script_EN chips — built as DOM
+        // nodes (innerHTML can't host the closures these need) and dropped
+        // into the empty cells reserved above. English-only (sentences DB is EN).
         if (rows && rows.length > 0) {
             var trs = table.querySelectorAll('tbody tr[data-nr]');
             trs.forEach(function (tr) {
@@ -535,6 +561,57 @@ PPP.ui = (function () {
                 if (!nrAttr) return;
                 var cell = tr.querySelector('td.sel-cell');
                 if (cell) cell.appendChild(_makeSelCheckbox(nrAttr, 'en', 'EN'));
+
+                // Dwnld. (mp3) — same lookup/rendering rule the metadata table
+                // uses (label "Mp3", url from the lectures row), sourced from
+                // the already-loaded metadata array via PPP.app.getDbRowByNr.
+                var dwnldCell = tr.querySelector('td.dwnld-cell');
+                if (dwnldCell && PPP.app && PPP.app.getDbRowByNr) {
+                    var dbRow = PPP.app.getDbRowByNr(nrAttr);
+                    if (dbRow) {
+                        var dVal = dbRow['Dwnld.'] || '';
+                        var dUrl = dbRow['Dwnld._url'] || utils.extractUrl(dVal);
+                        if (dUrl && dUrl.toString().indexOf('http') !== 0) dUrl = null;
+                        if (dUrl) {
+                            var dA = document.createElement('a');
+                            dA.href = dUrl;
+                            dA.textContent = 'Mp3';
+                            dA.className = 'ext-chip';
+                            dA.target = '_blank';
+                            dA.rel = 'noopener';
+                            dA.onclick = function (e) {
+                                if (window.PPP && PPP.net && !PPP.net.online) {
+                                    e.preventDefault();
+                                    toast(t('requiresInternet'));
+                                }
+                            };
+                            dwnldCell.appendChild(dA);
+                        } else if (dVal && dVal !== 'N/A' && dVal !== '0') {
+                            dwnldCell.textContent = 'Mp3';
+                        }
+                    }
+                }
+
+                // Script_EN — compact chip like the metadata table's transcript
+                // chips (opens the in-app HTML transcript viewer), not the raw URL.
+                var scriptCell = tr.querySelector('td.script-cell');
+                if (scriptCell) {
+                    var enUrl = '';
+                    try { enUrl = decodeURIComponent(tr.getAttribute('data-en-url') || ''); } catch (e) { enUrl = ''; }
+                    if (enUrl) {
+                        var sA = document.createElement('a');
+                        sA.href = '#';
+                        sA.textContent = 'EN';
+                        sA.className = 'script-chip script-orig';
+                        sA.style.cssText = 'color:var(--saffron);font-weight:700;text-decoration:underline;cursor:pointer;';
+                        sA.title = 'Open transcript';
+                        sA.onclick = function (e) {
+                            e.preventDefault();
+                            PPP.app.openHtmlTranscriptViewer(nrAttr, 'en', null, null, enUrl);
+                        };
+                        scriptCell.appendChild(sA);
+                    }
+                }
             });
         }
 
@@ -596,6 +673,7 @@ PPP.ui = (function () {
         var table = document.getElementById('resultsTable');
         table.innerHTML = '';
         table.classList.add('lecture-cards'); // S94: keep card layout hook on empty state too
+        table.classList.remove('sentence-mode');
         var thead = table.createTHead();
         buildHeader(thead);
         var tbody = table.createTBody();
@@ -805,6 +883,7 @@ PPP.ui = (function () {
     function renderCitationResults(rows, searchTerms) {
         var table = document.getElementById('resultsTable');
         table.classList.remove('lecture-cards'); // not the 13-col lecture table
+        table.classList.remove('sentence-mode');
         var html = '<thead><tr>' +
             '<th>Reference</th>' +
             '<th>Source</th>' +
@@ -847,6 +926,7 @@ PPP.ui = (function () {
     function renderCitationStats(rows) {
         var table = document.getElementById('resultsTable');
         table.classList.remove('lecture-cards'); // not the 13-col lecture table
+        table.classList.remove('sentence-mode');
         var html = '<thead><tr>' +
             '<th>Source</th>' +
             '<th>Total Citations</th>' +
@@ -1177,6 +1257,7 @@ PPP.ui = (function () {
     return {
         renderResults: renderResults,
         renderSentenceResults: renderSentenceResults,
+        renderEmptySentenceTable: renderEmptySentenceTable,
         renderCitationResults: renderCitationResults,
         renderCitationStats: renderCitationStats,
         renderPagination: renderPagination,

@@ -1261,6 +1261,21 @@ h1 {
     text-decoration: underline;
 }
 
+/* "In Text" (sentence search) results header — deliberately different tone
+   from the normal cream/gold lecture-table header, so switching modes feels
+   like stepping into a different environment (Rājan UX requirement). Deep
+   olive/sage in the base palette, deep golden-brown in dark mode. */
+#resultsTable.sentence-mode thead th {
+    background: linear-gradient(180deg, #5b6b3f, #46552e) !important;
+    color: #f7f0d8;
+    border-bottom: 2px solid #8a9a5a;
+}
+body.dark #resultsTable.sentence-mode thead th {
+    background: linear-gradient(180deg, #3d3018, #2f2512) !important;
+    color: #f0dfa8;
+    border-bottom: 2px solid var(--saffron);
+}
+
 .empty-result-message {
     font-size: 13px;
     color: var(--text-muted);

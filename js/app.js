@@ -775,12 +775,10 @@ PPP.app = (function () {
                     return _loadMetaIntoApp().then(function () {
                         // Refresh the count placeholder and visible results in
                         // place (no onDataLoaded — that would re-run deep-link
-                        // handling and clear the current view).
-                        var input = document.getElementById('searchTerm');
-                        if (input && searchMode === 'metadata') {
-                            var count = totalLectures || DB.length;
-                            input.placeholder = i18n.t('searchPlaceholder').replace('{count}', count.toLocaleString());
-                        }
+                        // handling and clear the current view). Centralized
+                        // helper only touches the placeholder when it's
+                        // relevant to the currently active mode.
+                        updateSearchModePlaceholder();
                         if (allResults.length > 0) displayResults();
                     });
                 }).catch(function (e) { console.warn('Meta refresh failed:', e); });
@@ -872,9 +870,12 @@ PPP.app = (function () {
         dataLoaded = true;
         var input = document.getElementById('searchTerm');
         input.disabled = false;
-        var count = totalLectures || DB.length;
-        input.placeholder = i18n.t('searchPlaceholder').replace('{count}', count.toLocaleString());
-        ui.renderEmptyTable();
+        // Centralized — respects whatever mode the user already switched to
+        // while the DB was still loading in the background (race fix).
+        updateSearchModePlaceholder();
+        // Don't clobber a non-metadata frame (e.g. sentence-mode header) the
+        // user already switched to while this load was still in flight.
+        if (searchMode === 'metadata') ui.renderEmptyTable();
         updateFavoritesCount();
         handleDeepLink();
     }
@@ -1613,6 +1614,34 @@ PPP.app = (function () {
     }
 
     // ===== SEARCH MODE TOGGLE =====
+
+    /**
+     * Set the #searchTerm placeholder according to the CURRENTLY ACTIVE
+     * search mode. Centralized so async paths (background meta refresh,
+     * onDataLoaded, language switch) can never clobber a placeholder the
+     * user already switched away from by racing an unconditional
+     * "searchPlaceholder among {count} links" assignment — that's exactly
+     * what happened when a user pressed "In Text" while the meta DB/count
+     * was still loading in the background.
+     */
+    function updateSearchModePlaceholder() {
+        var searchInput = document.getElementById('searchTerm');
+        if (!searchInput) return;
+        if (searchMode === 'citations' || searchMode === 'citationsTop') {
+            searchInput.placeholder = i18n.t('quotesSearchHint');
+        } else if (searchMode === 'sentences') {
+            searchInput.placeholder = i18n.t('searchPlaceholderSentences');
+        } else {
+            var count = totalLectures || DB.length || 0;
+            if (!dataLoaded && !count) {
+                // Still loading and no cached count — never show "among 0 links"
+                searchInput.placeholder = i18n.t('searchPlaceholderLoading');
+            } else {
+                searchInput.placeholder = i18n.t('searchPlaceholder').replace('{count}', count.toLocaleString());
+            }
+        }
+    }
+
     function setSearchMode(mode) {
         closeAllPanels();
         setActiveCollection(null);
@@ -1643,8 +1672,19 @@ PPP.app = (function () {
             document.getElementById('resultsInfo').innerHTML = '';
             document.getElementById('timer').textContent = '';
             document.getElementById('pagination').innerHTML = '';
-            var tbody = document.getElementById('resultsTable').querySelector('tbody');
-            if (tbody) tbody.innerHTML = '<tr><td colspan="11" class="empty-result-message" data-i18n="enterSearchTerms">' + i18n.t('enterSearchTerms') + '</td></tr>';
+            // The results area must switch FRAME immediately on the mode
+            // button press — localized sentence-mode headers + distinct
+            // header tone for "In Text", the normal lecture-table header
+            // for "In Titles" — not just clear the row and leave the old
+            // header sitting there until the next search.
+            if (mode === 'sentences') {
+                ui.renderEmptySentenceTable();
+            } else if (mode === 'metadata') {
+                ui.renderEmptyTable();
+            } else {
+                var tbody = document.getElementById('resultsTable').querySelector('tbody');
+                if (tbody) tbody.innerHTML = '<tr><td colspan="11" class="empty-result-message" data-i18n="enterSearchTerms">' + i18n.t('enterSearchTerms') + '</td></tr>';
+            }
             allResults = [];
             totalResults = 0;
             lastSearchTerm = '';
@@ -1653,25 +1693,14 @@ PPP.app = (function () {
             closeDownloadPanel();
             _showSelectToggle(false);
         }
-        // Update search placeholder based on mode
-        var searchInput = document.getElementById('searchTerm');
+        // Update search placeholder based on mode (centralized, see
+        // updateSearchModePlaceholder() above setSearchMode).
+        updateSearchModePlaceholder();
         if (mode === 'citations') {
-            searchInput.placeholder = i18n.t('quotesSearchHint');
             setComboDisplay(i18n.t('byCitedVersesDisplay'));
         } else if (mode === 'citationsTop') {
-            searchInput.placeholder = i18n.t('quotesSearchHint');
             setComboDisplay(i18n.t('mostCitedVersesDisplay'));
-        } else if (mode === 'sentences') {
-            searchInput.placeholder = i18n.t('searchPlaceholderSentences');
-            clearComboDisplay();
         } else {
-            var count = totalLectures || 0;
-            if (!dataLoaded && !count) {
-                // Still loading and no cached count — never show "among 0 links"
-                searchInput.placeholder = i18n.t('searchPlaceholderLoading');
-            } else {
-                searchInput.placeholder = i18n.t('searchPlaceholder').replace('{count}', count.toLocaleString());
-            }
             clearComboDisplay();
         }
         // Immediately show top 108 when that mode is selected
@@ -3335,15 +3364,11 @@ PPP.app = (function () {
             luEl.textContent = (i18n.t('lastUpdate') || 'Last update') + ': ' + luEl.getAttribute('data-last-update');
         }
         document.querySelector('h1').textContent = i18n.t('pageTitle');
-        if (dataLoaded) {
-            var inp = document.getElementById('searchTerm');
-            if (searchMode === 'citations' || searchMode === 'citationsTop') {
-                inp.placeholder = i18n.t('quotesSearchHint');
-            } else {
-                var count = totalLectures || DB.length;
-                inp.placeholder = i18n.t('searchPlaceholder').replace('{count}', count.toLocaleString());
-            }
-        }
+        // Centralized — this branch used to ignore 'sentences' mode entirely
+        // (fell through to the metadata {count} placeholder), so switching
+        // language while in "In Text" mode reverted the placeholder to the
+        // wrong text. updateSearchModePlaceholder() handles all modes.
+        updateSearchModePlaceholder();
         localStorage.setItem('preferredLanguage', lang);
         updateFavoritesCount();
         if (allResults.length > 0) displayResults();
@@ -3458,6 +3483,7 @@ PPP.app = (function () {
         isSelectedPair: isSelectedPair,
         toggleSelectPair: toggleSelectPair,
         showSelectToggle: _showSelectToggle, // used by ui.js renderSentenceResults()
+        getDbRowByNr: _findDbRowByNr, // used by ui.js renderSentenceResults() (Dwnld. lookup)
         openDownloadPanel: openDownloadPanel,
         closeDownloadPanel: closeDownloadPanel,
         clearSelection: clearSelection,

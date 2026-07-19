@@ -841,8 +841,64 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
 
     const placeholder = await page.locator('#searchTerm').getAttribute('placeholder');
-    expect(placeholder).toContain('Search within sentences');
-    expect(placeholder).not.toContain('Search for wisdom');
+    expect(placeholder).toContain('Search in transcript sentences');
+    expect(placeholder).not.toContain('audio recording titles');
+  });
+
+  test('31d. "In Text" mode swaps the results header frame immediately, reverts on "In Titles"', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    // Pressing the mode button — with NO search run yet — must immediately
+    // swap the results table into the sentence-mode frame: distinct class
+    // (drives the different header tone in CSS) + localized column headers.
+    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+
+    const table = page.locator('#resultsTable');
+    await expect(table).toHaveClass(/sentence-mode/);
+    await expect(table).not.toHaveClass(/lecture-cards/);
+    // Localized "Sentence" column header (EN) — not the old hardcoded text.
+    await expect(table.locator('thead th').nth(2)).toHaveText('Sentence');
+    // Empty-state hint text, not the generic "enter search terms" message.
+    await expect(page.locator('#resultsTable tbody')).toContainText('Type a word and press Search');
+
+    // Switching back to "In Titles" restores the normal lecture-table frame.
+    await page.locator('.search-mode-btn[data-mode="metadata"]').click({ force: true });
+    await expect(table).not.toHaveClass(/sentence-mode/);
+    await expect(table).toHaveClass(/lecture-cards/);
+  });
+
+  test('31e. Placeholder race: switching to "In Text" survives a later async placeholder refresh', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await expect(page.locator('#searchTerm')).toHaveAttribute('placeholder', /Search in transcript sentences/);
+
+    // Re-run the language-switch code path (same code path that used to
+    // unconditionally reassign the placeholder to the metadata {count} text
+    // any time the meta DB finished loading or the language changed, even
+    // if the user had already switched to a different mode — the exact race
+    // Rājan hit in production). The centralized updateSearchModePlaceholder()
+    // must keep the placeholder correct for the mode actually active now.
+    await page.evaluate(() => {
+      const lang = (window.PPP.i18n.getLanguage && window.PPP.i18n.getLanguage()) || 'en';
+      PPP.app.setLanguage(lang);
+    });
+
+    const placeholder = await page.locator('#searchTerm').getAttribute('placeholder');
+    expect(placeholder).toContain('Search in transcript sentences');
+    expect(placeholder).not.toContain('audio recording titles');
   });
 
   test('35. Sentence search checkboxes drive the shared "Download selected" button', async ({ page }) => {
