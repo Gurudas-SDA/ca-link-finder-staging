@@ -3137,7 +3137,7 @@ PPP.app = (function () {
         _sentenceParsed = parsed;
         _sentenceTerm = lastSearchTerm;
 
-        ui.showLoading(i18n.t('loadingTranscripts'));
+        ui.showLoading(i18n.t('preparingTextSearch'));
         ui.updateProgress(0);
 
         db.loadSentencesDB(function (p) { ui.updateProgress(p); }).then(function () {

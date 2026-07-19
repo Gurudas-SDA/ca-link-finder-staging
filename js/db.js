@@ -238,6 +238,63 @@ PPP.db = (function () {
         return promise;
     }
 
+    /**
+     * True when this browsing context can decompress gzip DB downloads —
+     * either the Worker (which has its own DecompressionStream check and a
+     * main-thread fallback via _openGzInto) or the main thread itself.
+     */
+    function _gzSupported() {
+        return useWorker || (typeof DecompressionStream !== 'undefined');
+    }
+
+    /**
+     * Fetch a gzip-compressed DB over the network (XHR, progress-reporting)
+     * and open it via _openGzInto. Same dedup bookkeeping as loadDB() —
+     * concurrent calls for the same dbName share one in-flight download.
+     */
+    function fetchGzDB(dbName, gzUrl, progressCallback) {
+        if (loadedDBs[dbName]) return Promise.resolve();
+        if (!useWorker && databases[dbName]) return Promise.resolve();
+        if (loadingDBs[dbName]) return loadingDBs[dbName];
+
+        var promise = new Promise(function (resolve, reject) {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', gzUrl, true);
+            xhr.responseType = 'arraybuffer';
+
+            if (progressCallback) {
+                xhr.onprogress = function (e) {
+                    if (e.lengthComputable) progressCallback(e.loaded / e.total);
+                };
+            }
+
+            xhr.onload = function () {
+                if (xhr.status === 200 || xhr.status === 0) {
+                    resolve(xhr.response);
+                } else {
+                    reject(new Error('HTTP ' + xhr.status + ' loading ' + gzUrl));
+                }
+            };
+
+            xhr.onerror = function () {
+                reject(new Error('Network error loading ' + gzUrl));
+            };
+
+            xhr.send();
+        }).then(function (arrayBuffer) {
+            return _openGzInto(dbName, arrayBuffer);
+        }).then(function () {
+            loadedDBs[dbName] = true;
+            delete loadingDBs[dbName];
+        }).catch(function (err) {
+            delete loadingDBs[dbName];
+            throw err;
+        });
+
+        loadingDBs[dbName] = promise;
+        return promise;
+    }
+
     // ===== OFFLINE (IndexedDB) GZ PATH =====
 
     function _mainThreadDecompress(gzArrayBuffer) {
@@ -341,6 +398,13 @@ PPP.db = (function () {
             if (opened) return;
             return getDbVersions().then(function (versions) {
                 var v = versions.meta ? '?v=' + versions.meta : '';
+                if (_gzSupported()) {
+                    return fetchGzDB(META, 'data/ppp_meta.db.gz' + v, progressCallback)
+                        .catch(function (err) {
+                            console.warn('Gz meta fetch failed, falling back to uncompressed:', err);
+                            return loadDB(META, 'data/ppp_meta.db' + v, progressCallback);
+                        });
+                }
                 return loadDB(META, 'data/ppp_meta.db' + v, progressCallback);
             });
         });
@@ -369,6 +433,13 @@ PPP.db = (function () {
             if (opened) return;
             return getDbVersions().then(function (versions) {
                 var v = versions.sentences ? '?v=' + versions.sentences : '';
+                if (_gzSupported()) {
+                    return fetchGzDB('sentences_en', 'data/ppp_sentences_en.db.gz' + v, progressCallback)
+                        .catch(function (err) {
+                            console.warn('Gz sentences fetch failed, falling back to uncompressed:', err);
+                            return loadDB('sentences_en', 'data/ppp_sentences_en.db' + v, progressCallback);
+                        });
+                }
                 return loadDB('sentences_en', 'data/ppp_sentences_en.db' + v, progressCallback);
             });
         });
@@ -484,6 +555,7 @@ PPP.db = (function () {
         initSqlJs: initSqlJs,
         loadMetaDB: loadMetaDB,
         openDBFromGz: openDBFromGz,
+        fetchGzDB: fetchGzDB,
         reloadMetaFromStore: reloadMetaFromStore,
         loadHtmlDB: loadHtmlDB,
         loadSentencesDB: loadSentencesDB,
