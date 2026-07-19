@@ -393,11 +393,14 @@ PPP.search = (function () {
      *   - Prefix filters (subject:/lang:/@source/has:) are IGNORED in this mode — the
      *     sentences DB carries no such metadata (documented v1 limitation).
      *
-     * WHOLE-WORD matching: each word matches s.sentence_search LIKE '% word %'.
-     * sentence_search is diacritic-folded, lowercased, with every run of non-
-     * alphanumeric chars collapsed to a single space and padded with one leading/
-     * trailing space (built by scripts/build_sentences_db.py to_search()). So
-     * `rice` matches the whole word `rice` only, NOT `price`/`priceless`.
+     * PREFIX (word-start) matching: each word matches s.sentence_search LIKE
+     * '% word%'. sentence_search is diacritic-folded, lowercased, with every
+     * run of non-alphanumeric chars collapsed to a single space and padded
+     * with one leading/trailing space (built by scripts/build_sentences_db.py
+     * to_search()). The leading space in the LIKE pattern anchors the match
+     * to a word START, and the missing trailing space allows any suffix. So
+     * `rice` matches `rice`/`rices` (word-start) but NOT `price`/`priceless`
+     * (no space before "rice" there); `feather` matches `feather`/`feathers`.
      * Words are sanitized to [a-z0-9] the same way the column is built; a term
      * with internal punctuation (e.g. a hyphen) splits into multiple ANDed words.
      *
@@ -422,10 +425,10 @@ PPP.search = (function () {
                 // punctuation (e.g. a hyphen) yields multiple ANDed words.
                 var words = normalized.split(/[^a-z0-9]+/).filter(Boolean);
                 if (words.length === 0) return null;
-                // Each word must appear as a WHOLE WORD in the same sentence (AND).
+                // Each word must appear at a WORD-START in the same sentence (AND).
                 var wordConds = words.map(function (word) {
                     var key = '$tw' + (paramIdx++);
-                    params[key] = '% ' + word + ' %';
+                    params[key] = '% ' + word + '%';
                     return "s.sentence_search LIKE " + key;
                 });
                 return "(" + wordConds.join(" AND ") + ")";

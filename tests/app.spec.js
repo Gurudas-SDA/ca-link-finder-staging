@@ -758,7 +758,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     });
   });
 
-  test('31. Sentence search (In Transcripts) — whole-word match + Excel button', async ({ page }) => {
+  test('31. Sentence search (In Transcripts) — word-prefix match + Excel button', async ({ page }) => {
     // Lazy-loads the ~60 MB sentences DB on first search; allow extra time.
     test.setTimeout(120000);
 
@@ -774,7 +774,8 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     // Switch to the sentence-search mode.
     await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
 
-    // Search for a whole word that has a near substring twin ("price"/"priceless").
+    // Search for a word that has a near substring twin ("price"/"priceless")
+    // where the term sits in the MIDDLE/END of the twin, not at its start.
     await page.fill('#searchTerm', 'rice');
     await page.keyboard.press('Enter');
 
@@ -787,18 +788,337 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     const rows = await page.locator('#resultsTable tbody tr').count();
     expect(rows).toBeGreaterThan(0);
 
-    // Whole-word semantics: every rendered sentence contains the whole word
-    // "rice", and none contains the substring-only twin "priceless".
-    const sentences = await page.locator('#resultsTable tbody tr td:nth-child(2)').allTextContents();
+    // Word-prefix semantics: every rendered sentence contains a word that
+    // STARTS WITH "rice" (e.g. "rice" or "rices"), and none contains the
+    // substring-only twin "priceless"/"price" (where "rice" is not at the
+    // word start). Column 1 is the (new) multi-select checkbox cell, column
+    // 2 is Timestamp, column 3 is Sentence.
+    const sentences = await page.locator('#resultsTable tbody tr td:nth-child(3)').allTextContents();
     expect(sentences.length).toBeGreaterThan(0);
-    const wholeWordRice = /(^|[^a-z])rice([^a-z]|$)/i;
+    const wordPrefixRice = /(^|[^a-z])rice/i;
     for (const s of sentences) {
       expect(s.toLowerCase()).not.toContain('priceless');
-      expect(s).toMatch(wholeWordRice);
+      expect(s.toLowerCase()).not.toMatch(/(^|[^a-z])price([^a-z]|$)/);
+      expect(s).toMatch(wordPrefixRice);
     }
 
     // Download Excel button is present.
     await expect(page.locator('#resultsInfo button', { hasText: 'Download Excel' })).toBeVisible();
+  });
+
+  test('31b. buildTranscriptSQL generates word-prefix (not whole-word) LIKE params', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const result = await page.evaluate(() => {
+      const parsed = window.PPP.search.parseSearchQuery('feather');
+      const built = window.PPP.search.buildTranscriptSQL(parsed);
+      return { params: built.params };
+    });
+
+    // Prefix pattern: leading space anchors the word START, no trailing
+    // space so any suffix (e.g. "feathers") is allowed to match.
+    const paramValues = Object.keys(result.params)
+      .filter((k) => k !== '$limit')
+      .map((k) => result.params[k]);
+    expect(paramValues.length).toBeGreaterThan(0);
+    for (const v of paramValues) {
+      expect(v).toBe('% feather%');
+      expect(v).not.toBe('% feather %'); // old whole-word pattern must be gone
+    }
+  });
+
+  test('31c. "In Text" mode shows a dedicated search placeholder', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // The install banner (if it ever appears) overlaps the mode buttons — hide it.
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+
+    const placeholder = await page.locator('#searchTerm').getAttribute('placeholder');
+    expect(placeholder).toContain('Search within sentences');
+    expect(placeholder).not.toContain('Search for wisdom');
+  });
+
+  test('35. Sentence search checkboxes drive the shared "Download selected" button', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await page.fill('#searchTerm', 'rice');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
+
+    // A checkbox appears in the first (reserved) cell of every result row —
+    // reusing the SAME .select-checkbox mechanism as the metadata table.
+    const boxes = page.locator('#resultsTable tbody tr td.sel-cell input.select-checkbox');
+    const n = await boxes.count();
+    expect(n).toBeGreaterThan(0);
+    for (let i = 0; i < n; i++) {
+      await expect(boxes.nth(i)).toHaveAttribute('data-lang', 'en');
+    }
+
+    // Persistent "Download selected" button starts disabled with no selection.
+    const dlBtn = page.locator('#downloadSelectedBtn');
+    await expect(dlBtn).toBeVisible();
+    await expect(dlBtn).toBeDisabled();
+
+    // Ticking one checkbox enables it and shows the correct count.
+    await boxes.nth(0).check();
+    await expect(dlBtn).toBeEnabled();
+    await expect(dlBtn).toContainText('(1)');
+  });
+
+  test('36. Two sentence matches from the SAME lecture dedupe to one ZIP pair', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await page.fill('#searchTerm', 'rice');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
+
+    const boxes = page.locator('#resultsTable tbody tr td.sel-cell input.select-checkbox');
+    const count = await boxes.count();
+    const nrs = [];
+    for (let i = 0; i < count; i++) nrs.push(await boxes.nth(i).getAttribute('data-nr'));
+
+    // Find two rows that share the same lecture nr (two sentence hits, one lecture).
+    const seenAt = {};
+    let idxA = -1, idxB = -1;
+    for (let i = 0; i < nrs.length; i++) {
+      if (seenAt[nrs[i]] !== undefined) { idxA = seenAt[nrs[i]]; idxB = i; break; }
+      seenAt[nrs[i]] = i;
+    }
+    test.skip(idxA === -1, 'No two sentence hits from the same lecture on this results page — cannot exercise dedupe');
+
+    await boxes.nth(idxA).check();
+    await boxes.nth(idxB).check();
+
+    // Both checks resolve to the SAME "<nr>|en" selection key -> Set size stays 1.
+    const dlBtn = page.locator('#downloadSelectedBtn');
+    await expect(dlBtn).toContainText('(1)');
+
+    await dlBtn.click();
+    // Panel confirms: 1 transcript, 1 distinct lecture.
+    await expect(page.locator('#selectCount')).toContainText('1 transcripts');
+    await expect(page.locator('#selectCount')).toContainText('1 lectures');
+  });
+
+  test('37. Excel export — Script_EN URL cell is a clickable hyperlink', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await page.fill('#searchTerm', 'rice');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download', { timeout: 30000 }),
+      page.locator('#resultsInfo button', { hasText: 'Download Excel' }).click(),
+    ]);
+    const fname = download.suggestedFilename();
+    expect(fname).toMatch(/\.xlsx$/);
+
+    const filePath = await download.path();
+    const fs = require('fs');
+    const b64 = fs.readFileSync(filePath).toString('base64');
+
+    // Parse the downloaded workbook using the SAME XLSX build the app itself
+    // uses (already loaded in the page) — avoids a Node-side xlsx dependency.
+    const hasHyperlink = await page.evaluate((b64) => {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const wb = XLSX.read(bytes, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const range = XLSX.utils.decode_range(ws['!ref']);
+      for (let r = range.s.r + 1; r <= range.e.r; r++) {
+        const addr = XLSX.utils.encode_cell({ r, c: 5 }); // col F = Script_EN URL
+        const cell = ws[addr];
+        if (cell && cell.l && cell.l.Target) return true;
+      }
+      return false;
+    }, b64);
+
+    expect(hasHyperlink).toBe(true);
+  });
+
+  test('38. ZIP export highlighter marks matched sentence + matched word', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Unit-level test of PPP.app._wrapMatchesInContainer(): builds a detached
+    // DOM container with sample transcript text and verifies the two-tier
+    // mark.tr-sentence / mark.tr-word wrapping (Rājan decision: sentence =
+    // yellow #fff3a0, word inside it = light green #b6f5c0).
+    const result = await page.evaluate(() => {
+      var container = document.createElement('div');
+      container.innerHTML = '<p>Before text. He offered rice and fruits to the Deity. After text.</p>';
+      PPP.app._wrapMatchesInContainer(
+        container,
+        ['He offered rice and fruits to the Deity.'],
+        ['rice']
+      );
+      var sentenceMark = container.querySelector('mark.tr-sentence');
+      var wordMark = container.querySelector('mark.tr-word');
+      return {
+        hasSentenceMark: !!sentenceMark,
+        hasWordMark: !!wordMark,
+        wordInsideSentence: !!(sentenceMark && wordMark && sentenceMark.contains(wordMark)),
+        wordText: wordMark ? wordMark.textContent : null,
+        sentenceContainsBefore: sentenceMark ? !/Before text/.test(sentenceMark.textContent) : null
+      };
+    });
+
+    expect(result.hasSentenceMark).toBe(true);
+    expect(result.hasWordMark).toBe(true);
+    expect(result.wordInsideSentence).toBe(true);
+    expect((result.wordText || '').toLowerCase()).toBe('rice');
+
+    // Prefix-search regression: matching "feather" must highlight only the
+    // "feather" prefix inside "feathers" (word-START boundary only, no
+    // trailing \b), and must NOT match "rice" inside "price".
+    const prefixResult = await page.evaluate(() => {
+      var container = document.createElement('div');
+      container.innerHTML = '<p>The peacock feathers were a fine price to pay for rice.</p>';
+      PPP.app._wrapMatchesInContainer(
+        container,
+        ['The peacock feathers were a fine price to pay for rice.'],
+        ['feather']
+      );
+      var marks = Array.prototype.map.call(container.querySelectorAll('mark.tr-word'), function (m) {
+        return m.textContent;
+      });
+      return marks;
+    });
+
+    expect(prefixResult).toEqual(['feather']);
+  });
+
+  test('39. Sentence-search highlighter is diacritic- and case-insensitive (word-start prefix)', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // 1. Diacritic-insensitive prefix match: "mahaprabh" (no diacritics)
+    // must highlight "Mahāprabh" (with ā) inside "Mahāprabhu" — the trailing
+    // "u" (folded, not part of the matched prefix) stays unhighlighted.
+    const diacriticResult = await page.evaluate(() => {
+      var html = PPP.ui.highlightSentencePrefix('...Caitanya Mahāprabhu.', ['mahaprabh']);
+      var div = document.createElement('div');
+      div.innerHTML = html;
+      var span = div.querySelector('span');
+      return { hasSpan: !!span, spanText: span ? span.textContent : null, fullText: div.textContent };
+    });
+    expect(diacriticResult.hasSpan).toBe(true);
+    expect(diacriticResult.spanText).toBe('Mahāprabh');
+    expect(diacriticResult.fullText).toBe('...Caitanya Mahāprabhu.');
+
+    // Case-insensitive: same folded word against an all-caps variant.
+    const caseResult = await page.evaluate(() => {
+      var html = PPP.ui.highlightSentencePrefix('MAHAPRABHU spoke.', ['mahaprabh']);
+      var div = document.createElement('div');
+      div.innerHTML = html;
+      var span = div.querySelector('span');
+      return { hasSpan: !!span, spanText: span ? span.textContent : null };
+    });
+    expect(caseResult.hasSpan).toBe(true);
+    expect(caseResult.spanText).toBe('MAHAPRABH');
+
+    // 2. Prefix, not whole word: "feather" highlights only "feather" inside
+    // "feathers", never the trailing "s".
+    const featherResult = await page.evaluate(() => {
+      var html = PPP.ui.highlightSentencePrefix('decorated with feathers', ['feather']);
+      var div = document.createElement('div');
+      div.innerHTML = html;
+      var span = div.querySelector('span');
+      return { spanText: span ? span.textContent : null };
+    });
+    expect(featherResult.spanText).toBe('feather');
+
+    // 3. Substring-but-not-prefix must NOT match: "rice" is not a word-start
+    // prefix of "price".
+    const noMatchResult = await page.evaluate(() => {
+      var html = PPP.ui.highlightSentencePrefix('a fine price to pay', ['rice']);
+      var div = document.createElement('div');
+      div.innerHTML = html;
+      return { hasSpan: !!div.querySelector('span') };
+    });
+    expect(noMatchResult.hasSpan).toBe(false);
+  });
+
+  test('40. ZIP export word-highlighter (_wrapMatchesInContainer) is diacritic-insensitive', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Folded search word ("mahaprabh", as produced by _extractSentenceSearchWords)
+    // must highlight the diacritic-bearing "Mahāprabh" run in the transcript text.
+    const result = await page.evaluate(() => {
+      var container = document.createElement('div');
+      container.innerHTML = '<p>Devotees glorified Caitanya Mahāprabhu with kirtan.</p>';
+      PPP.app._wrapMatchesInContainer(
+        container,
+        ['Devotees glorified Caitanya Mahāprabhu with kirtan.'],
+        ['mahaprabh']
+      );
+      var wordMark = container.querySelector('mark.tr-word');
+      return { hasWordMark: !!wordMark, wordText: wordMark ? wordMark.textContent : null };
+    });
+
+    expect(result.hasWordMark).toBe(true);
+    expect(result.wordText).toBe('Mahāprabh');
+  });
+
+  test('41. ZIP export sentence-highlighter tolerates DB punctuation-spacing drift', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Regression for the Pass 1 indexOf bug: the DB sentence text can carry
+    // spaces before punctuation (e.g. "Gaurāṅga , we are observing .") while
+    // the transcript text does not ("Gaurāṅga, we are observing."). An exact
+    // whitespace-normalized indexOf never matches in that case, so no yellow
+    // tr-sentence mark was produced even though the sentence is present.
+    // _wrapMatchesInContainer must now find it via token-order regex matching.
+    const result = await page.evaluate(() => {
+      var container = document.createElement('div');
+      container.innerHTML = '<p>Before text. Gaurāṅga, we are observing. After text.</p>';
+      PPP.app._wrapMatchesInContainer(
+        container,
+        ['Gaurāṅga , we are observing .'],
+        ['gauranga']
+      );
+      var sentenceMark = container.querySelector('mark.tr-sentence');
+      return {
+        hasSentenceMark: !!sentenceMark,
+        sentenceText: sentenceMark ? sentenceMark.textContent : null
+      };
+    });
+
+    expect(result.hasSentenceMark).toBe(true);
+    // Token-order regex spans first-token..last-token; trailing punctuation
+    // after the final matched token is not included by design.
+    expect(result.sentenceText).toBe('Gaurāṅga, we are observing');
   });
 
   test('26. Multi-select transcripts (per language) download as one named ZIP', async ({ page }) => {

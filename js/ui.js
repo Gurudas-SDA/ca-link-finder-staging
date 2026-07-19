@@ -444,9 +444,10 @@ PPP.ui = (function () {
      * totals: { total, lectures, shown }
      * Columns: Timestamp | Sentence | Tier | Lecture nr | Lecture name | Script_EN URL.
      */
-    function renderSentenceResults(rows, searchTermStr, totals) {
+    function renderSentenceResults(rows, searchTermStr, totals, foldedWords) {
         totals = totals || {};
         var searchTerms = searchTermStr ? searchTermStr.split(';').map(function (s) { return s.trim(); }).filter(Boolean) : [];
+        foldedWords = foldedWords || [];
 
         // Summary line + Download Excel button above the table.
         var info = document.getElementById('resultsInfo');
@@ -468,6 +469,7 @@ PPP.ui = (function () {
         table.classList.remove('lecture-cards'); // not the 13-col lecture table
 
         var html = '<thead><tr>' +
+            '<th></th>' +
             '<th>Timestamp</th>' +
             '<th>Sentence</th>' +
             '<th>Tier</th>' +
@@ -477,11 +479,11 @@ PPP.ui = (function () {
             '</tr></thead><tbody>';
 
         if (!rows || rows.length === 0) {
-            html += '<tr><td colspan="6" class="empty-result-message">' + t('noTranscriptResults') + '</td></tr>';
+            html += '<tr><td colspan="7" class="empty-result-message">' + t('noTranscriptResults') + '</td></tr>';
         } else {
             rows.forEach(function (row) {
                 var ts = utils.escapeHtml(row.ts || '');
-                var sentence = highlightSearchTerms(row.sentence || '', searchTerms);
+                var sentence = highlightSentencePrefix(row.sentence || '', foldedWords);
                 var tier = utils.escapeHtml(row.tier || '');
                 var nr = row.nr;
                 var nameText = row.name || ('Nr.' + nr);
@@ -502,7 +504,11 @@ PPP.ui = (function () {
                         utils.escapeHtml(row.url) + '</a>';
                 }
 
-                html += '<tr>' +
+                // data-nr on the row lets us drop in the multi-select checkbox as a
+                // DOM node (below) — the checkbox reuses the SAME "<nr>|en" selection
+                // key space as the metadata-table checkboxes and the existing ZIP flow.
+                html += '<tr data-nr="' + utils.escapeHtml(String(nr != null ? nr : '')) + '">' +
+                    '<td class="sel-cell"></td>' +
                     '<td>' + ts + '</td>' +
                     '<td>' + sentence + '</td>' +
                     '<td>' + tier + '</td>' +
@@ -514,6 +520,25 @@ PPP.ui = (function () {
         }
         html += '</tbody>';
         table.innerHTML = html;
+
+        // Per-row selection checkbox — built as a DOM node (innerHTML can't host
+        // the onchange closure _makeSelCheckbox() needs) and dropped into the
+        // empty first <td> reserved above. English-only (sentences DB is EN).
+        if (rows && rows.length > 0) {
+            var trs = table.querySelectorAll('tbody tr[data-nr]');
+            trs.forEach(function (tr) {
+                var nrAttr = tr.getAttribute('data-nr');
+                if (!nrAttr) return;
+                var cell = tr.querySelector('td.sel-cell');
+                if (cell) cell.appendChild(_makeSelCheckbox(nrAttr, 'en', 'EN'));
+            });
+        }
+
+        // Show/hide the persistent "Download selected" button + panel — same
+        // mechanism the metadata table results use.
+        if (PPP.app && PPP.app.showSelectToggle) {
+            PPP.app.showSelectToggle(!!(rows && rows.length > 0));
+        }
     }
 
     /**
@@ -655,6 +680,45 @@ PPP.ui = (function () {
             });
         });
         return result;
+    }
+
+    /**
+     * Compute the length (in original code units of `run`) whose folded
+     * (diacritic-stripped, lowercased) form has exactly `wLen` characters.
+     * Robust to combining marks folding to zero-width and multi-char folds.
+     */
+    function _foldedPrefixLen(run, wLen) {
+        var acc = 0, i = 0;
+        while (i < run.length && acc < wLen) {
+            acc += utils.removeDiacritics(run[i].toLowerCase()).length;
+            i++;
+        }
+        return i;
+    }
+
+    /**
+     * Diacritic- and case-insensitive, word-start-prefix highlighter for the
+     * sentence-search ("Text" mode) results table. Unlike highlightSearchTerms
+     * (which does whole-term/whole-word matching for the other search modes),
+     * this matches a folded WORD PREFIX so "mahaprabh" highlights "Mahāprabh"
+     * inside "Mahāprabhu" without highlighting the trailing "u".
+     *
+     * foldedWords: already diacritic-stripped, lowercased search words.
+     */
+    function highlightSentencePrefix(text, foldedWords) {
+        if (!text || !foldedWords || !foldedWords.length) return utils.escapeHtml(text || '');
+        return text.replace(/[\p{L}\p{M}\p{N}]+|[^\p{L}\p{M}\p{N}]+/gu, function (tok) {
+            if (!/^[\p{L}\p{M}\p{N}]/u.test(tok)) return utils.escapeHtml(tok);
+            var folded = utils.removeDiacritics(tok.toLowerCase());
+            var best = null;
+            foldedWords.forEach(function (w) {
+                if (w && folded.indexOf(w) === 0 && (!best || w.length > best.length)) best = w;
+            });
+            if (!best) return utils.escapeHtml(tok);
+            var prefixLen = _foldedPrefixLen(tok, best.length);
+            return '<span style="background-color: #fce9b8; border-radius: 2px; padding: 0 2px;">' +
+                utils.escapeHtml(tok.slice(0, prefixLen)) + '</span>' + utils.escapeHtml(tok.slice(prefixLen));
+        });
     }
 
     /**
@@ -1116,6 +1180,7 @@ PPP.ui = (function () {
         renderTopics: renderTopics,
         renderStats: renderStats,
         highlightSearchTerms: highlightSearchTerms,
+        highlightSentencePrefix: highlightSentencePrefix,
         getSnippet: getSnippet,
         showLoading: showLoading,
         hideLoading: hideLoading,

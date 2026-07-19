@@ -1304,12 +1304,23 @@ PPP.app = (function () {
     function _addOneToZip(zip, folder, nr, lang, meta, signal) {
         var title = (meta && meta.title ? meta.title : ('Nr_' + nr)).toString();
         var safeTitle = _sanitizeFilename(title);
+        // Sentence-search two-tier highlight: only non-empty when this ZIP was
+        // triggered from an "In Transcripts" search result (see performSentenceSearch).
+        var matchedSentences = _sentenceMatchesByNr[String(nr)] || [];
         return fetch('transcripts/' + lang + '/' + encodeURIComponent(String(nr)) + '.html', { signal: signal })
             .then(function (r) { return r.ok ? r.text() : ''; })
             .then(function (html) {
                 if (html && html.trim()) {
                     // Premium per-lecture HTML (same-origin) — wrap into a standalone doc.
-                    var doc = _buildHtmlDoc({ nr: nr, lang: lang, title: title, html: html });
+                    var htmlOut = html;
+                    if (matchedSentences.length && typeof DOMParser !== 'undefined') {
+                        try {
+                            var parsedDoc = new DOMParser().parseFromString(html, 'text/html');
+                            _wrapMatchesInContainer(parsedDoc.body, matchedSentences, _sentenceWords);
+                            htmlOut = parsedDoc.body.innerHTML;
+                        } catch (ex) { /* fall back to the unmodified premium html */ }
+                    }
+                    var doc = _buildHtmlDoc({ nr: nr, lang: lang, title: title, html: htmlOut });
                     // nr in the filename prevents collisions when two lectures share a title.
                     zip.file(folder + '/Nr_' + nr + '_' + safeTitle + '_' + lang + '.html', doc);
                     return true;
@@ -1323,7 +1334,19 @@ PPP.app = (function () {
                     return fetch(url, { signal: signal }).then(function (rr) {
                         if (rr.status === 200) {
                             return rr.text().then(function (txt) {
-                                zip.file(folder + '/Nr_' + nr + '_' + safeTitle + '_EN_raw.txt', txt);
+                                // Wrap raw plain text into <p> paragraphs so the same
+                                // DOM-based highlighter can mark sentences/words, then
+                                // save as HTML (was .txt) so highlighting is visible.
+                                var paragraphs = (txt || '').split(/\r?\n/).map(function (line) {
+                                    return '<p>' + utils.escapeHtml(line) + '</p>';
+                                }).join('\n');
+                                var container = document.createElement('div');
+                                container.innerHTML = paragraphs;
+                                if (matchedSentences.length) {
+                                    _wrapMatchesInContainer(container, matchedSentences, _sentenceWords);
+                                }
+                                var rawDoc = _buildHtmlDoc({ nr: nr, lang: 'en', title: title, html: container.innerHTML });
+                                zip.file(folder + '/Nr_' + nr + '_' + safeTitle + '_EN_raw.html', rawDoc);
                                 return true;
                             });
                         }
@@ -1482,6 +1505,9 @@ PPP.app = (function () {
         } else if (mode === 'citationsTop') {
             searchInput.placeholder = i18n.t('quotesSearchHint');
             setComboDisplay(i18n.t('mostCitedVersesDisplay'));
+        } else if (mode === 'sentences') {
+            searchInput.placeholder = i18n.t('searchPlaceholderSentences');
+            clearComboDisplay();
         } else {
             var count = totalLectures || 0;
             if (!dataLoaded && !count) {
@@ -2373,7 +2399,7 @@ PPP.app = (function () {
             '<meta charset="utf-8">\n' +
             '<meta name="viewport" content="width=device-width,initial-scale=1">\n' +
             '<title>' + _escapeHtmlAttr(titleText) + '</title>\n' +
-            '<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;max-width:820px;margin:1.5em auto;padding:0 1em;line-height:1.55;color:#222;background:#fff}h1,h2,h3{color:#7a1f00}a{color:#c97a00}p{margin:0.6em 0}</style>\n' +
+            '<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;max-width:820px;margin:1.5em auto;padding:0 1em;line-height:1.55;color:#222;background:#fff}h1,h2,h3{color:#7a1f00}a{color:#c97a00}p{margin:0.6em 0}mark.tr-sentence{background:#fff3a0}mark.tr-word{background:#b6f5c0}</style>\n' +
             '</head>\n<body>\n<h1>' + _escapeHtmlAttr(titleText) + '</h1>\n' +
             ctx.html + '\n</body>\n</html>';
     }
@@ -2684,6 +2710,125 @@ PPP.app = (function () {
         }, 300);
     }
 
+    // ===== TWO-TIER SENTENCE-SEARCH HIGHLIGHT (ZIP export) =====
+    // Wraps every matched sentence in <mark class="tr-sentence"> (yellow) and,
+    // within that, every matched search word in <mark class="tr-word">
+    // (light green). DOM-based (never touches HTML as a string, so tags are
+    // never mangled) — reuses the same text-node-walker + Range.surroundContents
+    // pattern as _highlightAndScroll() above, generalized to many ranges.
+    // Length (in original code units of `run`) whose folded (diacritic-
+    // stripped, lowercased) form has exactly `wLen` characters. Mirrors
+    // ui.js's private helper of the same name — kept local here since app.js
+    // and ui.js are separate IIFEs. Robust to combining marks folding away.
+    function _foldedPrefixLen(run, wLen) {
+        var acc = 0, i = 0;
+        while (i < run.length && acc < wLen) {
+            acc += utils.removeDiacritics(run[i].toLowerCase()).length;
+            i++;
+        }
+        return i;
+    }
+
+    function _wrapMatchesInContainer(container, sentences, words) {
+        if (!container) return;
+        sentences = sentences || [];
+        words = (words || []).filter(Boolean);
+
+        function buildTextMap() {
+            var walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
+            var textNodes = [];
+            var fullText = '';
+            var n;
+            while ((n = walker.nextNode())) {
+                textNodes.push({ node: n, offset: fullText.length, len: n.textContent.length });
+                fullText += n.textContent;
+            }
+            return { textNodes: textNodes, fullText: fullText };
+        }
+
+        // Wrap every {start,end} range (character offsets into the CURRENT
+        // buildTextMap() snapshot) in <mark class="cls">. Ranges are processed
+        // rightmost-first: Range.surroundContents() splits a text node into
+        // (before | matched | after) and the ORIGINAL node object always keeps
+        // the "before" fragment, so once the rightmost range in a node is
+        // wrapped the remaining (lower-offset) ranges in that same node are
+        // still valid offsets into the (now shorter) original node — safe to
+        // process sequentially without rebuilding the walker each time.
+        function wrapRanges(ranges, cls) {
+            if (!ranges.length) return;
+            var map = buildTextMap();
+            var textNodes = map.textNodes;
+            if (!textNodes.length) return;
+            ranges = ranges.slice().sort(function (a, b) { return b.start - a.start; });
+            ranges.forEach(function (rg) {
+                for (var ti = 0; ti < textNodes.length; ti++) {
+                    var tn = textNodes[ti];
+                    var nodeStart = tn.offset, nodeEnd = tn.offset + tn.len;
+                    if (nodeEnd <= rg.start || nodeStart >= rg.end) continue;
+                    var wrapStart = Math.max(0, rg.start - nodeStart);
+                    var wrapEnd = Math.min(tn.len, rg.end - nodeStart);
+                    if (wrapStart >= wrapEnd) continue;
+                    try {
+                        var wr = document.createRange();
+                        wr.setStart(tn.node, wrapStart);
+                        wr.setEnd(tn.node, wrapEnd);
+                        var m = document.createElement('mark');
+                        m.className = cls;
+                        wr.surroundContents(m);
+                    } catch (ex) { /* range crosses an element boundary — skip this node */ }
+                }
+            });
+        }
+
+        // Pass 1: whole matched SENTENCES. The DB sentence text can differ from the
+        // transcript in whitespace/punctuation spacing (e.g. DB "Gaurāṅga , we" vs
+        // transcript "Gaurāṅga, we"), so an exact indexOf fails. Match the sentence's
+        // alphanumeric tokens IN ORDER, allowing any non-alphanumeric run (spaces,
+        // punctuation) between them — tolerant of those differences. Diacritics stay
+        // literal (DB and transcript share the same IAST spelling).
+        var sentRanges = [];
+        var map1 = buildTextMap();
+        var fullText1 = map1.fullText;
+        sentences.forEach(function (sentText) {
+            var tokens = (sentText || '').match(/[\p{L}\p{N}]+/gu);
+            if (!tokens || !tokens.length) return;
+            var pattern = tokens.map(function (t) {
+                return t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            }).join('[^\\p{L}\\p{N}]*');
+            var re;
+            try { re = new RegExp(pattern, 'iu'); } catch (e) { return; }
+            var m = re.exec(fullText1);
+            if (m && m[0].length) sentRanges.push({ start: m.index, end: m.index + m[0].length });
+        });
+        wrapRanges(sentRanges, 'tr-sentence');
+
+        // Pass 2: individual matched WORDS — diacritic- and case-insensitive,
+        // word-start-PREFIX match (mirrors ui.highlightSentencePrefix). `words`
+        // is already diacritic-folded + lowercased (see _sentenceWords). We
+        // walk every word-run in the original (unfolded) text and highlight
+        // only the folded-prefix portion, so "mahaprabh" highlights the
+        // "Mahāprabh" inside "Mahāprabhu" without the trailing "u". May nest
+        // inside a tr-sentence <mark> from pass 1 — that is intentional.
+        var wordRanges = [];
+        var map2 = buildTextMap();
+        var wordRe = /[\p{L}\p{M}\p{N}]+/gu;
+        var wm;
+        while ((wm = wordRe.exec(map2.fullText))) {
+            var run = wm[0];
+            var foldedRun = utils.removeDiacritics(run.toLowerCase());
+            var best = null;
+            words.forEach(function (w) {
+                if (w && foldedRun.indexOf(w) === 0 && (!best || w.length > best.length)) best = w;
+            });
+            if (best) {
+                var plen = _foldedPrefixLen(run, best.length);
+                wordRanges.push({ start: wm.index, end: wm.index + plen });
+            }
+            if (wordRe.lastIndex === wm.index) wordRe.lastIndex++; // guard zero-length matches
+        }
+        wrapRanges(wordRanges, 'tr-word');
+    }
+
     function _attachTranscriptSelectionShare(body, lectureNr, lang) {
         // Remove old share bubble if any
         var old = document.getElementById('transcriptShareBubble');
@@ -2800,6 +2945,25 @@ PPP.app = (function () {
     // Stored so the "Download Excel" button can re-run the query uncapped.
     var _sentenceParsed = null;
     var _sentenceTerm = '';
+    // Matched-sentence text per lecture nr (from the last rendered page of
+    // results) and the flat list of diacritic-folded search words — used by
+    // the ZIP download to double-highlight (sentence + word) in exported
+    // transcripts. Cleared/repopulated each time results are (re-)rendered.
+    var _sentenceMatchesByNr = {};
+    var _sentenceWords = [];
+
+    // Extract the flat, diacritic-folded, whole-word list a search matched on
+    // (mirrors the word-splitting rule in search.js buildTranscriptSQL).
+    function _extractSentenceSearchWords(parsed) {
+        var seen = {};
+        (parsed && parsed.orGroups || []).forEach(function (group) {
+            group.forEach(function (term) {
+                var normalized = utils.removeDiacritics((term || '').toLowerCase());
+                normalized.split(/[^a-z0-9]+/).filter(Boolean).forEach(function (w) { seen[w] = 1; });
+            });
+        });
+        return Object.keys(seen);
+    }
 
     function performSentenceSearch(startTime) {
         var parsed = search.parseSearchQuery(lastSearchTerm);
@@ -2808,7 +2972,9 @@ PPP.app = (function () {
             // No free-text term — nothing to search on.
             document.getElementById('resultsInfo').innerHTML = '';
             document.getElementById('timer').textContent = '';
-            ui.renderSentenceResults([], lastSearchTerm, { total: 0, lectures: 0, shown: 0 });
+            _sentenceMatchesByNr = {};
+            _sentenceWords = [];
+            ui.renderSentenceResults([], lastSearchTerm, { total: 0, lectures: 0, shown: 0 }, _sentenceWords);
             return;
         }
 
@@ -2829,7 +2995,16 @@ PPP.app = (function () {
                     var elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
                     document.getElementById('timer').textContent = i18n.t('elapsedTime') + ' ' + elapsed + ' ' + i18n.t('seconds');
                     track('search', { query: lastSearchTerm, mode: 'sentences', results: n });
-                    ui.renderSentenceResults(rows, lastSearchTerm, { total: n, lectures: lectures, shown: rows.length });
+                    // Build the nr -> matched-sentence-texts map + word list for the
+                    // ZIP export highlighter (downloadSelectedZip / _addOneToZip).
+                    _sentenceMatchesByNr = {};
+                    rows.forEach(function (r) {
+                        var key = String(r.nr);
+                        if (!_sentenceMatchesByNr[key]) _sentenceMatchesByNr[key] = [];
+                        _sentenceMatchesByNr[key].push(r.sentence || '');
+                    });
+                    _sentenceWords = _extractSentenceSearchWords(parsed);
+                    ui.renderSentenceResults(rows, lastSearchTerm, { total: n, lectures: lectures, shown: rows.length }, _sentenceWords);
                 });
             });
         }).catch(function (err) {
@@ -2862,6 +3037,14 @@ PPP.app = (function () {
                 };
             });
             var ws = XLSX.utils.json_to_sheet(data);
+            // Make the "Script_EN URL" cell (last column, index 5) a clickable
+            // hyperlink while keeping the visible text unchanged (SheetJS cell.l).
+            data.forEach(function (r, rowIdx) {
+                if (!r['Script_EN URL']) return;
+                var addr = XLSX.utils.encode_cell({ r: rowIdx + 1, c: 5 });
+                var cell = ws[addr];
+                if (cell) cell.l = { Target: r['Script_EN URL'], Tooltip: 'Open transcript' };
+            });
             var wb = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(wb, ws, 'Sentences');
 
@@ -3117,11 +3300,15 @@ PPP.app = (function () {
         // Multi-select transcripts -> ZIP
         isSelectedPair: isSelectedPair,
         toggleSelectPair: toggleSelectPair,
+        showSelectToggle: _showSelectToggle, // used by ui.js renderSentenceResults()
         openDownloadPanel: openDownloadPanel,
         closeDownloadPanel: closeDownloadPanel,
         clearSelection: clearSelection,
         downloadSelectedZip: downloadSelectedZip,
         cancelZipDownload: cancelZipDownload,
+        // Internal — exposed only so Playwright can unit-test the two-tier
+        // sentence/word ZIP-export highlighter without a full download round trip.
+        _wrapMatchesInContainer: _wrapMatchesInContainer,
         copyShareLink: copyShareLink,
         buildShareUrl: buildShareUrl,
         toggleTheme: toggleTheme,
