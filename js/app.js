@@ -3040,10 +3040,11 @@ PPP.app = (function () {
             // Make the "Script_EN URL" cell (last column, index 5) a clickable
             // hyperlink while keeping the visible text unchanged (SheetJS cell.l).
             data.forEach(function (r, rowIdx) {
-                if (!r['Script_EN URL']) return;
+                var u = r['Script_EN URL'];
+                if (!u || !utils.isSafeUrl(u)) return;
                 var addr = XLSX.utils.encode_cell({ r: rowIdx + 1, c: 5 });
                 var cell = ws[addr];
-                if (cell) cell.l = { Target: r['Script_EN URL'], Tooltip: 'Open transcript' };
+                if (cell) cell.l = { Target: u, Tooltip: 'Open transcript' };
             });
             var wb = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(wb, ws, 'Sentences');

@@ -212,6 +212,17 @@ PPP.utils = (function () {
         return encodeURIComponent(str || '').replace(/'/g, '%27');
     }
 
+    /**
+     * Validate that a URL is a safe external link (http/https absolute URL only).
+     * Rejects javascript:, data:, and other unsafe schemes.
+     */
+    function isSafeUrl(url) {
+        if (!url) return false;
+        var s = String(url).trim();
+        // Atļauj tikai http/https absolūtos URL (Drive transkriptu saites).
+        return /^https?:\/\//i.test(s);
+    }
+
     // Public API
     return {
         removeDiacritics: removeDiacritics,
@@ -225,6 +236,7 @@ PPP.utils = (function () {
         cellHasOriginalLink: cellHasOriginalLink,
         extractUrl: extractUrl,
         escapeHtml: escapeHtml,
-        encodeForAttr: encodeForAttr
+        encodeForAttr: encodeForAttr,
+        isSafeUrl: isSafeUrl
     };
 })();

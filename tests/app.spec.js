@@ -965,6 +965,23 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(hasHyperlink).toBe(true);
   });
 
+  test('37b. utils.isSafeUrl rejects unsafe URL schemes', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const result = await page.evaluate(() => {
+      return {
+        httpsOk: PPP.utils.isSafeUrl('https://drive.google.com/x'),
+        javascriptBlocked: PPP.utils.isSafeUrl('javascript:alert(1)'),
+        emptyBlocked: PPP.utils.isSafeUrl(''),
+      };
+    });
+
+    expect(result.httpsOk).toBe(true);
+    expect(result.javascriptBlocked).toBe(false);
+    expect(result.emptyBlocked).toBe(false);
+  });
+
   test('38. ZIP export highlighter marks matched sentence + matched word', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);

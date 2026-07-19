@@ -500,8 +500,12 @@ PPP.ui = (function () {
 
                 var urlCell = '';
                 if (row.url) {
-                    urlCell = '<a href="' + utils.escapeHtml(row.url) + '" target="_blank" rel="noopener">' +
-                        utils.escapeHtml(row.url) + '</a>';
+                    if (utils.isSafeUrl(row.url)) {
+                        urlCell = '<a href="' + utils.escapeHtml(row.url) + '" target="_blank" rel="noopener">' +
+                            utils.escapeHtml(row.url) + '</a>';
+                    } else {
+                        urlCell = utils.escapeHtml(row.url);
+                    }
                 }
 
                 // data-nr on the row lets us drop in the multi-select checkbox as a
