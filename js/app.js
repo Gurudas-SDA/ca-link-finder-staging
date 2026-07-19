@@ -1633,6 +1633,10 @@ PPP.app = (function () {
         if (verseList && mode !== 'citations') {
             verseList.style.display = 'none';
         }
+        // "List Of Sources" button + "Last update" label belong to the lecture
+        // (metadata) results view — hide them in sentence ("In Text") mode.
+        var topLeftBtns = document.querySelector('.top-left-buttons');
+        if (topLeftBtns) topLeftBtns.style.display = (mode === 'sentences') ? 'none' : '';
         // Clear results and search field when switching modes
         if (prevMode !== mode) {
             document.getElementById('searchTerm').value = '';
