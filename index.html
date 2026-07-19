@@ -40,7 +40,7 @@
     <script defer src="https://cloud.umami.is/script.js" data-website-id="e50b4fd4-578a-4674-944d-4fefcb6999e1"></script>
 
     <!-- Application CSS -->
-    <link rel="stylesheet" href="css/styles.css?v=3cf1b4fa">
+    <link rel="stylesheet" href="css/styles.css?v=aca88f22">
 </head>
 <body>
 
@@ -127,8 +127,14 @@
             </div>
             <div class="search-time">
                 <button class="help-search-btn help-search-btn-small" onclick="PPP.app.openHelpModal()" data-i18n="helpButton">How to use search?</button>
+                <button type="button" class="help-search-btn help-search-btn-small" id="offlineWorkBtn" style="display:none;" onclick="PPP.app.toggleOfflineInfoPanel()" data-i18n="offlineWorkBtn">Work offline</button>
                 <span id="timer" class="timer"></span>
             </div>
+            <!-- Offline install info + Download (shown on #offlineWorkBtn click) -->
+            <div id="offlineInfoPanel" class="offline-info-panel" style="display:none;"></div>
+            <!-- Offline install progress (independent of the info panel — stays
+                 visible if the info panel is closed mid-download). -->
+            <div id="offlineProgress" class="offline-info-panel" style="display:none;"></div>
             <!-- Results header row: count on the left, "Download selected" button on the right
                  (closer to the transcript columns). Flex row so the button right-aligns on the
                  same line; wraps below on narrow widths. -->
@@ -233,7 +239,7 @@
     <!-- ===== APPLICATION SCRIPTS ===== -->
     <!-- Load order matters: utils first, then i18n, db, search, ui, app last -->
     <script src="js/utils.js?v=aa1a3ba8"></script>
-    <script src="js/i18n.js?v=fc98f24c"></script>
+    <script src="js/i18n.js?v=a2a59a3f"></script>
     <script src="js/offline-store.js?v=d6ff5ddd"></script>
     <script src="js/downloader.js?v=b29bccae"></script>
     <script src="js/db.js?v=5bd9a706"></script>
@@ -243,7 +249,7 @@
     <script src="js/config.js?v=732be8cf"></script>
     <script src="js/vendor/jszip.min.js?v=acc7e414"></script>
     <script src="guide/menu-data.js?v=1"></script>
-    <script src="js/app.js?v=1471fd3a"></script>
+    <script src="js/app.js?v=b7124119"></script>
 
 </body>
 </html>

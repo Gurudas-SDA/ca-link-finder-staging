@@ -1354,20 +1354,43 @@ test.describe('Online-first UX (no forced install)', () => {
     expect(resultsText.trim().length).toBeGreaterThan(0);
   });
 
-  test('Optional offline download banner appears and is not blocking', async ({ page }) => {
+  test('Optional offline download button appears only after the online DB is ready, not as a banner', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);
 
-    // App must already be fully usable while the banner is (or becomes) visible.
+    // App must already be fully usable once the small "Work offline" button
+    // is (or becomes) visible.
     await expect(page.locator('#searchTerm')).toBeEnabled();
 
-    const offer = page.locator('#offlineOffer');
-    await expect(offer).toBeVisible({ timeout: 15000 });
-    await expect(offer.locator('#offlineOfferBtn')).toBeVisible();
+    // No big banner anywhere in the load flow — the offer is a small button
+    // next to "How to use search?".
+    await expect(page.locator('#offlineOffer')).toHaveCount(0);
 
-    // The banner must not intercept clicks elsewhere on the page — the
-    // search button must still be clickable.
+    const workBtn = page.locator('#offlineWorkBtn');
+    await expect(workBtn).toBeVisible({ timeout: 15000 });
+
+    // Info panel + Download button only appear after a click.
+    const infoPanel = page.locator('#offlineInfoPanel');
+    await expect(infoPanel).toBeHidden();
+    await workBtn.click();
+    await expect(infoPanel).toBeVisible();
+    const offerBtn = infoPanel.locator('#offlineOfferBtn');
+    await expect(offerBtn).toBeVisible();
+
+    // Neither the button nor the info panel intercept clicks elsewhere on
+    // the page — the search button must still be clickable.
     await expect(page.locator('button.search-button').first()).toBeEnabled();
+
+    // Clicking Download starts the background install; progress shows in
+    // #offlineProgress, independent of the info panel.
+    await offerBtn.click();
+    const progress = page.locator('#offlineProgress');
+    await expect(progress).toBeVisible({ timeout: 15000 });
+
+    // Closing the info panel mid-download does NOT hide the progress row.
+    await infoPanel.locator('button[aria-label="Close"]').click();
+    await expect(infoPanel).toBeHidden();
+    await expect(progress).toBeVisible();
   });
 
 });

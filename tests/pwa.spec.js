@@ -114,7 +114,7 @@ async function findIdbTranscriptNrs(page) {
 
 test.describe('PWA offline library', () => {
 
-  test('P1. Online-first UX: app usable immediately, optional offline banner, background download does not block', async ({ page }) => {
+  test('P1. Online-first UX: app usable immediately, optional "Work offline" button, background download does not block', async ({ page }) => {
     // NO ppp_auto_install hook — the real first-visit online-first UX: no
     // forced/blocking install screen, the app itself is the base experience.
     await page.goto('./');
@@ -131,25 +131,40 @@ test.describe('PWA offline library', () => {
     await expect(searchInput).not.toHaveAttribute('placeholder', /Loading|Required/i, { timeout: 20000 });
     await expectSearchWorks(page);
 
-    // (b) The optional offline-download banner is shown (non-blocking —
-    // there is no #installOfflineBtn forced flow anymore).
+    // (b) The optional offline install is a small "Work offline" button next
+    // to "How to use search?" — NOT a big banner, and it only appears once
+    // the online DB is ready (non-blocking — no #installOfflineBtn forced
+    // flow, and no #offlineOffer banner popping up while still loading).
     await expect(page.locator('#installOfflineBtn')).toHaveCount(0);
-    const offer = page.locator('#offlineOffer');
-    await expect(offer).toBeVisible({ timeout: 20000 });
-    const offerBtn = page.locator('#offlineOfferBtn');
+    await expect(page.locator('#offlineOffer')).toHaveCount(0);
+    const workBtn = page.locator('#offlineWorkBtn');
+    await expect(workBtn).toBeVisible({ timeout: 20000 });
+
+    // Click reveals the info panel (size/time text + Download button).
+    const infoPanel = page.locator('#offlineInfoPanel');
+    await expect(infoPanel).toBeHidden();
+    await workBtn.click();
+    await expect(infoPanel).toBeVisible();
+    const offerBtn = infoPanel.locator('#offlineOfferBtn');
     await expect(offerBtn).toBeVisible();
     await expect(offerBtn).toHaveText('Download');
 
-    // (c) Click starts startBackgroundInstall(): the banner switches to a
-    // live progress message (MB counter / i18n offlineDownloading), and the
+    // (c) Click starts startBackgroundInstall(): #offlineProgress switches to
+    // a live progress message (MB counter / i18n offlineDownloading), and the
     // app stays fully interactive throughout — no click-guard, no toast, no
     // disabled input. (Don't wait for the full ~196 MB download to finish —
     // only that progress genuinely starts without blocking the UI.)
     await offerBtn.click();
     await page.waitForFunction(() => {
-      const m = document.getElementById('offlineOfferMsg');
+      const m = document.getElementById('offlineProgressMsg');
       return !!m && /MB/.test(m.textContent || '');
     }, { timeout: 20000 });
+
+    // Closing the info panel mid-download does not hide the progress row —
+    // it lives in a separate element (#offlineProgress).
+    await infoPanel.locator('button[aria-label="Close"]').click();
+    await expect(infoPanel).toBeHidden();
+    await expect(page.locator('#offlineProgress')).toBeVisible();
 
     await expect(searchInput).toBeEnabled();
     await searchInput.fill('krishna');
@@ -400,7 +415,7 @@ test.describe('PWA offline library', () => {
       await page.close();
       const page2 = await context.newPage();
       // Online-first UX: WITHOUT the auto-install hook a fresh (uninstalled)
-      // page would just show the optional #offlineOffer banner instead of
+      // page would just show the optional #offlineWorkBtn button instead of
       // resuming the interrupted install automatically.
       await addAutoInstallHook(page2);
       const packRequests = [];

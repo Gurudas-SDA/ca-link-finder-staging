@@ -662,6 +662,28 @@ h1 {
     gap: 10px;
 }
 
+/* ===== OFFLINE WORK BUTTON: info panel + progress =====
+   Small rows anchored under the search-time buttons ("Work offline" sits
+   next to "How to use search?"). Not a big banner — same restrained size
+   as the help modal trigger. */
+.offline-info-panel {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 8px auto 0;
+    padding: 8px 12px;
+    max-width: 640px;
+    border: 1px solid var(--saffron, #e8842c);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--saffron, #e8842c) 12%, transparent);
+    font-size: 13px;
+}
+.offline-info-panel span {
+    flex: 1;
+    min-width: 200px;
+}
+
 /* ===== HELP MODAL ===== */
 .help-modal-overlay {
     display: none;

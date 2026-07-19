@@ -393,12 +393,14 @@ PPP.app = (function () {
                     if (navigator.onLine) backgroundUpdateCheck();
                 });
             }
-            // ONLINE is the base experience: load online immediately (fully usable),
-            // and offer an OPTIONAL background download of the offline library.
+            // ONLINE is the base experience: load online immediately (fully usable).
+            // The offline download is OPTIONAL and offered only via the small
+            // "Work offline" button once the online DB is ready (see
+            // loadDataLegacy() -> onDataLoaded() -> maybeShowOfflineWorkButton()),
+            // never as an upfront banner while the DB is still loading.
             loadDataLegacy();
             var auto = false; try { auto = localStorage.getItem('ppp_auto_install') === '1'; } catch (e) {}
             if (auto) { startBackgroundInstall(); }   // test/CI hook keeps exercising install
-            else { showOfflineDownloadOffer(); }
             return;
         }).catch(function (err) {
             console.warn('Offline store startup failed, using legacy load:', err);
@@ -420,6 +422,11 @@ PPP.app = (function () {
             ui.hideLoading();
             usingSqlite = true;
             onDataLoaded();
+
+            // Online DB is ready — NOW (not before) it's safe to offer the
+            // optional offline install. No-op if the offline store/downloader
+            // isn't supported (true legacy browsers) or install already ran.
+            maybeShowOfflineWorkButton();
 
             // Load extras (essence/summary/title translations) in the
             // background AFTER the app is ready; refresh visible results
@@ -614,30 +621,57 @@ PPP.app = (function () {
     }
 
     /**
-     * Non-blocking banner offering the OPTIONAL offline download. Online
-     * usage never depends on this — the app is already fully usable when
-     * this banner appears (S: online-first UX fix).
+     * Reveal the small "Work offline" button (next to "How to use search?")
+     * once the ONLINE database is ready. Never shown while the DB is still
+     * loading — that was the old bug (big banner popping up mid-"Loading
+     * database…"). No-op if the offline install feature isn't available, or
+     * the user already dismissed it earlier this session.
      */
-    function showOfflineDownloadOffer() {
+    function maybeShowOfflineWorkButton() {
         if (!PPP.downloader) return;
         try {
             if (sessionStorage.getItem('ppp_offline_offer_dismissed') === '1') return;
         } catch (e) {}
+        var btn = document.getElementById('offlineWorkBtn');
+        if (btn) btn.style.display = '';
+    }
 
-        var old = document.getElementById('offlineOffer');
-        if (old) old.remove();
+    /**
+     * Click on #offlineWorkBtn: toggle the info panel (size/time text +
+     * Download button) open/closed underneath the button.
+     */
+    function toggleOfflineInfoPanel() {
+        var panel = document.getElementById('offlineInfoPanel');
+        if (!panel) return;
+        var isOpen = panel.style.display !== 'none' && panel.style.display !== '';
+        if (isOpen) {
+            closeOfflineInfoPanel();
+        } else {
+            renderOfflineInfoPanel();
+            panel.style.display = 'flex';
+        }
+    }
 
-        var box = document.createElement('div');
-        box.id = 'offlineOffer';
-        box.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;' +
-            'margin:8px 0;padding:10px 12px;border:1px solid var(--saffron, #e8842c);' +
-            'border-radius:8px;background:color-mix(in srgb, var(--saffron, #e8842c) 12%, transparent);';
+    /**
+     * Close (and clear) the info panel. Deliberately does NOT touch
+     * #offlineProgress — an in-flight download keeps showing there even
+     * after the info panel is closed (S: progress persistence fix).
+     */
+    function closeOfflineInfoPanel() {
+        var panel = document.getElementById('offlineInfoPanel');
+        if (!panel) return;
+        panel.style.display = 'none';
+        panel.innerHTML = '';
+    }
+
+    function renderOfflineInfoPanel() {
+        var panel = document.getElementById('offlineInfoPanel');
+        if (!panel) return;
+        panel.innerHTML = '';
 
         var text = document.createElement('span');
-        text.id = 'offlineOfferMsg';
-        text.style.cssText = 'flex:1;min-width:200px;';
-        text.textContent = i18n.t('offlineOfferText');
-        box.appendChild(text);
+        text.textContent = i18n.t('offlineInfoText').replace('{size}', '196').replace('{min}', '20');
+        panel.appendChild(text);
 
         var btn = document.createElement('button');
         btn.type = 'button';
@@ -645,7 +679,7 @@ PPP.app = (function () {
         btn.className = 'search-button';
         btn.textContent = i18n.t('offlineOfferBtn');
         btn.onclick = function () { startBackgroundInstall(); };
-        box.appendChild(btn);
+        panel.appendChild(btn);
 
         var closeBtn = document.createElement('button');
         closeBtn.type = 'button';
@@ -653,44 +687,28 @@ PPP.app = (function () {
         closeBtn.textContent = '×';
         closeBtn.style.cssText = 'background:none;border:none;font-size:18px;cursor:pointer;line-height:1;padding:0 4px;';
         closeBtn.onclick = function () {
-            box.style.display = 'none';
+            closeOfflineInfoPanel();
             try { sessionStorage.setItem('ppp_offline_offer_dismissed', '1'); } catch (e) {}
         };
-        box.appendChild(closeBtn);
-
-        var anchor = document.getElementById('resultsInfo');
-        var row = anchor ? anchor.closest('.results-header-row') : null;
-        var card = row ? row.parentNode : null;
-        if (row && card) {
-            card.insertBefore(box, row);
-        } else if (card) {
-            card.appendChild(box);
-        } else {
-            document.body.insertBefore(box, document.body.firstChild);
-        }
+        panel.appendChild(closeBtn);
     }
 
     /**
      * Optional, non-blocking offline install. Progress/completion render
-     * ONLY inside the #offlineOffer banner — the app itself stays fully
-     * usable (no click guard, no full-screen loading overlay).
+     * ONLY inside #offlineProgress (below #offlineWorkBtn) — independent of
+     * #offlineInfoPanel, so closing the info panel mid-download does not
+     * hide progress. The app itself stays fully usable throughout (no click
+     * guard, no full-screen loading overlay).
      */
     function startBackgroundInstall() {
         if (!PPP.downloader) return Promise.resolve();
 
-        var box = document.getElementById('offlineOffer');
-        if (!box) {
-            // Banner was dismissed/removed (or auto-install test hook) —
-            // create a minimal one so progress is still visible.
-            showOfflineDownloadOffer();
-            box = document.getElementById('offlineOffer');
-        }
+        var box = document.getElementById('offlineProgress');
         if (box) {
             box.style.display = 'flex';
             box.innerHTML = '';
             var msg = document.createElement('span');
-            msg.id = 'offlineOfferMsg';
-            msg.style.cssText = 'flex:1;min-width:200px;';
+            msg.id = 'offlineProgressMsg';
             msg.textContent = i18n.t('offlineDownloading')
                 .replace('{loaded}', '0').replace('{total}', '?').replace('{pct}', '0');
             box.appendChild(msg);
@@ -701,18 +719,17 @@ PPP.app = (function () {
             return PPP.downloader.firstInstall(function (p) {
                 var mb = Math.round(p.loadedBytes / 1048576);
                 var pct = p.totalBytes ? Math.round(p.loadedBytes / p.totalBytes * 100) : 0;
-                var m = document.getElementById('offlineOfferMsg');
+                var m = document.getElementById('offlineProgressMsg');
                 if (m) {
                     m.textContent = i18n.t('offlineDownloading')
                         .replace('{loaded}', mb).replace('{total}', totalMB).replace('{pct}', pct);
                 }
             }).then(function () {
                 PPP.offlineStore.requestPersist();
-                var b = document.getElementById('offlineOffer');
+                var b = document.getElementById('offlineProgress');
                 if (b) {
                     b.innerHTML = '';
                     var readyMsg = document.createElement('span');
-                    readyMsg.style.cssText = 'flex:1;min-width:200px;';
                     readyMsg.textContent = i18n.t('offlineReady');
                     b.appendChild(readyMsg);
                     var reloadBtn = document.createElement('button');
@@ -725,11 +742,11 @@ PPP.app = (function () {
             });
         }).catch(function (err) {
             console.error('Background offline install failed:', err);
-            var b = document.getElementById('offlineOffer');
+            var b = document.getElementById('offlineProgress');
             if (b) {
+                b.style.display = 'flex';
                 b.innerHTML = '';
                 var errMsg = document.createElement('span');
-                errMsg.style.cssText = 'flex:1;min-width:200px;';
                 errMsg.textContent = i18n.t('offlineOfferError');
                 b.appendChild(errMsg);
                 var retryBtn = document.createElement('button');
@@ -3449,7 +3466,8 @@ PPP.app = (function () {
         buildShareUrl: buildShareUrl,
         toggleTheme: toggleTheme,
         startBackgroundInstall: startBackgroundInstall,
-        showOfflineDownloadOffer: showOfflineDownloadOffer,
+        toggleOfflineInfoPanel: toggleOfflineInfoPanel,
+        closeOfflineInfoPanel: closeOfflineInfoPanel,
         openGuide: function () {
             var lang = localStorage.getItem('preferredLanguage') || 'en';
             window.open('guide/' + lang + '/index.html', '_blank');
