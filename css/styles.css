@@ -646,6 +646,32 @@ h1 {
 .text-search-btn.active {
     box-shadow: 0 2px 6px rgba(139,105,20,0.45), inset 0 0 0 2px rgba(255,255,255,0.35);
 }
+
+/* Active/inactive clarity for the paired mode toggle (In Titles / In Text):
+   the INACTIVE button is clearly dimmed (muted grey), the ACTIVE one stays vivid
+   gold and pops. Without this both looked identical gold and it was impossible to
+   tell which mode was selected. */
+.keywords-search-btn:not(.active),
+.text-search-btn:not(.active) {
+    background: linear-gradient(135deg, #a49b88, #b6ad99) !important;
+    color: #f1eee6 !important;
+    box-shadow: none !important;
+    opacity: 0.82;
+}
+.keywords-search-btn:not(.active):hover,
+.text-search-btn:not(.active):hover {
+    opacity: 1;
+    filter: brightness(1.03);
+}
+.keywords-search-btn.active,
+.text-search-btn.active {
+    background: linear-gradient(135deg, var(--btn-gold), var(--btn-gold-light)) !important;
+    color: #fff !important;
+    opacity: 1;
+    filter: brightness(1.06);
+    box-shadow: 0 3px 10px rgba(139,105,20,0.5), inset 0 0 0 2px rgba(255,255,255,0.5) !important;
+    z-index: 1;
+}
 .search-row {
     display: flex;
     gap: 0 !important;
