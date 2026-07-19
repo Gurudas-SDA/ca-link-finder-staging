@@ -59,6 +59,29 @@ async function expectSearchWorks(page, term = 'tattva') {
 }
 
 /**
+ * Node-side poll for the background install committing localManifest to IDB
+ * (startBackgroundInstall does NOT flip the running session to IDB — a
+ * reload is required for that; see loadData()/openFromIdb() in app.js).
+ * Deliberately polled from Node rather than via page.waitForFunction with an
+ * async predicate: an un-awaited Promise returned each poll is truthy and
+ * ends the wait vacuously (see the identical note on the SW-cache poll in
+ * P3 below and the install-state poll in P5).
+ */
+async function waitForLocalManifestSet(page, timeout = 120000) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const has = await page.evaluate(async () => {
+      if (!(window.PPP && PPP.offlineStore)) return false;
+      const m = await PPP.offlineStore.getState('localManifest');
+      return !!m;
+    });
+    if (has) return;
+    if (Date.now() > deadline) throw new Error('Timed out waiting for background install to commit localManifest');
+    await page.waitForTimeout(500);
+  }
+}
+
+/**
  * From the installed IndexedDB library pick one premium EN transcript nr and
  * one raw-ONLY nr (raw:en:{nr} with no t:en:{nr} counterpart).
  */
@@ -91,45 +114,62 @@ async function findIdbTranscriptNrs(page) {
 
 test.describe('PWA offline library', () => {
 
-  test('P1. First install UX: prompt, progress, click-guard toast, ready after install', async ({ page }) => {
-    // NO ppp_auto_install hook — the real first-run confirmation UI.
+  test('P1. Online-first UX: app usable immediately, optional offline banner, background download does not block', async ({ page }) => {
+    // NO ppp_auto_install hook — the real first-visit online-first UX: no
+    // forced/blocking install screen, the app itself is the base experience.
     await page.goto('./');
 
-    // Confirmation prompt: i18n installPrompt (default lang EN) with the
-    // manifest size in MB, plus the Download button (i18n installButton).
-    const btn = page.locator('#installOfflineBtn');
-    await expect(btn).toBeVisible({ timeout: 20000 });
-    const label = await page.locator('#progressBar .progress-label').textContent();
-    expect(label).toContain('Download the full library for offline use');
-    expect(label).toMatch(/\(\d+ MB\)/);
-    await expect(btn).toHaveText('Download');
+    // (a) App is usable online right away — not stuck on a "Loading"/
+    // "Required" screen, and a real search returns results immediately.
+    const searchInput = page.locator('#searchTerm');
+    await expect(searchInput).toBeVisible({ timeout: 20000 });
+    await expect(searchInput).toBeEnabled({ timeout: 20000 });
+    // The input is enabled immediately (clearComboDisplay()) with a transient
+    // "Loading the database…" placeholder until onDataLoaded() swaps in the
+    // real count text — assert with auto-retry, not a one-shot read, so this
+    // doesn't race the transient state.
+    await expect(searchInput).not.toHaveAttribute('placeholder', /Loading|Required/i, { timeout: 20000 });
+    await expectSearchWorks(page);
 
-    // Click starts the install: button goes away, progress switches to the
-    // downloadingAll text with a live MB counter.
-    await btn.click();
-    await expect(btn).toBeHidden();
+    // (b) The optional offline-download banner is shown (non-blocking —
+    // there is no #installOfflineBtn forced flow anymore).
+    await expect(page.locator('#installOfflineBtn')).toHaveCount(0);
+    const offer = page.locator('#offlineOffer');
+    await expect(offer).toBeVisible({ timeout: 20000 });
+    const offerBtn = page.locator('#offlineOfferBtn');
+    await expect(offerBtn).toBeVisible();
+    await expect(offerBtn).toHaveText('Download');
+
+    // (c) Click starts startBackgroundInstall(): the banner switches to a
+    // live progress message (MB counter / i18n offlineDownloading), and the
+    // app stays fully interactive throughout — no click-guard, no toast, no
+    // disabled input. (Don't wait for the full ~196 MB download to finish —
+    // only that progress genuinely starts without blocking the UI.)
+    await offerBtn.click();
     await page.waitForFunction(() => {
-      const l = document.querySelector('#progressBar .progress-label');
-      return l && /Downloading offline library/.test(l.textContent) && /MB/.test(l.textContent);
+      const m = document.getElementById('offlineOfferMsg');
+      return !!m && /MB/.test(m.textContent || '');
     }, { timeout: 20000 });
 
-    // DURING the install any interaction outside the progress area answers
-    // with the stillDownloading toast (capture-phase click guard).
-    await page.locator('.search-mode-btn[data-mode="citations"]').click({ force: true });
-    await expect(page.locator('#uiToast')).toContainText(/Still downloading — \d+%/, { timeout: 5000 });
-
-    // Install completes -> app opens from IDB and is fully usable.
-    await waitForDataReady(page);
-    const installed = await page.evaluate(async () =>
-      !!(await PPP.offlineStore.getState('localManifest')));
-    expect(installed).toBe(true);
-    await expect(page.locator('#searchTerm')).toBeEnabled();
-    await expectSearchWorks(page);
+    await expect(searchInput).toBeEnabled();
+    await searchInput.fill('krishna');
+    await expect(searchInput).toHaveValue('krishna');
+    await expectSearchWorks(page, 'krishna');
   });
 
   test('P3. Full offline with SW: shell from cache, data from IDB, requiresInternet guard', async ({ page, context }) => {
     await addAutoInstallHook(page);
     await page.goto('./');
+
+    // Online-first: the app is usable immediately (legacy/online load), and
+    // ppp_auto_install=1 makes loadData() call startBackgroundInstall()
+    // instead of showing the offer banner. That call downloads into IDB
+    // WITHOUT switching the running session over (see loadData() in
+    // app.js) — dataReady only flips true after a reload re-opens from IDB.
+    await expect(page.locator('#searchTerm')).toBeEnabled({ timeout: 20000 });
+    await waitForLocalManifestSet(page, 110000);
+
+    await page.reload();
     await waitForDataReady(page);
 
     // Wait for the service worker to be active AND the ca-shell precache to
@@ -211,6 +251,10 @@ test.describe('PWA offline library', () => {
     test('P2. Second visit instant with ZERO data network', async ({ page, context }) => {
       await addAutoInstallHook(page);
       await page.goto('./');
+      // startBackgroundInstall() (online-first UX) downloads into IDB without
+      // switching this session over — reload once install commits, same as P3.
+      await waitForLocalManifestSet(page, 110000);
+      await page.reload();
       await waitForDataReady(page);
 
       // New page in the SAME context (same IndexedDB): block every data
@@ -243,6 +287,10 @@ test.describe('PWA offline library', () => {
     test('P4. Delta update: manifest diff -> download -> sha256 verify -> apply -> note', async ({ page, context }) => {
       await addAutoInstallHook(page);
       await page.goto('./');
+      // startBackgroundInstall() (online-first UX) downloads into IDB without
+      // switching this session over — reload once install commits, same as P3.
+      await waitForLocalManifestSet(page, 110000);
+      await page.reload();
       await waitForDataReady(page);
 
       // Build the fixture: a tiny valid gzip JSON replacing core:extras, with
@@ -351,12 +399,18 @@ test.describe('PWA offline library', () => {
       // "Reload": close the page, open a new one WITHOUT the abort route.
       await page.close();
       const page2 = await context.newPage();
+      // Online-first UX: WITHOUT the auto-install hook a fresh (uninstalled)
+      // page would just show the optional #offlineOffer banner instead of
+      // resuming the interrupted install automatically.
+      await addAutoInstallHook(page2);
       const packRequests = [];
       page2.on('request', req => {
         if (req.url().includes('/packs/')) packRequests.push(req.url());
       });
 
       await page2.goto('./');
+      await waitForLocalManifestSet(page2, 60000);
+      await page2.reload();
       await waitForDataReady(page2, 60000);
       const done = await page2.evaluate(async () => ({
         localManifest: !!(await PPP.offlineStore.getState('localManifest')),

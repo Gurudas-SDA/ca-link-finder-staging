@@ -393,7 +393,13 @@ PPP.app = (function () {
                     if (navigator.onLine) backgroundUpdateCheck();
                 });
             }
-            return startFirstInstallFlow();
+            // ONLINE is the base experience: load online immediately (fully usable),
+            // and offer an OPTIONAL background download of the offline library.
+            loadDataLegacy();
+            var auto = false; try { auto = localStorage.getItem('ppp_auto_install') === '1'; } catch (e) {}
+            if (auto) { startBackgroundInstall(); }   // test/CI hook keeps exercising install
+            else { showOfflineDownloadOffer(); }
+            return;
         }).catch(function (err) {
             console.warn('Offline store startup failed, using legacy load:', err);
             loadDataLegacy();
@@ -604,6 +610,135 @@ PPP.app = (function () {
             // user is never stuck on a broken screen.
             ui.hideLoading();
             loadDataLegacy();
+        });
+    }
+
+    /**
+     * Non-blocking banner offering the OPTIONAL offline download. Online
+     * usage never depends on this — the app is already fully usable when
+     * this banner appears (S: online-first UX fix).
+     */
+    function showOfflineDownloadOffer() {
+        if (!PPP.downloader) return;
+        try {
+            if (sessionStorage.getItem('ppp_offline_offer_dismissed') === '1') return;
+        } catch (e) {}
+
+        var old = document.getElementById('offlineOffer');
+        if (old) old.remove();
+
+        var box = document.createElement('div');
+        box.id = 'offlineOffer';
+        box.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;' +
+            'margin:8px 0;padding:10px 12px;border:1px solid var(--saffron, #e8842c);' +
+            'border-radius:8px;background:color-mix(in srgb, var(--saffron, #e8842c) 12%, transparent);';
+
+        var text = document.createElement('span');
+        text.id = 'offlineOfferMsg';
+        text.style.cssText = 'flex:1;min-width:200px;';
+        text.textContent = i18n.t('offlineOfferText');
+        box.appendChild(text);
+
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.id = 'offlineOfferBtn';
+        btn.className = 'search-button';
+        btn.textContent = i18n.t('offlineOfferBtn');
+        btn.onclick = function () { startBackgroundInstall(); };
+        box.appendChild(btn);
+
+        var closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.setAttribute('aria-label', 'Close');
+        closeBtn.textContent = '×';
+        closeBtn.style.cssText = 'background:none;border:none;font-size:18px;cursor:pointer;line-height:1;padding:0 4px;';
+        closeBtn.onclick = function () {
+            box.style.display = 'none';
+            try { sessionStorage.setItem('ppp_offline_offer_dismissed', '1'); } catch (e) {}
+        };
+        box.appendChild(closeBtn);
+
+        var anchor = document.getElementById('resultsInfo');
+        var row = anchor ? anchor.closest('.results-header-row') : null;
+        var card = row ? row.parentNode : null;
+        if (row && card) {
+            card.insertBefore(box, row);
+        } else if (card) {
+            card.appendChild(box);
+        } else {
+            document.body.insertBefore(box, document.body.firstChild);
+        }
+    }
+
+    /**
+     * Optional, non-blocking offline install. Progress/completion render
+     * ONLY inside the #offlineOffer banner — the app itself stays fully
+     * usable (no click guard, no full-screen loading overlay).
+     */
+    function startBackgroundInstall() {
+        if (!PPP.downloader) return Promise.resolve();
+
+        var box = document.getElementById('offlineOffer');
+        if (!box) {
+            // Banner was dismissed/removed (or auto-install test hook) —
+            // create a minimal one so progress is still visible.
+            showOfflineDownloadOffer();
+            box = document.getElementById('offlineOffer');
+        }
+        if (box) {
+            box.style.display = 'flex';
+            box.innerHTML = '';
+            var msg = document.createElement('span');
+            msg.id = 'offlineOfferMsg';
+            msg.style.cssText = 'flex:1;min-width:200px;';
+            msg.textContent = i18n.t('offlineDownloading')
+                .replace('{loaded}', '0').replace('{total}', '?').replace('{pct}', '0');
+            box.appendChild(msg);
+        }
+
+        return PPP.downloader.fetchManifest().then(function (manifest) {
+            var totalMB = Math.round(manifest.totals.bytes / 1048576);
+            return PPP.downloader.firstInstall(function (p) {
+                var mb = Math.round(p.loadedBytes / 1048576);
+                var pct = p.totalBytes ? Math.round(p.loadedBytes / p.totalBytes * 100) : 0;
+                var m = document.getElementById('offlineOfferMsg');
+                if (m) {
+                    m.textContent = i18n.t('offlineDownloading')
+                        .replace('{loaded}', mb).replace('{total}', totalMB).replace('{pct}', pct);
+                }
+            }).then(function () {
+                PPP.offlineStore.requestPersist();
+                var b = document.getElementById('offlineOffer');
+                if (b) {
+                    b.innerHTML = '';
+                    var readyMsg = document.createElement('span');
+                    readyMsg.style.cssText = 'flex:1;min-width:200px;';
+                    readyMsg.textContent = i18n.t('offlineReady');
+                    b.appendChild(readyMsg);
+                    var reloadBtn = document.createElement('button');
+                    reloadBtn.type = 'button';
+                    reloadBtn.className = 'search-button';
+                    reloadBtn.textContent = i18n.t('offlineReloadBtn');
+                    reloadBtn.onclick = function () { location.reload(); };
+                    b.appendChild(reloadBtn);
+                }
+            });
+        }).catch(function (err) {
+            console.error('Background offline install failed:', err);
+            var b = document.getElementById('offlineOffer');
+            if (b) {
+                b.innerHTML = '';
+                var errMsg = document.createElement('span');
+                errMsg.style.cssText = 'flex:1;min-width:200px;';
+                errMsg.textContent = i18n.t('offlineOfferError');
+                b.appendChild(errMsg);
+                var retryBtn = document.createElement('button');
+                retryBtn.type = 'button';
+                retryBtn.className = 'search-button';
+                retryBtn.textContent = i18n.t('offlineOfferBtn');
+                retryBtn.onclick = function () { startBackgroundInstall(); };
+                b.appendChild(retryBtn);
+            }
         });
     }
 
@@ -3313,6 +3448,8 @@ PPP.app = (function () {
         copyShareLink: copyShareLink,
         buildShareUrl: buildShareUrl,
         toggleTheme: toggleTheme,
+        startBackgroundInstall: startBackgroundInstall,
+        showOfflineDownloadOffer: showOfflineDownloadOffer,
         openGuide: function () {
             var lang = localStorage.getItem('preferredLanguage') || 'en';
             window.open('guide/' + lang + '/index.html', '_blank');

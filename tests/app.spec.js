@@ -1312,3 +1312,62 @@ test.describe('CA Link Finder — Daily Health Check', () => {
   });
 
 });
+
+// ONLINE-FIRST UX: online must be the base experience — usable immediately,
+// with the (~196 MB) offline library download offered as an OPTIONAL banner
+// instead of a blocking "Required on first start" install. This describe
+// block overrides the file-wide ppp_auto_install=1 hook (see top of file)
+// so it exercises the REAL not-installed / no-auto-install startup path.
+test.describe('Online-first UX (no forced install)', () => {
+
+  test.beforeEach(async ({ page }) => {
+    // The outer test.beforeEach (top of file) already set ppp_auto_install=1
+    // via addInitScript; a later addInitScript call runs after it and wins,
+    // so this removes the flag for tests in this block only.
+    await page.addInitScript(() => {
+      try { localStorage.removeItem('ppp_auto_install'); } catch (e) {}
+    });
+  });
+
+  test('App is immediately usable online without waiting for offline install', async ({ page }) => {
+    await page.goto('./');
+
+    // The search field must NOT stay stuck on the "Loading… Required" state —
+    // it becomes enabled once the online (network) SQLite DB is ready, without
+    // any offline install having to complete first.
+    await waitForAppReady(page);
+
+    const input = page.locator('#searchTerm');
+    await expect(input).toBeEnabled();
+    const placeholder = await input.getAttribute('placeholder');
+    expect(placeholder).not.toMatch(/Loading/i);
+    expect(placeholder).not.toMatch(/Required/i);
+
+    // A real search works online, without any offline library installed.
+    await input.fill('krishna');
+    await page.click('button.search-button');
+    await page.waitForFunction(() => {
+      const info = document.getElementById('resultsInfo');
+      return info && info.textContent && info.textContent.trim().length > 0;
+    }, { timeout: 30000 });
+    const resultsText = await page.locator('#resultsInfo').textContent();
+    expect(resultsText.trim().length).toBeGreaterThan(0);
+  });
+
+  test('Optional offline download banner appears and is not blocking', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // App must already be fully usable while the banner is (or becomes) visible.
+    await expect(page.locator('#searchTerm')).toBeEnabled();
+
+    const offer = page.locator('#offlineOffer');
+    await expect(offer).toBeVisible({ timeout: 15000 });
+    await expect(offer.locator('#offlineOfferBtn')).toBeVisible();
+
+    // The banner must not intercept clicks elsewhere on the page — the
+    // search button must still be clickable.
+    await expect(page.locator('button.search-button').first()).toBeEnabled();
+  });
+
+});
