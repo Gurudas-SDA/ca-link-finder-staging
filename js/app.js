@@ -1427,15 +1427,15 @@ PPP.app = (function () {
         return null;
     }
 
-    // Batch-fetch title + raw EN Drive URL for every selected nr up front.
+    // Batch-fetch title + raw EN Drive URL + MP3 Drive URL for every selected nr up front.
     function _fetchZipMeta(nrs) {
         if (usingSqlite && db && db.queryMetaAsync) {
             var placeholders = nrs.map(function () { return '?'; }).join(',');
-            var sql = "SELECT nr, original_file_name, script_en_url FROM lectures WHERE nr IN (" + placeholders + ")";
+            var sql = "SELECT nr, original_file_name, script_en_url, dwnld_url FROM lectures WHERE nr IN (" + placeholders + ")";
             return db.queryMetaAsync(sql, nrs).then(function (rows) {
                 var map = {};
                 rows.forEach(function (r) {
-                    map[String(r.nr)] = { title: r.original_file_name || '', enUrl: r.script_en_url || '' };
+                    map[String(r.nr)] = { title: r.original_file_name || '', enUrl: r.script_en_url || '', dwnldUrl: r.dwnld_url || '' };
                 });
                 return map;
             }).catch(function () { return {}; });
@@ -1446,7 +1446,8 @@ PPP.app = (function () {
             var row = _findDbRowByNr(nr);
             if (row) m[String(nr)] = {
                 title: (row['Original file name'] || '').toString(),
-                enUrl: (row['Script_EN_url'] || '').toString()
+                enUrl: (row['Script_EN_url'] || '').toString(),
+                dwnldUrl: (row['Dwnld._url'] || '').toString()
             };
         });
         return Promise.resolve(m);
@@ -1457,6 +1458,24 @@ PPP.app = (function () {
     function _addOneToZip(zip, folder, nr, lang, meta, signal) {
         var title = (meta && meta.title ? meta.title : ('Nr_' + nr)).toString();
         var safeTitle = _sanitizeFilename(title);
+
+        // MP3 pick: fetch the lecture's audio from Drive (binary), not a transcript.
+        if (lang === 'mp3') {
+            var mp3Id = _driveIdFromUrl(meta && meta.dwnldUrl);
+            if (!mp3Id) return Promise.resolve('unavailable');
+            var mp3Key = (PPP.config && PPP.config.driveApiKey) || '';
+            var mp3Url = 'https://www.googleapis.com/drive/v3/files/' + mp3Id + '?alt=media&key=' + encodeURIComponent(mp3Key);
+            return fetch(mp3Url, { signal: signal }).then(function (rr) {
+                if (rr.status === 200 || rr.status === 206) {
+                    return rr.arrayBuffer().then(function (buf) {
+                        zip.file(folder + '/Nr_' + nr + '_' + safeTitle + '.mp3', buf, { binary: true });
+                        return true;
+                    });
+                }
+                return 'unavailable';
+            });
+        }
+
         // Sentence-search two-tier highlight: only non-empty when this ZIP was
         // triggered from an "In Transcripts" search result (see performSentenceSearch).
         var matchedSentences = _sentenceMatchesByNr[String(nr)] || [];
@@ -1527,6 +1546,13 @@ PPP.app = (function () {
         // Codex fix #3: warn before very large selections (memory / slowness).
         if (pairs.length > 100) {
             if (!window.confirm(i18n.t('zipLargeWarn').replace('{n}', pairs.length))) return Promise.resolve();
+        }
+
+        // MP3s are large binary files — warn separately (independent, lower
+        // threshold) before fetching more than a few of them into memory.
+        var mp3Count = pairs.filter(function (p) { return p.split('|')[1] === 'mp3'; }).length;
+        if (mp3Count > 5) {
+            if (!window.confirm(i18n.t('mp3ZipWarning').replace('{n}', mp3Count))) return Promise.resolve();
         }
 
         var input = document.getElementById('zipNameInput');
@@ -1688,6 +1714,10 @@ PPP.app = (function () {
             allResults = [];
             totalResults = 0;
             lastSearchTerm = '';
+            // Mode switch wiped the table — drop the stored sentence results
+            // too, so a later language switch restores the empty frame, not
+            // stale rows from a previous "In Text" search.
+            _sentenceLastRender = null;
             // Reset the transcript selection: clear picks, hide the button + panel.
             selectedNrs.clear();
             closeDownloadPanel();
@@ -3136,6 +3166,12 @@ PPP.app = (function () {
     // transcripts. Cleared/repopulated each time results are (re-)rendered.
     var _sentenceMatchesByNr = {};
     var _sentenceWords = [];
+    // Last rendered sentence-search results ({rows, term, totals}) — kept so
+    // a language switch in "In Text" mode can re-render the SAME results with
+    // freshly localized headers/summary instead of wiping the table (the old
+    // setLanguage() tail fell through to ui.renderEmptyTable() because
+    // sentence rows never live in allResults). null = nothing to restore.
+    var _sentenceLastRender = null;
 
     // Extract the flat, diacritic-folded, whole-word list a search matched on
     // (mirrors the word-splitting rule in search.js buildTranscriptSQL).
@@ -3159,6 +3195,7 @@ PPP.app = (function () {
             document.getElementById('timer').textContent = '';
             _sentenceMatchesByNr = {};
             _sentenceWords = [];
+            _sentenceLastRender = null;
             ui.renderSentenceResults([], lastSearchTerm, { total: 0, lectures: 0, shown: 0 }, _sentenceWords);
             return;
         }
@@ -3189,7 +3226,8 @@ PPP.app = (function () {
                         _sentenceMatchesByNr[key].push(r.sentence || '');
                     });
                     _sentenceWords = _extractSentenceSearchWords(parsed);
-                    ui.renderSentenceResults(rows, lastSearchTerm, { total: n, lectures: lectures, shown: rows.length }, _sentenceWords);
+                    _sentenceLastRender = { rows: rows, term: lastSearchTerm, totals: { total: n, lectures: lectures, shown: rows.length } };
+                    ui.renderSentenceResults(rows, lastSearchTerm, _sentenceLastRender.totals, _sentenceWords);
                 });
             });
         }).catch(function (err) {
@@ -3371,8 +3409,21 @@ PPP.app = (function () {
         updateSearchModePlaceholder();
         localStorage.setItem('preferredLanguage', lang);
         updateFavoritesCount();
-        if (allResults.length > 0) displayResults();
-        else ui.renderEmptyTable();
+        if (searchMode === 'sentences') {
+            // "In Text" mode: re-render the LAST sentence results (headers +
+            // summary line come out in the new language) instead of wiping
+            // the table — sentence rows never live in allResults, so the
+            // generic branch below used to blank them on language switch.
+            if (_sentenceLastRender) {
+                ui.renderSentenceResults(_sentenceLastRender.rows, _sentenceLastRender.term, _sentenceLastRender.totals, _sentenceWords);
+            } else {
+                ui.renderEmptySentenceTable();
+            }
+        } else if (allResults.length > 0) {
+            displayResults();
+        } else {
+            ui.renderEmptyTable();
+        }
     }
 
     // ===== HELP MODAL =====

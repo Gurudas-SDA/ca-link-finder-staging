@@ -1275,6 +1275,15 @@ body.dark #resultsTable.sentence-mode thead th {
     color: #f0dfa8;
     border-bottom: 2px solid var(--saffron);
 }
+/* Unified sentence-mode header reuses the metadata header block — its
+   "Transcripts & Translations" label is inline-styled dark blue, unreadable
+   on the olive/dark header, so recolor it here. */
+#resultsTable.sentence-mode thead .transcripts-block div[data-i18n="transcriptsAndTranslations"] {
+    color: #f7f0d8 !important;
+}
+body.dark #resultsTable.sentence-mode thead .transcripts-block div[data-i18n="transcriptsAndTranslations"] {
+    color: #f0dfa8 !important;
+}
 
 .empty-result-message {
     font-size: 13px;
@@ -1347,6 +1356,17 @@ th.transcripts-block {
     font-weight: 600;
     font-style: normal;
     font-size: 12px;
+}
+/* "In Text" mode: matched sentence shown under the file title (same
+   match-hint mechanism as essence/translated-title, but body-text tone so
+   the highlighted words stand out inside a readable sentence). */
+.match-hint.sentence-hit {
+    color: var(--text, #222);
+    font-style: normal;
+    font-size: 12px;
+}
+body.dark .match-hint.sentence-hit {
+    color: #ddd;
 }
 
 /* ===== PAGINATION ===== */

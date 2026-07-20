@@ -791,9 +791,9 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     // Word-prefix semantics: every rendered sentence contains a word that
     // STARTS WITH "rice" (e.g. "rice" or "rices"), and none contains the
     // substring-only twin "priceless"/"price" (where "rice" is not at the
-    // word start). Column 1 is the (new) multi-select checkbox cell, column
-    // 2 is Timestamp, column 3 is Sentence.
-    const sentences = await page.locator('#resultsTable tbody tr td:nth-child(3)').allTextContents();
+    // word start). Unified layout: the sentence renders as a .sentence-hit
+    // line under the file title inside the "File title / Sentence" column.
+    const sentences = await page.locator('#resultsTable tbody tr .match-hint.sentence-hit').allTextContents();
     expect(sentences.length).toBeGreaterThan(0);
     const wordPrefixRice = /(^|[^a-z])rice/i;
     for (const s of sentences) {
@@ -862,8 +862,8 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     const table = page.locator('#resultsTable');
     await expect(table).toHaveClass(/sentence-mode/);
     await expect(table).not.toHaveClass(/lecture-cards/);
-    // Localized "Sentence" column header (EN) — not the old hardcoded text.
-    await expect(table.locator('thead th').nth(2)).toHaveText('Sentence');
+    // Unified header: localized "File title / Sentence" column present (EN).
+    await expect(table.locator('thead')).toContainText('File title / Sentence');
     // Empty-state hint text, not the generic "enter search terms" message.
     await expect(page.locator('#resultsTable tbody')).toContainText('Type a word and press Search');
 
@@ -915,14 +915,13 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
 
-    // A checkbox appears in the first (reserved) cell of every result row —
-    // reusing the SAME .select-checkbox mechanism as the metadata table.
-    const boxes = page.locator('#resultsTable tbody tr td.sel-cell input.select-checkbox');
+    // Unified layout: EN transcript checkboxes render in the Script_EN
+    // column of every result row — the SAME .select-checkbox /
+    // _renderScriptChip mechanism as the metadata table (LV/RU/mp3
+    // checkboxes may also be present, so filter by data-lang).
+    const boxes = page.locator('#resultsTable tbody tr input.select-checkbox[data-lang="en"]');
     const n = await boxes.count();
     expect(n).toBeGreaterThan(0);
-    for (let i = 0; i < n; i++) {
-      await expect(boxes.nth(i)).toHaveAttribute('data-lang', 'en');
-    }
 
     // Persistent "Download selected" button starts disabled with no selection.
     const dlBtn = page.locator('#downloadSelectedBtn');
@@ -949,7 +948,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
 
-    const boxes = page.locator('#resultsTable tbody tr td.sel-cell input.select-checkbox');
+    const boxes = page.locator('#resultsTable tbody tr input.select-checkbox[data-lang="en"]');
     const count = await boxes.count();
     const nrs = [];
     for (let i = 0; i < count; i++) nrs.push(await boxes.nth(i).getAttribute('data-nr'));
@@ -974,6 +973,130 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     // Panel confirms: 1 transcript, 1 distinct lecture.
     await expect(page.locator('#selectCount')).toContainText('1 transcripts');
     await expect(page.locator('#selectCount')).toContainText('1 lectures');
+  });
+
+  test('36b. Sentence table uses the unified metadata header (Timestamp before "File title / Sentence", no Length) + LV/RU chips in rows', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+
+    // Main header row (2nd thead row — the 1st is the transparent spacer):
+    // star, share, Date, Type, Time, File title / Sentence, Country, Lang.,
+    // Links, Dwnld., Transcripts&Translations block. No Length, no Quality.
+    const headers = await page.locator('#resultsTable thead tr:nth-child(2) th').allTextContents();
+    const timeIdx = headers.indexOf('Time');
+    const fileIdx = headers.indexOf('File title / Sentence');
+    expect(timeIdx).toBeGreaterThan(-1);
+    expect(fileIdx).toBe(timeIdx + 1); // Timestamp column sits right before the title column
+    expect(headers).toContain('Date');
+    expect(headers).toContain('Dwnld.');
+    expect(headers).not.toContain('Length');
+    expect(headers).not.toContain('Quality');
+    // EN/LV/RU transcript sub-header row present (same block as In Titles).
+    await expect(page.locator('#resultsTable thead .transcript-lang')).toHaveText(['EN', 'LV', 'RU']);
+
+    // With results: rows are full metadata rows — LV/RU chips render whenever
+    // the lecture actually has those transcripts (same rule as In Titles).
+    await page.fill('#searchTerm', 'rice');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
+
+    // Sentence line renders under the title.
+    expect(await page.locator('#resultsTable tbody .match-hint.sentence-hit').count()).toBeGreaterThan(0);
+
+    // Cross-check chip presence against the metadata DB for the first row.
+    const chipCheck = await page.evaluate(() => {
+      const tr = document.querySelector('#resultsTable tbody tr');
+      const enBox = tr.querySelector('input.select-checkbox[data-lang="en"]');
+      const nr = enBox ? enBox.getAttribute('data-nr') : null;
+      const meta = nr && PPP.app.getDbRowByNr ? PPP.app.getDbRowByNr(nr) : null;
+      const avail = (v) => {
+        v = (v || '').toString().trim();
+        return v && v !== 'N/A' && v !== '0' &&
+          !['Not relevant', 'Neattiecas', 'Не относится'].includes(v);
+      };
+      return {
+        hasEnBox: !!enBox,
+        metaFound: !!meta,
+        lvExpected: meta ? avail(meta['Script_LV']) : null,
+        lvRendered: !!tr.querySelector('.script-chip[data-lang="lv"]'),
+        ruExpected: meta ? avail(meta['Script_RU']) : null,
+        ruRendered: !!tr.querySelector('.script-chip[data-lang="ru"]'),
+      };
+    });
+    expect(chipCheck.hasEnBox).toBe(true);
+    expect(chipCheck.metaFound).toBe(true);
+    // Duplicates also render a (non-selectable) chip, so rendered may exceed
+    // expected-available; but an AVAILABLE transcript must always render.
+    if (chipCheck.lvExpected) expect(chipCheck.lvRendered).toBe(true);
+    if (chipCheck.ruExpected) expect(chipCheck.ruRendered).toBe(true);
+  });
+
+  test('36c. Checking an MP3 checkbox (sentence table Dwnld. column) increases the "Download selected" count', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await page.fill('#searchTerm', 'rice');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
+
+    const mp3Boxes = page.locator('#resultsTable tbody tr input.select-checkbox[data-lang="mp3"]');
+    const n = await mp3Boxes.count();
+    test.skip(n === 0, 'No MP3-linked lecture in this result page — cannot exercise MP3 checkbox');
+
+    const dlBtn = page.locator('#downloadSelectedBtn');
+    await expect(dlBtn).toBeDisabled();
+
+    await mp3Boxes.nth(0).check();
+    await expect(dlBtn).toBeEnabled();
+    await expect(dlBtn).toContainText('(1)');
+  });
+
+  test('36d. Language switch in "In Text" mode keeps the sentence results, localizes the headers', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await page.fill('#searchTerm', 'rice');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
+
+    const rowsBefore = await page.locator('#resultsTable tbody tr').count();
+    expect(rowsBefore).toBeGreaterThan(0);
+
+    // Switch UI language to Russian — results must SURVIVE (bug: they used
+    // to be wiped by the generic metadata empty-table render in setLanguage),
+    // and headers/summary must re-render in the new language.
+    await page.click('.lang-btn[data-lang="ru"]');
+
+    const rowsAfter = await page.locator('#resultsTable tbody tr').count();
+    expect(rowsAfter).toBe(rowsBefore);
+    // Unified header now in Russian (sentColFileSentence).
+    await expect(page.locator('#resultsTable thead')).toContainText('Название файла / Предложение');
+    // Summary line is re-rendered localized too (RU sentenceResultsSummary).
+    await expect(page.locator('#resultsInfo strong')).toContainText('Найдено');
+
+    // Switch back to EN: results still present, header English again.
+    await page.click('.lang-btn[data-lang="en"]');
+    expect(await page.locator('#resultsTable tbody tr').count()).toBe(rowsBefore);
+    await expect(page.locator('#resultsTable thead')).toContainText('File title / Sentence');
   });
 
   test('37. Excel export — Script_EN URL cell is a clickable hyperlink', async ({ page }) => {

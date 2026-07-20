@@ -11,6 +11,11 @@ PPP.ui = (function () {
     var utils = PPP.utils;
 
     var columnHeaders = ['Date', 'Type', 'Original file name', 'Country', 'Lang.', 'Links', 'Dwnld.', 'Length', 'Script_EN', 'Script_LV', 'Script_RU'];
+    // "In Text" (sentence search) table — SAME column set/renderer as the
+    // metadata table, with exactly two differences (Rājan design, S-current):
+    // no Length column, and a Timestamp column immediately BEFORE the file
+    // name column (whose header reads "File title / Sentence" in this mode).
+    var sentenceColumnHeaders = ['Date', 'Type', 'Timestamp', 'Original file name', 'Country', 'Lang.', 'Links', 'Dwnld.', 'Script_EN', 'Script_LV', 'Script_RU'];
 
     /**
      * Build a per-language selection checkbox. ALWAYS rendered next to each
@@ -34,6 +39,56 @@ PPP.ui = (function () {
     }
 
     /**
+     * Shared script-transcript chip renderer (checkbox + EN/Raw/Duplicate
+     * link). Used by BOTH the metadata table's Script_EN/LV/RU cells
+     * (non-verse mode) and the sentence-search table's Transkripts cell, so
+     * the chip markup/behavior/selection-key semantics never drift apart
+     * between the two tables.
+     *
+     * langLabel precedence: duplicate label > 'Raw' > defaultLangLabel.
+     * Duplicates are never selectable (no checkbox).
+     */
+    function _renderScriptChip(td, nr, langCode, defaultLangLabel, isRaw, isDuplicate, dupLabel, driveUrl) {
+        var langLabel = isDuplicate ? dupLabel : (isRaw ? 'Raw' : defaultLangLabel);
+        var viewBtn = document.createElement('a');
+        viewBtn.href = '#';
+        viewBtn.textContent = langLabel;
+        // S94: class only used by mobile card CSS (desktop keeps inline styles)
+        viewBtn.className = 'script-chip ' + (isDuplicate ? 'script-dup' : (isRaw ? 'script-raw' : 'script-orig'));
+        viewBtn.title = isRaw ? 'Open raw (auto) transcript' : 'Open transcript';
+        if (isDuplicate) {
+            // Duplicate label: blue, 11px, same as Essence
+            viewBtn.style.cssText = 'color:#1a4fa8;font-weight:600;font-size:11px;text-decoration:underline;cursor:pointer;';
+        } else if (isRaw) {
+            // Raw (auto) transcript: muted gray so users see it is not polished
+            viewBtn.style.cssText = 'color:#888;font-weight:600;text-decoration:underline;cursor:pointer;';
+        } else {
+            viewBtn.style.cssText = 'color:var(--saffron);font-weight:700;text-decoration:underline;cursor:pointer;';
+        }
+        viewBtn.setAttribute('data-nr', nr);
+        viewBtn.setAttribute('data-lang', langCode);
+        viewBtn.setAttribute('data-drive-url', driveUrl || '');
+        viewBtn.onclick = function (e) {
+            e.preventDefault();
+            var el = e.currentTarget;
+            var elNr = el.getAttribute('data-nr');
+            var elLang = el.getAttribute('data-lang');
+            var dUrl = el.getAttribute('data-drive-url') || undefined;
+            if (elNr) {
+                PPP.app.openHtmlTranscriptViewer(elNr, elLang, null, null, dUrl);
+            } else if (dUrl) {
+                window.open(dUrl, '_blank');
+            }
+        };
+        // Per-language checkbox ALWAYS rendered before selectable chips
+        // (premium or raw). Duplicates stay non-selectable.
+        if (!isDuplicate) {
+            td.appendChild(_makeSelCheckbox(nr, langCode, langLabel));
+        }
+        td.appendChild(viewBtn);
+    }
+
+    /**
      * Get localized column header name.
      */
     function getColumnHeader(colName) {
@@ -47,8 +102,11 @@ PPP.ui = (function () {
 
     /**
      * Build the multi-row table header (same structure as original).
+     * mode 'sentences' swaps in the sentence-search column set (Timestamp
+     * instead of Length, "File title / Sentence" header on the name column).
      */
-    function buildHeader(thead, totalCount) {
+    function buildHeader(thead, totalCount, mode) {
+        var cols = (mode === 'sentences') ? sentenceColumnHeaders : columnHeaders;
         var row0 = thead.insertRow();
         // Extra spacer for star + share columns
         var starSpacer = document.createElement('th');
@@ -84,11 +142,11 @@ PPP.ui = (function () {
         shareTh.style.fontSize = '12px';
         row1.appendChild(shareTh);
 
-        for (var idx = 0; idx < columnHeaders.length; idx++) {
-            var h = columnHeaders[idx];
-            if (h === 'Length') {
+        for (var idx = 0; idx < cols.length; idx++) {
+            var h = cols[idx];
+            if (h === 'Length' || h === 'Timestamp') {
                 var th = document.createElement('th');
-                th.textContent = getColumnHeader(h);
+                th.textContent = (h === 'Timestamp') ? t('sentColTime') : getColumnHeader(h);
                 th.rowSpan = 3;
                 row1.appendChild(th);
                 continue;
@@ -151,7 +209,9 @@ PPP.ui = (function () {
             }
             if (h === 'Script_LV' || h === 'Script_RU') continue;
             var th2 = document.createElement('th');
-            th2.textContent = getColumnHeader(h);
+            th2.textContent = (mode === 'sentences' && h === 'Original file name')
+                ? t('sentColFileSentence')
+                : getColumnHeader(h);
             th2.rowSpan = 3;
             row1.appendChild(th2);
         }
@@ -194,7 +254,21 @@ PPP.ui = (function () {
         var searchTerms = searchTermStr ? searchTermStr.split(';') : [];
 
         for (var i = startIndex; i < endIndex && i < rows.length; i++) {
-            var row = rows[i];
+            _renderLectureRow(tbody, rows[i], searchTerms, columnHeaders, null);
+        }
+    }
+
+    /**
+     * Render ONE lecture row (star + share + data cells) into tbody.
+     * Shared by the metadata table (cols = columnHeaders, sentCtx = null) and
+     * the sentence-search table (cols = sentenceColumnHeaders, sentCtx =
+     * { ts, sentenceHtml }) so the two tables render identically.
+     * sentCtx.ts fills the Timestamp column; sentCtx.sentenceHtml (already
+     * highlighted + escaped) is appended under the file title, using the same
+     * match-hint visual mechanism as translated titles / essence lines.
+     */
+    function _renderLectureRow(tbody, row, searchTerms, cols, sentCtx) {
+        {
             var tr = tbody.insertRow();
 
             // Star / favorite cell
@@ -242,10 +316,16 @@ PPP.ui = (function () {
                 shareTd.appendChild(shareBtn);
             }
 
-            for (var ci = 0; ci < columnHeaders.length; ci++) {
-                var col = columnHeaders[ci];
+            for (var ci = 0; ci < cols.length; ci++) {
+                var col = cols[ci];
                 var td = tr.insertCell();
                 var val = row[col] || '';
+
+                if (col === 'Timestamp') {
+                    // Sentence-mode only: the matched sentence's time position.
+                    td.textContent = (sentCtx && sentCtx.ts) ? sentCtx.ts : '';
+                    continue;
+                }
 
                 if (col === 'Links' || col === 'Dwnld.' || col === 'Script_EN' || col === 'Script_LV' || col === 'Script_RU') {
                     // For verse search results: all script columns get auto-scroll links
@@ -324,47 +404,10 @@ PPP.ui = (function () {
                             var langCode = defaultLangLabel.toLowerCase();
                             // If the cell value is a duplicate label, show it; otherwise show EN/LV/RU
                             var DUP_LABELS = { 'Duplicate': 1, 'Dublikāts': 1, 'Дубликат': 1, 'Дубикат': 1 };
-                            cellTrim = cellTrim;
                             var isDuplicate = !!DUP_LABELS[cellTrim];
                             var isRaw = (cellTrim === 'Raw');
-                            var langLabel = isDuplicate ? cellTrim : (isRaw ? 'Raw' : defaultLangLabel);
                             var lectNr = (row['Nr.'] || '').toString().trim();
-                            var viewBtn = document.createElement('a');
-                            viewBtn.href = '#';
-                            viewBtn.textContent = langLabel;
-                            // S94: class only used by mobile card CSS (desktop keeps inline styles)
-                            viewBtn.className = 'script-chip ' + (isDuplicate ? 'script-dup' : (isRaw ? 'script-raw' : 'script-orig'));
-                            viewBtn.title = isRaw ? 'Open raw (auto) transcript' : 'Open transcript';
-                            if (isDuplicate) {
-                                // Duplicate label: blue, 11px, same as Essence
-                                viewBtn.style.cssText = 'color:#1a4fa8;font-weight:600;font-size:11px;text-decoration:underline;cursor:pointer;';
-                            } else if (isRaw) {
-                                // Raw (auto) transcript: muted gray so users see it is not polished
-                                viewBtn.style.cssText = 'color:#888;font-weight:600;text-decoration:underline;cursor:pointer;';
-                            } else {
-                                viewBtn.style.cssText = 'color:var(--saffron);font-weight:700;text-decoration:underline;cursor:pointer;';
-                            }
-                            viewBtn.setAttribute('data-nr', lectNr);
-                            viewBtn.setAttribute('data-lang', langCode);
-                            viewBtn.setAttribute('data-drive-url', scriptDriveUrl || '');
-                            viewBtn.onclick = function (e) {
-                                e.preventDefault();
-                                var el = e.currentTarget;
-                                var nr = el.getAttribute('data-nr');
-                                var lang = el.getAttribute('data-lang');
-                                var dUrl = el.getAttribute('data-drive-url') || undefined;
-                                if (nr) {
-                                    PPP.app.openHtmlTranscriptViewer(nr, lang, null, null, dUrl);
-                                } else if (dUrl) {
-                                    window.open(dUrl, '_blank');
-                                }
-                            };
-                            // Per-language checkbox ALWAYS rendered before selectable
-                            // chips (premium or raw). Duplicates stay non-selectable.
-                            if (!isDuplicate) {
-                                td.appendChild(_makeSelCheckbox(lectNr, langCode, langLabel));
-                            }
-                            td.appendChild(viewBtn);
+                            _renderScriptChip(td, lectNr, langCode, defaultLangLabel, isRaw, isDuplicate, cellTrim, scriptDriveUrl);
                             } // end else (not-relevant check)
                         }
                     } else {
@@ -374,6 +417,9 @@ PPP.ui = (function () {
                         if (url && !url.startsWith('http')) url = null;
                         var label = col === 'Dwnld.' ? 'Mp3' : (val || 'Link');
                         if (url) {
+                            if (col === 'Dwnld.' && nr) {
+                                td.appendChild(_makeSelCheckbox(nr, 'mp3', 'Mp3'));
+                            }
                             var a = document.createElement('a');
                             a.href = url;
                             a.textContent = label;
@@ -432,6 +478,15 @@ PPP.ui = (function () {
                         essSpan.textContent = prefix + essenceText;
                         td.appendChild(essSpan);
                     }
+                    // Sentence-mode: the matched sentence (pre-highlighted,
+                    // pre-escaped HTML) under the title — same match-hint
+                    // visual mechanism as translated titles / essence.
+                    if (sentCtx && sentCtx.sentenceHtml) {
+                        var sentSpan = document.createElement('span');
+                        sentSpan.className = 'match-hint sentence-hit';
+                        sentSpan.innerHTML = sentCtx.sentenceHtml;
+                        td.appendChild(sentSpan);
+                    }
                 } else {
                     td.innerHTML = highlightSearchTerms(val, searchTerms);
                 }
@@ -440,52 +495,43 @@ PPP.ui = (function () {
     }
 
     /**
-     * Build the sentence-mode <thead> markup (shared by the empty frame and
-     * the populated results render, so the header — and its "different
-     * environment" styling via the sentence-mode class — never lags behind
-     * what's actually in the table).
-     */
-    function _sentenceTheadHtml() {
-        return '<thead><tr>' +
-            '<th></th>' +
-            '<th>' + utils.escapeHtml(t('sentColTime')) + '</th>' +
-            '<th>' + utils.escapeHtml(t('sentColSentence')) + '</th>' +
-            '<th>' + utils.escapeHtml(t('sentColTier')) + '</th>' +
-            '<th>' + utils.escapeHtml(t('sentColLecture')) + '</th>' +
-            '<th>' + utils.escapeHtml(t('colDwnld')) + '</th>' +
-            '<th>' + utils.escapeHtml(t('sentColScript')) + '</th>' +
-            '</tr></thead>';
-    }
-
-    /**
      * Render the empty sentence-mode frame — shown IMMEDIATELY when the user
      * switches to "In Text" mode, before any search has run, so the results
      * area changes look (localized headers + distinct header tone) the
      * instant the mode button is pressed rather than only after a search.
+     * Uses the SAME multi-row header as the metadata table (buildHeader with
+     * mode 'sentences') — the unified full column set.
      */
     function renderEmptySentenceTable() {
         var table = document.getElementById('resultsTable');
+        table.innerHTML = '';
         table.classList.remove('lecture-cards');
         table.classList.add('sentence-mode');
-        var html = _sentenceTheadHtml() + '<tbody>' +
-            '<tr><td colspan="7" class="empty-result-message">' + utils.escapeHtml(t('sentEmptyHint')) + '</td></tr>' +
-            '</tbody>';
-        table.innerHTML = html;
+        var thead = table.createTHead();
+        buildHeader(thead, undefined, 'sentences');
+        var tbody = table.createTBody();
+        var r = tbody.insertRow();
+        var c = r.insertCell();
+        c.colSpan = sentenceColumnHeaders.length + 2;
+        c.className = 'empty-result-message';
+        c.textContent = t('sentEmptyHint');
     }
 
     /**
-     * Render advanced transcript (sentence) search results.
+     * Render advanced transcript (sentence) search results — UNIFIED layout
+     * (Rājan design pivot): every sentence hit renders as a FULL metadata
+     * lecture row (star, share, Date, Type, Country, Lang., Links, Dwnld.
+     * incl. mp3 checkbox, EN/LV/RU transcript chips incl. checkboxes) via the
+     * shared _renderLectureRow, with exactly two differences from "In Titles":
+     * a Timestamp column replaces Length (placed just before the file title),
+     * and the matched sentence (highlighted) shows UNDER the file title in
+     * the "File title / Sentence" column (match-hint mechanism). One lecture
+     * can appear in several rows — one per sentence hit.
      * rows: [{ ts, nr, seq, sentence, name, url, tier, date }]
      * totals: { total, lectures, shown }
-     * Columns: [select] | Time | Sentence | Quality(Tier) | Lecture name | Dwnld. | Script_EN.
-     * (Lecture nr stays only in data-nr / the ZIP selection key space — not
-     * its own visible column. Full Script_EN URL text is Excel-export only,
-     * see PPP.app.exportSentencesExcel — the table shows a compact chip like
-     * the metadata table does.)
      */
     function renderSentenceResults(rows, searchTermStr, totals, foldedWords) {
         totals = totals || {};
-        var searchTerms = searchTermStr ? searchTermStr.split(';').map(function (s) { return s.trim(); }).filter(Boolean) : [];
         foldedWords = foldedWords || [];
 
         // Summary line + Download Excel button above the table.
@@ -505,113 +551,47 @@ PPP.ui = (function () {
         }
 
         var table = document.getElementById('resultsTable');
-        table.classList.remove('lecture-cards'); // not the 13-col lecture table
+        table.innerHTML = '';
+        // sentence-mode (olive header) instead of lecture-cards: the mobile
+        // card CSS is tuned for the "In Titles" result set; sentence hits
+        // keep the classic table layout like citations do.
+        table.classList.remove('lecture-cards');
         table.classList.add('sentence-mode');
-
-        var html = _sentenceTheadHtml() + '<tbody>';
+        var thead = table.createTHead();
+        buildHeader(thead, undefined, 'sentences');
+        var tbody = table.createTBody();
 
         if (!rows || rows.length === 0) {
-            html += '<tr><td colspan="7" class="empty-result-message">' + t('noTranscriptResults') + '</td></tr>';
+            var r0 = tbody.insertRow();
+            var c0 = r0.insertCell();
+            c0.colSpan = sentenceColumnHeaders.length + 2;
+            c0.className = 'empty-result-message';
+            c0.textContent = t('noTranscriptResults');
         } else {
             rows.forEach(function (row) {
-                var ts = utils.escapeHtml(row.ts || '');
-                var sentence = highlightSentencePrefix(row.sentence || '', foldedWords);
-                var tier = utils.escapeHtml(row.tier || '');
-                var nr = row.nr;
-                var nameText = row.name || ('Nr.' + nr);
-
-                var nameCell;
-                if (nr != null && nr !== '') {
-                    var nrInt = parseInt(nr, 10);
-                    var openCall = "PPP.app.openHtmlTranscriptViewer(" + nrInt + ", 'en'); return false;";
-                    nameCell = '<a href="#" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;" ' +
-                        'onclick="' + openCall + '">' + utils.escapeHtml(nameText) + '</a>';
-                } else {
-                    nameCell = utils.escapeHtml(nameText);
+                var nr = (row.nr != null) ? String(row.nr) : '';
+                // Full lecture metadata row from the already-loaded meta DB.
+                // If it is missing (should not happen — sentences DB is built
+                // from the same lectures), fall back to a minimal stub built
+                // from the sentences DB fields so the row still renders
+                // (title + EN chip + timestamp; other cells stay empty).
+                var metaRow = (nr && PPP.app && PPP.app.getDbRowByNr) ? PPP.app.getDbRowByNr(nr) : null;
+                if (!metaRow) {
+                    metaRow = {
+                        'Nr.': nr,
+                        'Original file name': row.name || ('Nr.' + nr),
+                        'Script_EN': ((row.tier || '').toString().toLowerCase() === 'raw') ? 'Raw' : 'EN',
+                        'Script_EN_url': row.url || ''
+                    };
                 }
-
-                // data-nr on the row lets us drop in the multi-select checkbox
-                // (below) — same "<nr>|en" selection key space as the metadata
-                // table's checkboxes and the existing ZIP flow. data-en-url
-                // carries the Script_EN Drive URL for the compact chip cell
-                // (built below, needs a closure so it can't go in the HTML
-                // string like the checkbox onchange handler).
-                html += '<tr data-nr="' + utils.escapeHtml(String(nr != null ? nr : '')) +
-                    '" data-en-url="' + utils.escapeHtml(encodeURIComponent(row.url || '')) + '">' +
-                    '<td class="sel-cell"></td>' +
-                    '<td>' + ts + '</td>' +
-                    '<td>' + sentence + '</td>' +
-                    '<td>' + tier + '</td>' +
-                    '<td>' + nameCell + '</td>' +
-                    '<td class="dwnld-cell"></td>' +
-                    '<td class="script-cell"></td>' +
-                    '</tr>';
-            });
-        }
-        html += '</tbody>';
-        table.innerHTML = html;
-
-        // Per-row selection checkbox + Dwnld/Script_EN chips — built as DOM
-        // nodes (innerHTML can't host the closures these need) and dropped
-        // into the empty cells reserved above. English-only (sentences DB is EN).
-        if (rows && rows.length > 0) {
-            var trs = table.querySelectorAll('tbody tr[data-nr]');
-            trs.forEach(function (tr) {
-                var nrAttr = tr.getAttribute('data-nr');
-                if (!nrAttr) return;
-                var cell = tr.querySelector('td.sel-cell');
-                if (cell) cell.appendChild(_makeSelCheckbox(nrAttr, 'en', 'EN'));
-
-                // Dwnld. (mp3) — same lookup/rendering rule the metadata table
-                // uses (label "Mp3", url from the lectures row), sourced from
-                // the already-loaded metadata array via PPP.app.getDbRowByNr.
-                var dwnldCell = tr.querySelector('td.dwnld-cell');
-                if (dwnldCell && PPP.app && PPP.app.getDbRowByNr) {
-                    var dbRow = PPP.app.getDbRowByNr(nrAttr);
-                    if (dbRow) {
-                        var dVal = dbRow['Dwnld.'] || '';
-                        var dUrl = dbRow['Dwnld._url'] || utils.extractUrl(dVal);
-                        if (dUrl && dUrl.toString().indexOf('http') !== 0) dUrl = null;
-                        if (dUrl) {
-                            var dA = document.createElement('a');
-                            dA.href = dUrl;
-                            dA.textContent = 'Mp3';
-                            dA.className = 'ext-chip';
-                            dA.target = '_blank';
-                            dA.rel = 'noopener';
-                            dA.onclick = function (e) {
-                                if (window.PPP && PPP.net && !PPP.net.online) {
-                                    e.preventDefault();
-                                    toast(t('requiresInternet'));
-                                }
-                            };
-                            dwnldCell.appendChild(dA);
-                        } else if (dVal && dVal !== 'N/A' && dVal !== '0') {
-                            dwnldCell.textContent = 'Mp3';
-                        }
-                    }
-                }
-
-                // Script_EN — compact chip like the metadata table's transcript
-                // chips (opens the in-app HTML transcript viewer), not the raw URL.
-                var scriptCell = tr.querySelector('td.script-cell');
-                if (scriptCell) {
-                    var enUrl = '';
-                    try { enUrl = decodeURIComponent(tr.getAttribute('data-en-url') || ''); } catch (e) { enUrl = ''; }
-                    if (enUrl) {
-                        var sA = document.createElement('a');
-                        sA.href = '#';
-                        sA.textContent = 'EN';
-                        sA.className = 'script-chip script-orig';
-                        sA.style.cssText = 'color:var(--saffron);font-weight:700;text-decoration:underline;cursor:pointer;';
-                        sA.title = 'Open transcript';
-                        sA.onclick = function (e) {
-                            e.preventDefault();
-                            PPP.app.openHtmlTranscriptViewer(nrAttr, 'en', null, null, enUrl);
-                        };
-                        scriptCell.appendChild(sA);
-                    }
-                }
+                var sentCtx = {
+                    ts: row.ts || '',
+                    sentenceHtml: highlightSentencePrefix(row.sentence || '', foldedWords)
+                };
+                // searchTerms deliberately [] — highlighting belongs to the
+                // sentence line, not the title (the sentence words need not
+                // appear in the title at all).
+                _renderLectureRow(tbody, metaRow, [], sentenceColumnHeaders, sentCtx);
             });
         }
 
