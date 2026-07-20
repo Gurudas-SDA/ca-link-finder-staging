@@ -520,6 +520,9 @@ PPP.app = (function () {
                 dataReady: true,
                 shellReady: !!(navigator.serviceWorker && navigator.serviceWorker.controller)
             };
+            // Installed path: show the offline status button in its ✓ state
+            // (the old code never showed the button here — Rājan UX fix).
+            maybeShowOfflineWorkButton(true);
             startExtrasLoad(); // reads core:extras from IDB (ui.js)
         });
     }
@@ -620,20 +623,38 @@ PPP.app = (function () {
         });
     }
 
+    // Whether the offline library is installed (localManifest present /
+    // install finished this session) — drives the #offlineWorkBtn state:
+    // not installed = download offer, installed = "Offline ✓" status button.
+    var _offlineInstalled = false;
+
     /**
      * Reveal the small "Work offline" button (next to "How to use search?")
-     * once the ONLINE database is ready. Never shown while the DB is still
-     * loading — that was the old bug (big banner popping up mid-"Loading
-     * database…"). No-op if the offline install feature isn't available, or
-     * the user already dismissed it earlier this session.
+     * once the database is ready — on BOTH paths: legacy/online load (offer
+     * state) and openFromIdb (installed state, `installed` flag true). Never
+     * shown while the DB is still loading — that was the old bug (big banner
+     * popping up mid-"Loading database…"). No-op if the offline install
+     * feature isn't available. The session "dismissed" flag only suppresses
+     * the OFFER state; the installed ✓ status button always shows so the
+     * user can see offline already works for them.
      */
-    function maybeShowOfflineWorkButton() {
+    function maybeShowOfflineWorkButton(installed) {
         if (!PPP.downloader) return;
+        if (installed) _offlineInstalled = true;
+        var btn = document.getElementById('offlineWorkBtn');
+        if (!btn) return;
+        if (_offlineInstalled) {
+            // Installed state: label with ✓; swap the data-i18n key so a
+            // later language switch keeps the installed label.
+            btn.setAttribute('data-i18n', 'offlineReadyBtn');
+            btn.textContent = i18n.t('offlineReadyBtn');
+            btn.style.display = '';
+            return;
+        }
         try {
             if (sessionStorage.getItem('ppp_offline_offer_dismissed') === '1') return;
         } catch (e) {}
-        var btn = document.getElementById('offlineWorkBtn');
-        if (btn) btn.style.display = '';
+        btn.style.display = '';
     }
 
     /**
@@ -670,16 +691,21 @@ PPP.app = (function () {
         panel.innerHTML = '';
 
         var text = document.createElement('span');
-        text.textContent = i18n.t('offlineInfoText').replace('{size}', '196').replace('{min}', '20');
+        text.textContent = _offlineInstalled
+            ? i18n.t('offlineReadyText')
+            : i18n.t('offlineInfoText').replace('{size}', '196').replace('{min}', '20');
         panel.appendChild(text);
 
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.id = 'offlineOfferBtn';
-        btn.className = 'search-button';
-        btn.textContent = i18n.t('offlineOfferBtn');
-        btn.onclick = function () { startBackgroundInstall(); };
-        panel.appendChild(btn);
+        if (!_offlineInstalled) {
+            // Offer state only — installed state has nothing to download.
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.id = 'offlineOfferBtn';
+            btn.className = 'search-button';
+            btn.textContent = i18n.t('offlineOfferBtn');
+            btn.onclick = function () { startBackgroundInstall(); };
+            panel.appendChild(btn);
+        }
 
         var closeBtn = document.createElement('button');
         closeBtn.type = 'button';
@@ -688,7 +714,12 @@ PPP.app = (function () {
         closeBtn.style.cssText = 'background:none;border:none;font-size:18px;cursor:pointer;line-height:1;padding:0 4px;';
         closeBtn.onclick = function () {
             closeOfflineInfoPanel();
-            try { sessionStorage.setItem('ppp_offline_offer_dismissed', '1'); } catch (e) {}
+            // Offer state: remember the dismissal for this session (hides the
+            // button). Installed state: only close the panel — the ✓ status
+            // button must stay visible.
+            if (!_offlineInstalled) {
+                try { sessionStorage.setItem('ppp_offline_offer_dismissed', '1'); } catch (e) {}
+            }
         };
         panel.appendChild(closeBtn);
     }
@@ -726,6 +757,9 @@ PPP.app = (function () {
                 }
             }).then(function () {
                 PPP.offlineStore.requestPersist();
+                // Install finished this session — flip the status button to
+                // its installed ✓ state right away.
+                maybeShowOfflineWorkButton(true);
                 var b = document.getElementById('offlineProgress');
                 if (b) {
                     b.innerHTML = '';
@@ -1371,9 +1405,28 @@ PPP.app = (function () {
         var summaryRow = document.getElementById('zipSummaryRow');
         if (summaryRow) { summaryRow.style.display = 'none'; summaryRow.textContent = ''; }
         var countEl = document.getElementById('selectCount');
-        if (countEl) countEl.textContent = i18n.t('nSelectedPairs')
-            .replace('{t}', count)
-            .replace('{l}', _distinctNrCount());
+        if (countEl) {
+            // Split the selection by key space: "<nr>|mp3" picks are MP3
+            // audio, everything else is a transcript — never count MP3s as
+            // transcripts in the panel headline (Rājan fix). Lecture count
+            // stays distinct-nr across the WHOLE selection.
+            var mp3Sel = 0;
+            selectedNrs.forEach(function (k) { if (k.split('|')[1] === 'mp3') mp3Sel++; });
+            var trSel = count - mp3Sel;
+            var lect = _distinctNrCount();
+            var summaryTxt;
+            if (trSel > 0 && mp3Sel > 0) {
+                summaryTxt = i18n.t('zipPanelSummaryMixed')
+                    .replace('{t}', trSel).replace('{a}', mp3Sel).replace('{m}', lect);
+            } else if (mp3Sel > 0) {
+                summaryTxt = i18n.t('zipPanelSummaryMp3')
+                    .replace('{a}', mp3Sel).replace('{m}', lect);
+            } else {
+                summaryTxt = i18n.t('nSelectedPairs')
+                    .replace('{t}', trSel).replace('{l}', lect);
+            }
+            countEl.textContent = summaryTxt;
+        }
         var input = document.getElementById('zipNameInput');
         if (input) {
             input.placeholder = i18n.t('zipNamePlaceholder');

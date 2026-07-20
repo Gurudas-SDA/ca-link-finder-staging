@@ -864,6 +864,12 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await expect(table).not.toHaveClass(/lecture-cards/);
     // Unified header: localized "File title / Sentence" column present (EN).
     await expect(table.locator('thead')).toContainText('File title / Sentence');
+    // Active "In Text" button carries the sentence-mode olive identity
+    // (same tones as the sentence table header) in light mode.
+    const activeBg = await page.locator('.text-search-btn.active').evaluate(
+      (el) => getComputedStyle(el).backgroundImage || getComputedStyle(el).background
+    );
+    expect(activeBg).toContain('rgb(91, 107, 63)');
     // Empty-state hint text, not the generic "enter search terms" message.
     await expect(page.locator('#resultsTable tbody')).toContainText('Type a word and press Search');
 
@@ -1072,6 +1078,27 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await mp3Boxes.nth(0).check();
     await expect(dlBtn).toBeEnabled();
     await expect(dlBtn).toContainText('(1)');
+
+    // Panel headline, MP3-only selection: "{a} MP3 ({m} lectures)" — MP3
+    // picks must NOT be labeled as transcripts (Rājan fix).
+    await dlBtn.click();
+    const selCount = page.locator('#selectCount');
+    await expect(selCount).toHaveText('1 MP3 (1 lectures)');
+
+    // Add an EN transcript pick for the SAME lecture -> mixed form:
+    // "1 transcripts + 1 MP3 (1 lectures)". (Sentence rows are EN hits, so
+    // the lecture behind the MP3 box always has an EN chip checkbox too.)
+    const mp3Nr = await mp3Boxes.nth(0).getAttribute('data-nr');
+    const sameLectureEn = page.locator(
+      `#resultsTable tbody input.select-checkbox[data-lang="en"][data-nr="${mp3Nr}"]`
+    ).first();
+    await sameLectureEn.check();
+    await expect(dlBtn).toContainText('(2)');
+    await expect(selCount).toHaveText('1 transcripts + 1 MP3 (1 lectures)');
+
+    // Untick the MP3 -> pure-transcript form (existing nSelectedPairs text).
+    await mp3Boxes.nth(0).uncheck();
+    await expect(selCount).toHaveText('1 transcripts (1 lectures)');
   });
 
   test('36d. Language switch in "In Text" mode keeps the sentence results, localizes the headers', async ({ page }) => {

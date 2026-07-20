@@ -672,6 +672,20 @@ h1 {
     box-shadow: 0 3px 10px rgba(139,105,20,0.5), inset 0 0 0 2px rgba(255,255,255,0.5) !important;
     z-index: 1;
 }
+/* Rājan UX: the ACTIVE "In Text" button carries the sentence-mode identity —
+   the same olive gradient/tones as the .sentence-mode thead, so the pressed
+   mode button and the results header read as one environment. Placed after
+   (and same specificity as) the gold .active rule above so it wins. */
+.text-search-btn.active {
+    background: linear-gradient(180deg, #5b6b3f, #46552e) !important;
+    color: #f7f0d8 !important;
+    box-shadow: 0 3px 10px rgba(70,85,46,0.5), inset 0 0 0 2px rgba(247,240,216,0.35) !important;
+}
+body.dark .text-search-btn.active {
+    background: linear-gradient(180deg, #3d3018, #2f2512) !important;
+    color: #f0dfa8 !important;
+    box-shadow: 0 3px 10px rgba(47,37,18,0.6), inset 0 0 0 2px rgba(240,223,168,0.3) !important;
+}
 .search-row {
     display: flex;
     gap: 0 !important;

@@ -172,6 +172,42 @@ test.describe('PWA offline library', () => {
     await expectSearchWorks(page, 'krishna');
   });
 
+  test('P1b. Installed state: #offlineWorkBtn stays visible with ✓ label, panel shows installed text, dismiss keeps the button', async ({ page }) => {
+    // REAL install (auto hook) — loadDataLegacy runs first (offer state),
+    // then the background install commits localManifest.
+    await addAutoInstallHook(page);
+    await page.goto('./');
+    await waitForLocalManifestSet(page);
+
+    const workBtn = page.locator('#offlineWorkBtn');
+
+    // (a) Install finished THIS session -> button flips to the ✓ state
+    // without a reload (startBackgroundInstall completion hook).
+    await expect(workBtn).toBeVisible({ timeout: 20000 });
+    await expect(workBtn).toHaveText(/✓/, { timeout: 20000 });
+
+    // (b) Reload — the openFromIdb (installed) path must ALSO show the ✓
+    // button (the old bug: it never called maybeShowOfflineWorkButton).
+    await page.reload();
+    await waitForDataReady(page);
+    await expect(workBtn).toBeVisible({ timeout: 20000 });
+    await expect(workBtn).toHaveText(/✓/);
+
+    // (c) Click opens the SAME info panel in its installed variant: the
+    // offlineReadyText status message, NO Download button.
+    const infoPanel = page.locator('#offlineInfoPanel');
+    await expect(infoPanel).toBeHidden();
+    await workBtn.click();
+    await expect(infoPanel).toBeVisible();
+    await expect(infoPanel).toContainText('offline library is downloaded');
+    await expect(infoPanel.locator('#offlineOfferBtn')).toHaveCount(0);
+
+    // (d) Dismiss only closes the panel — the ✓ status button stays visible.
+    await infoPanel.locator('button[aria-label="Close"]').click();
+    await expect(infoPanel).toBeHidden();
+    await expect(workBtn).toBeVisible();
+  });
+
   test('P3. Full offline with SW: shell from cache, data from IDB, requiresInternet guard', async ({ page, context }) => {
     await addAutoInstallHook(page);
     await page.goto('./');
