@@ -1752,4 +1752,50 @@ test.describe('Online-first UX (no forced install)', () => {
     await expect(progress).toBeVisible();
   });
 
+  test('42. Checkbox-sync: toggling one row syncs every row of the same lecture (sentence search)', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.click('.lang-btn[data-lang="en"]');
+
+    // "In Text" (sentence) search returns MANY rows for the same lecture — one
+    // per matching sentence. Each row renders its own per-language checkbox for
+    // the SAME "<nr>|<lang>" selection pair, so every sibling checkbox must stay
+    // visually in sync with the shared selection Set (ui.js _syncSelCheckboxes).
+    await page.click('[data-mode="sentences"]');
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('.select-checkbox[data-lang="en"]', { timeout: 20000 });
+
+    // Find a lecture nr that appears in at least two EN sibling checkboxes.
+    const nr = await page.evaluate(() => {
+      const cnt = {};
+      document.querySelectorAll('.select-checkbox[data-lang="en"]').forEach(b => {
+        const n = b.getAttribute('data-nr'); cnt[n] = (cnt[n] || 0) + 1;
+      });
+      const best = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+      return (best && cnt[best] > 1) ? best : null;
+    });
+    expect(nr).not.toBeNull(); // sentence search must produce sibling rows
+
+    const sib = (lang) => `.select-checkbox[data-nr="${nr}"][data-lang="${lang}"]`;
+    const enCount = await page.locator(sib('en')).count();
+    expect(enCount).toBeGreaterThan(1);
+
+    // Tick ONE sibling → every EN sibling of that lecture becomes checked.
+    await page.locator(sib('en')).first().check();
+    expect(await page.locator(sib('en') + ':checked').count()).toBe(enCount);
+
+    // Independence: the SAME lecture's LV checkboxes must NOT be affected.
+    expect(await page.locator(sib('lv') + ':checked').count()).toBe(0);
+
+    // The selection is ONE lecture-language pair, not enCount of them — the
+    // "Download selected" button shows (1), and the MP3 cap is unaffected.
+    await expect(page.locator('#downloadSelectedBtn')).toContainText('(1)');
+
+    // Unticking a DIFFERENT sibling clears every EN sibling of that lecture.
+    await page.locator(sib('en')).last().uncheck();
+    expect(await page.locator(sib('en') + ':checked').count()).toBe(0);
+    await expect(page.locator('#downloadSelectedBtn')).toBeDisabled();
+  });
+
 });

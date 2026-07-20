@@ -33,12 +33,39 @@ PPP.ui = (function () {
         cb.onclick = function (e) { e.stopPropagation(); };
         cb.onchange = function (e) {
             var el = e.currentTarget;
-            var applied = PPP.app.toggleSelectPair(el.getAttribute('data-nr'), el.getAttribute('data-lang'), el.checked);
+            var nr = el.getAttribute('data-nr');
+            var lang = el.getAttribute('data-lang');
+            var applied = PPP.app.toggleSelectPair(nr, lang, el.checked);
             // Rejected (e.g. MP3_ZIP_MAX_COUNT hard cap) — snap the checkbox
             // back to unchecked; the selection Set was never touched.
-            if (applied === false) el.checked = false;
+            if (applied === false) { el.checked = false; return; }
+            // Checkbox-sync: sentence search can render several rows for the
+            // SAME lecture. The selection Set is keyed by "<nr>|<lang>", so the
+            // state is already shared — mirror the new checked state onto every
+            // sibling checkbox with the same nr+lang so all rows of that lecture
+            // stay visually in sync (otherwise siblings look stale until the
+            // next re-render).
+            _syncSelCheckboxes(nr, lang, el.checked, el);
         };
         return cb;
+    }
+
+    /**
+     * Mirror a (nr,lang) selection state onto every rendered select-checkbox
+     * that shares the same lecture nr + language, EXCEPT the one just toggled.
+     * Keeps duplicate rows (sentence search renders one row per matching
+     * sentence) visually consistent with the shared selection Set. DOM-only —
+     * never touches the selection Set itself.
+     */
+    function _syncSelCheckboxes(nr, lang, checked, exceptEl) {
+        var boxes = document.querySelectorAll('input.select-checkbox');
+        for (var i = 0; i < boxes.length; i++) {
+            var b = boxes[i];
+            if (b === exceptEl) continue;
+            if (b.getAttribute('data-nr') === nr && b.getAttribute('data-lang') === lang) {
+                b.checked = checked;
+            }
+        }
     }
 
     /**
