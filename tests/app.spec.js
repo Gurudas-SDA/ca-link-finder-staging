@@ -1003,12 +1003,22 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
     // With results: rows are full metadata rows — LV/RU chips render whenever
     // the lecture actually has those transcripts (same rule as In Titles).
+    // Pre-load extras so the essence data IS available when rows render —
+    // making the "no essence in sentence rows" assertion below meaningful
+    // (essence would otherwise be absent merely because extras lag).
+    await page.evaluate(() => PPP.ui.loadExtras());
+    await page.waitForFunction(() => PPP.ui.extrasReady(), { timeout: 30000 });
     await page.fill('#searchTerm', 'rice');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
 
     // Sentence line renders under the title.
     expect(await page.locator('#resultsTable tbody .match-hint.sentence-hit').count()).toBeGreaterThan(0);
+
+    // Rājan rule: sentence-hit rows show ONLY title + sentence — NO essence
+    // line and NO translated-title hint (those belong to "In Titles" mode).
+    expect(await page.locator('#resultsTable tbody .essence-hint').count()).toBe(0);
+    expect(await page.locator('#resultsTable tbody .translated-title').count()).toBe(0);
 
     // Cross-check chip presence against the metadata DB for the first row.
     const chipCheck = await page.evaluate(() => {

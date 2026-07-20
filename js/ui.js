@@ -458,30 +458,34 @@ PPP.ui = (function () {
                     } else {
                         td.innerHTML = highlightSearchTerms(val, searchTerms);
                     }
-                    // Tulkotais nosaukums zem oriģināla (tumši zils) — tikai non-EN valodās
-                    var langPref = localStorage.getItem('preferredLanguage') || 'en';
-                    if (langPref !== 'en' && nr) {
-                        var translatedTitle = getTitleTranslation(nr, langPref);
-                        if (translatedTitle) {
-                            var titleSpan = document.createElement('span');
-                            titleSpan.className = 'match-hint translated-title';
-                            titleSpan.textContent = translatedTitle;
-                            td.appendChild(titleSpan);
+                    if (!sentCtx) {
+                        // Metadata ("In Titles") mode only — Rājan rule: a
+                        // sentence-hit row shows ONLY title + matched sentence,
+                        // never the translated-title hint or the essence line.
+                        // Tulkotais nosaukums zem oriģināla (tumši zils) — tikai non-EN valodās
+                        var langPref = localStorage.getItem('preferredLanguage') || 'en';
+                        if (langPref !== 'en' && nr) {
+                            var translatedTitle = getTitleTranslation(nr, langPref);
+                            if (translatedTitle) {
+                                var titleSpan = document.createElement('span');
+                                titleSpan.className = 'match-hint translated-title';
+                                titleSpan.textContent = translatedTitle;
+                                td.appendChild(titleSpan);
+                            }
                         }
-                    }
-                    // Essence zem nosaukuma (sarkans, prefiksu lokalizē LV/RU)
-                    var essenceText = nr ? getEssence(nr) : '';
-                    if (essenceText) {
-                        var prefix = (langPref === 'lv') ? 'Būtība: ' : (langPref === 'ru') ? 'Суть: ' : 'Essence: ';
-                        var essSpan = document.createElement('span');
-                        essSpan.className = 'match-hint essence-hint';
-                        essSpan.textContent = prefix + essenceText;
-                        td.appendChild(essSpan);
-                    }
-                    // Sentence-mode: the matched sentence (pre-highlighted,
-                    // pre-escaped HTML) under the title — same match-hint
-                    // visual mechanism as translated titles / essence.
-                    if (sentCtx && sentCtx.sentenceHtml) {
+                        // Essence zem nosaukuma (sarkans, prefiksu lokalizē LV/RU)
+                        var essenceText = nr ? getEssence(nr) : '';
+                        if (essenceText) {
+                            var prefix = (langPref === 'lv') ? 'Būtība: ' : (langPref === 'ru') ? 'Суть: ' : 'Essence: ';
+                            var essSpan = document.createElement('span');
+                            essSpan.className = 'match-hint essence-hint';
+                            essSpan.textContent = prefix + essenceText;
+                            td.appendChild(essSpan);
+                        }
+                    } else if (sentCtx.sentenceHtml) {
+                        // Sentence-mode: the matched sentence (pre-highlighted,
+                        // pre-escaped HTML) under the title — the ONLY extra
+                        // line in this cell.
                         var sentSpan = document.createElement('span');
                         sentSpan.className = 'match-hint sentence-hit';
                         sentSpan.innerHTML = sentCtx.sentenceHtml;
