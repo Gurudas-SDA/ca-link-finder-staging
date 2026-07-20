@@ -511,3 +511,154 @@ test.describe('PWA offline library', () => {
   });
 
 });
+
+// ===========================================================================
+// Phase A — offline language selection (EN mandatory base; LV/RU opt-in).
+// The install lets the user choose which transcript languages to pre-download;
+// unselected LV/RU still open on demand online via the same-origin
+// transcripts/<lang>/<nr>.html fetch. These tests cover the picker UI,
+// selection-aware size + work-list filtering, delta filtering, and the online
+// open / graceful-offline behaviour for a non-downloaded language.
+// ===========================================================================
+
+/** Pick an LV transcript nr that exists on disk (prefer 10011, in meta). */
+function pickLvNr() {
+  const dir = path.join(__dirname, '..', 'transcripts', 'lv');
+  const files = fs.readdirSync(dir).filter(f => /^\d+\.html$/.test(f)).map(f => f.replace('.html', ''));
+  return files.indexOf('10011') !== -1 ? '10011' : files[0];
+}
+
+/** Install the EN-only base (LV/RU unchecked) via the auto/CI hooks, then
+ *  reload so the running session opens from IndexedDB. */
+async function installEnOnly(page) {
+  await page.addInitScript(() => {
+    try {
+      localStorage.setItem('ppp_auto_install', '1');
+      localStorage.setItem('ppp_install_langs', '[]'); // EN base only
+    } catch (e) {}
+  });
+  await page.goto('./');
+  await waitForLocalManifestSet(page, 110000);
+  await page.reload();
+  await waitForDataReady(page);
+}
+
+test.describe('PWA offline language selection (Phase A)', () => {
+  test.setTimeout(180000);
+
+  test('PL1. Install prompt shows 3 language checkboxes; EN checked+disabled; size grows with selection', async ({ page }) => {
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.app && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported());
+
+    // Drive the first-install confirmation prompt directly.
+    await page.evaluate(() => PPP.app.startFirstInstallFlow());
+    await page.waitForSelector('#installLangSelect input[data-lang="en"]', { timeout: 20000 });
+
+    const boxes = await page.$$eval('#installLangSelect input[data-lang]', els =>
+      els.map(e => ({ lang: e.getAttribute('data-lang'), checked: e.checked, disabled: e.disabled })));
+    expect(boxes.map(b => b.lang).sort()).toEqual(['en', 'lv', 'ru']);
+    const en = boxes.find(b => b.lang === 'en');
+    expect(en.checked).toBe(true);
+    expect(en.disabled).toBe(true);
+    expect(boxes.find(b => b.lang === 'lv').checked).toBe(false);
+    expect(boxes.find(b => b.lang === 'ru').checked).toBe(false);
+
+    // Base (EN-only) size ≈ 151 MB.
+    const baseTxt = await page.textContent('#installLangSelect .offline-lang-size');
+    const baseMB = parseInt(String(baseTxt).replace(/[^0-9]/g, ''), 10);
+    expect(baseMB).toBeGreaterThan(140);
+    expect(baseMB).toBeLessThan(160);
+
+    // Tick LV + RU → displayed size grows to ≈ 195 MB.
+    await page.check('#installLangSelect input[data-lang="lv"]');
+    await page.check('#installLangSelect input[data-lang="ru"]');
+    const fullTxt = await page.textContent('#installLangSelect .offline-lang-size');
+    const fullMB = parseInt(String(fullTxt).replace(/[^0-9]/g, ''), 10);
+    expect(fullMB).toBeGreaterThan(baseMB);
+    expect(fullMB).toBeGreaterThan(190);
+    expect(fullMB).toBeLessThan(205);
+  });
+
+  test.describe('deterministic network (SW blocked)', () => {
+    test.use({ serviceWorkers: 'block' });
+
+    test('PL2. EN-only install skips prem-lv/prem-ru packs and persists langs=[]', async ({ page }) => {
+      await page.addInitScript(() => {
+        try {
+          localStorage.setItem('ppp_auto_install', '1');
+          localStorage.setItem('ppp_install_langs', '[]');
+        } catch (e) {}
+      });
+      const packReqs = [];
+      page.on('request', req => { if (req.url().includes('/packs/')) packReqs.push(req.url()); });
+
+      await page.goto('./');
+      await waitForLocalManifestSet(page, 110000);
+
+      // Not a single LV/RU pack was requested; EN packs were.
+      const lvru = packReqs.filter(u => /prem-lv|prem-ru|raw-lv|raw-ru/.test(u));
+      expect(lvru).toEqual([]);
+      expect(packReqs.some(u => /prem-en|raw-en/.test(u))).toBe(true);
+
+      // Persisted selection is the EN-only base.
+      const langs = await page.evaluate(() => PPP.offlineStore.getState('langs'));
+      expect(langs).toEqual([]);
+    });
+
+    test('PL3. Delta update with EN-only selection never requests LV/RU packs', async ({ page, context }) => {
+      await installEnOnly(page);
+
+      // Mutate a LV pack hash — a "change" that MUST be ignored because LV is
+      // not in the selection.
+      const mutated = JSON.parse(JSON.stringify(realManifest));
+      mutated.generated = '2099-02-02 00:00:00';
+      const lvPack = mutated.packs.find(p => p.lang === 'lv');
+      lvPack.hash = 'deadbeef01';
+      lvPack.sha256 = 'f'.repeat(64);
+
+      const page2 = await context.newPage();
+      const packReqs = [];
+      page2.on('request', req => { if (req.url().includes('/packs/')) packReqs.push(req.url()); });
+      await page2.route('**/data/manifest.json*', route => route.fulfill({
+        status: 200, contentType: 'application/json', body: JSON.stringify(mutated),
+      }));
+
+      await page2.goto('./');
+      await waitForDataReady(page2, 30000);
+      // Give the background delta check time to run and (correctly) do nothing.
+      await page2.waitForTimeout(2500);
+
+      const lvru = packReqs.filter(u => /prem-lv|prem-ru/.test(u));
+      expect(lvru).toEqual([]);
+      // No update note — the LV change is filtered out by the EN-only selection.
+      await expect(page2.locator('#updateNoteInfo')).toBeHidden();
+      await page2.close();
+    });
+
+    test('PL4. After EN-only install, an LV transcript opens online and shows a graceful message offline', async ({ page, context }) => {
+      const lvNr = pickLvNr();
+      await installEnOnly(page);
+
+      // (a) Online: LV is not in IDB, so the viewer fetches the same-origin
+      // per-lecture HTML file. Assert the request fires and content renders.
+      const lvReq = page.waitForRequest(u => u.url().includes('/transcripts/lv/' + lvNr + '.html'), { timeout: 15000 });
+      await page.evaluate((nr) => PPP.app.openHtmlTranscriptViewer(nr, 'lv'), lvNr);
+      await lvReq;
+      await page.waitForFunction(() => {
+        const b = document.getElementById('transcriptModalBody');
+        return b && b.textContent && b.textContent.length > 100;
+      }, { timeout: 15000 });
+      await page.keyboard.press('Escape');
+
+      // (b) Offline: the same LV nr can't be fetched and isn't in IDB → the
+      // graceful "language not downloaded" copy (not the raw requires-internet).
+      await context.setOffline(true);
+      try {
+        await page.evaluate((nr) => PPP.app.openHtmlTranscriptViewer(nr, 'lv'), lvNr);
+        await expect(page.locator('#transcriptModalBody')).toContainText('not downloaded', { timeout: 15000 });
+      } finally {
+        await context.setOffline(false);
+      }
+    });
+  });
+});

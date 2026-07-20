@@ -20,6 +20,49 @@ PPP.downloader = (function () {
         });
     }
 
+    /**
+     * Normalize a selected-language list into the canonical "opt-in" form:
+     * an array of language codes to install IN ADDITION to the mandatory EN
+     * base. 'en' is always the base and is stripped here; duplicates removed.
+     * null/undefined → [] (EN-only base). Accepts an array or a Set-like.
+     */
+    function _normLangs(langs) {
+        var out = [];
+        if (!langs) return out;
+        for (var i = 0; i < langs.length; i++) {
+            var l = langs[i];
+            if (l && l !== 'en' && out.indexOf(l) === -1) out.push(l);
+        }
+        return out;
+    }
+
+    /**
+     * Is this pack selected for install? EN packs are the mandatory base and
+     * are always kept; any other pack is kept only when its language is in the
+     * opt-in `langs` list.
+     */
+    function _packSelected(pack, langs) {
+        return pack.lang === 'en' || (langs && langs.indexOf(pack.lang) !== -1);
+    }
+
+    /**
+     * Total install size in bytes for a given selection: every core file plus
+     * the mandatory EN packs plus the opt-in language packs. `langs` is the
+     * opt-in list (EN excluded); pass [] for the EN-only base.
+     */
+    function computeInstallBytes(manifest, langs) {
+        var sel = _normLangs(langs);
+        var bytes = 0;
+        var core = manifest.core || {};
+        Object.keys(core).forEach(function (k) {
+            if (core[k] && core[k].size) bytes += core[k].size;
+        });
+        (manifest.packs || []).forEach(function (p) {
+            if (_packSelected(p, sel)) bytes += (p.size || 0);
+        });
+        return bytes;
+    }
+
     function _itemUrl(item) {
         return item.path + '?v=' + item.hash;
     }
@@ -133,12 +176,13 @@ PPP.downloader = (function () {
      * full library (manifest bytes × 1.4 headroom). Advisory API — when
      * estimate() is unavailable the install just proceeds.
      */
-    function _storagePreflight(manifest) {
+    function _storagePreflight(manifest, langs) {
         if (!(navigator.storage && navigator.storage.estimate)) return Promise.resolve();
+        var needBytes = computeInstallBytes(manifest, langs);
         return navigator.storage.estimate().then(function (est) {
             if (!est || est.quota == null || est.usage == null) return;
             var free = est.quota - est.usage;
-            if (free < manifest.totals.bytes * 1.4) {
+            if (free < needBytes * 1.4) {
                 var err = new Error('Not enough storage: ' + free + ' bytes free');
                 err.notEnoughStorage = true;
                 throw err;
@@ -196,8 +240,13 @@ PPP.downloader = (function () {
 
     /**
      * Build the outstanding work list for a manifest given resume state.
+     * `langs` is the opt-in language selection (EN excluded); core is always
+     * kept, EN packs are always kept, and a non-EN pack is kept only when its
+     * language is in the selection. doneBytes pre-counts already-completed
+     * items (for the progress bar) but only for selected items.
      */
-    function _buildWorkList(manifest, install) {
+    function _buildWorkList(manifest, install, langs) {
+        var sel = _normLangs(langs);
         var work = [];
         var doneBytes = 0;
         ['meta', 'extras', 'sentences'].forEach(function (k) {
@@ -208,6 +257,7 @@ PPP.downloader = (function () {
             else work.push({ type: 'core', coreKey: k, name: entry.path, entry: entry });
         });
         (manifest.packs || []).forEach(function (p) {
+            if (!_packSelected(p, sel)) return;   // skip unselected languages
             var done = install.completedPacks[p.id];
             if (done && done.hash === p.hash) doneBytes += p.size;
             else work.push({ type: 'pack', name: p.id, entry: p });
@@ -221,15 +271,16 @@ PPP.downloader = (function () {
      * are skipped and pre-counted into the progress bar.
      * onProgress({ loadedBytes, totalBytes }) — throttled to ~10/s.
      */
-    function firstInstall(onProgress) {
+    function firstInstall(onProgress, langs) {
+        var sel = _normLangs(langs);
         return fetchManifest().then(function (manifest) {
-            return _storagePreflight(manifest).then(function () {
+            return _storagePreflight(manifest, sel).then(function () {
                 return store.getState('install');
             }).then(function (saved) {
                 var install = saved || { completedCore: {}, completedPacks: {} };
                 install._track = true;   // commit install snapshots with each item
-                var plan = _buildWorkList(manifest, install);
-                var totalBytes = manifest.totals.bytes;
+                var plan = _buildWorkList(manifest, install, sel);
+                var totalBytes = computeInstallBytes(manifest, sel);
                 var baseBytes = plan.doneBytes;
                 var itemBytes = {};      // per-item received bytes (reset on retry)
                 var lastEmit = 0;
@@ -261,6 +312,10 @@ PPP.downloader = (function () {
                     emit(true);
                     return store.setState('localManifest', manifest);
                 }).then(function () {
+                    // Persist the installed opt-in language selection so delta
+                    // updates and "add a language later" know what to maintain.
+                    return store.setState('langs', sel);
+                }).then(function () {
                     return store.deleteState('install');
                 }).then(function () {
                     return manifest;
@@ -281,6 +336,8 @@ PPP.downloader = (function () {
         return fetchManifest().then(function (remote) {
             return store.getState('localManifest').then(function (local) {
                 if (!local) return { changedItems: 0, coreChanged: coreChanged };
+                return store.getState('langs').then(function (savedLangs) {
+                var sel = _normLangs(savedLangs);
 
                 var changedItems = 0;
                 var work = [];
@@ -294,18 +351,23 @@ PPP.downloader = (function () {
                     }
                 });
                 var remoteIds = {};
-                (remote.packs || []).forEach(function (p) { remoteIds[p.id] = true; });
+                (remote.packs || []).forEach(function (p) { if (_packSelected(p, sel)) remoteIds[p.id] = true; });
                 var localById = {};
                 (local.packs || []).forEach(function (p) { localById[p.id] = p; });
                 (remote.packs || []).forEach(function (p) {
+                    if (!_packSelected(p, sel)) return;   // never pull unselected languages
                     var lo = localById[p.id];
                     if (!lo || lo.hash !== p.hash) {
                         changedItems += (p.count || 1);
                         work.push({ type: 'pack', name: p.id, entry: p });
                     }
                 });
-                // Packs removed from the manifest → delete their members.
-                var removed = (local.packs || []).filter(function (p) { return !remoteIds[p.id]; });
+                // Packs removed from the manifest (within the selected set) →
+                // delete their members. Unselected-language packs that were
+                // never installed are ignored.
+                var removed = (local.packs || []).filter(function (p) {
+                    return _packSelected(p, sel) && !remoteIds[p.id];
+                });
                 removed.forEach(function (p) { changedItems += (p.count || 1); });
 
                 if (changedItems === 0) return { changedItems: 0, coreChanged: coreChanged };
@@ -327,6 +389,7 @@ PPP.downloader = (function () {
                 }).then(function () {
                     return { changedItems: changedItems, coreChanged: coreChanged };
                 });
+                });   // close store.getState('langs').then(savedLangs)
             });
         }).catch(function (err) {
             console.warn('Offline update check failed:', err);
@@ -334,9 +397,77 @@ PPP.downloader = (function () {
         });
     }
 
+    /**
+     * Get the persisted opt-in language selection (EN excluded). [] when the
+     * library is not installed or nothing extra was selected.
+     */
+    function getInstalledLangs() {
+        return store.getState('langs').then(function (v) { return _normLangs(v); });
+    }
+
+    /**
+     * Add one or more languages to an already-installed library: download and
+     * apply ONLY those languages' packs (core and EN are already present), then
+     * fold them into the persisted selection so delta updates keep them fresh.
+     * `langsToAdd` is an opt-in list (EN ignored). onProgress({loadedBytes,
+     * totalBytes}) mirrors firstInstall. Never re-downloads core or EN.
+     */
+    function addLanguages(langsToAdd, onProgress) {
+        var add = _normLangs(langsToAdd);
+        if (add.length === 0) return Promise.resolve({ added: [] });
+        return fetchManifest().then(function (manifest) {
+            var work = [];
+            var totalBytes = 0;
+            (manifest.packs || []).forEach(function (p) {
+                if (add.indexOf(p.lang) !== -1) {
+                    work.push({ type: 'pack', name: p.id, entry: p });
+                    totalBytes += (p.size || 0);
+                }
+            });
+            var install = { completedCore: {}, completedPacks: {} };
+            var baseBytes = 0;
+            var itemBytes = {};
+            var lastEmit = 0;
+            function emit(force) {
+                if (!onProgress) return;
+                var now = Date.now();
+                if (!force && now - lastEmit < 100) return;
+                lastEmit = now;
+                var loaded = baseBytes;
+                for (var k in itemBytes) loaded += itemBytes[k];
+                onProgress({ loadedBytes: Math.min(loaded, totalBytes), totalBytes: totalBytes });
+            }
+            emit(true);
+            return _runPool(work, function (item) {
+                itemBytes[item.name] = 0;
+                return _processItem(
+                    item, install,
+                    function (n) { itemBytes[item.name] += n; emit(); },
+                    function () { itemBytes[item.name] = 0; emit(true); }
+                ).then(function () {
+                    delete itemBytes[item.name];
+                    baseBytes += item.entry.size;
+                    emit(true);
+                });
+            }, CONCURRENCY).then(function () {
+                emit(true);
+                return getInstalledLangs();
+            }).then(function (cur) {
+                var merged = cur.slice();
+                add.forEach(function (l) { if (merged.indexOf(l) === -1) merged.push(l); });
+                return store.setState('langs', merged).then(function () {
+                    return { added: add, langs: merged };
+                });
+            });
+        });
+    }
+
     return {
         fetchManifest: fetchManifest,
         firstInstall: firstInstall,
-        checkForUpdates: checkForUpdates
+        checkForUpdates: checkForUpdates,
+        computeInstallBytes: computeInstallBytes,
+        getInstalledLangs: getInstalledLangs,
+        addLanguages: addLanguages
     };
 })();

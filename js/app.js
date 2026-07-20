@@ -527,16 +527,125 @@ PPP.app = (function () {
         });
     }
 
+    // ---- Language selection (offline pack picker) --------------------------
+
+    var LANG_LABELS = { en: 'English', lv: 'Latviešu', ru: 'Русский', it: 'Italiano', fr: 'Français', es: 'Español' };
+    function _langLabel(l) { return LANG_LABELS[l] || String(l).toUpperCase(); }
+
+    /**
+     * Opt-in languages present in a manifest (EN excluded, it is the mandatory
+     * base), in a stable display order (LV, RU first, then any others).
+     */
+    function _optInLangsFromManifest(manifest) {
+        var seen = {};
+        (manifest.packs || []).forEach(function (p) {
+            if (p.lang && p.lang !== 'en') seen[p.lang] = true;
+        });
+        var out = [];
+        ['lv', 'ru'].forEach(function (l) { if (seen[l]) { out.push(l); delete seen[l]; } });
+        Object.keys(seen).forEach(function (l) { out.push(l); });
+        return out;
+    }
+
+    // Cache the EN-base size (MB) so the offline-first-run/offer copy can show a
+    // computed value even before a manifest is fetched this session.
+    function _cacheBaseMB(manifest) {
+        try {
+            var mb = Math.round(PPP.downloader.computeInstallBytes(manifest, []) / 1048576);
+            if (mb > 0) localStorage.setItem('ppp_base_mb', String(mb));
+        } catch (e) {}
+    }
+    function _baseMB() {
+        try { var v = parseInt(localStorage.getItem('ppp_base_mb'), 10); if (v > 0) return v; } catch (e) {}
+        return 151; // EN base fallback (core + prem-en + raw-en ≈ 150.8 MB)
+    }
+
+    /**
+     * Test/CI hook: ppp_install_langs (JSON array) selects opt-in languages for
+     * the auto-install path; when absent the auto path installs EVERYTHING (all
+     * opt-in languages) to preserve the legacy full-library install the
+     * regression suite depends on. Real users choose via the checkboxes.
+     */
+    function _autoInstallLangs(manifest) {
+        try {
+            var raw = localStorage.getItem('ppp_install_langs');
+            if (raw) {
+                var arr = JSON.parse(raw);
+                if (Array.isArray(arr)) return arr.filter(function (l) { return l && l !== 'en'; });
+            }
+        } catch (e) {}
+        return _optInLangsFromManifest(manifest);
+    }
+
+    /**
+     * Build a language-selection widget. opts:
+     *   langList    — languages shown as checkboxes (default: opt-in langs)
+     *   baseChecked — prepend a disabled, checked EN "base" row
+     *   preselected — languages initially ticked
+     *   sizeMode    — 'total' (core+EN+selected) | 'delta' (only selected packs)
+     * Returns { el, getLangs } where getLangs() reads the ticked opt-in langs.
+     * The live size label recomputes from the selection via computeInstallBytes.
+     */
+    function _buildLangSelector(manifest, opts) {
+        opts = opts || {};
+        var langList = opts.langList || _optInLangsFromManifest(manifest);
+        var pre = {};
+        (opts.preselected || []).forEach(function (l) { pre[l] = true; });
+
+        var wrap = document.createElement('div');
+        wrap.className = 'offline-lang-select';
+        var sizeLabel = document.createElement('div');
+        sizeLabel.className = 'offline-lang-size';
+
+        function selectedLangs() {
+            var out = [];
+            var cbs = wrap.querySelectorAll('input[type="checkbox"][data-lang]');
+            for (var i = 0; i < cbs.length; i++) {
+                var cb = cbs[i];
+                if (cb.checked && cb.getAttribute('data-lang') !== 'en') out.push(cb.getAttribute('data-lang'));
+            }
+            return out;
+        }
+        function refreshSize() {
+            var sel = selectedLangs();
+            var bytes = PPP.downloader.computeInstallBytes(manifest, sel);
+            if (opts.sizeMode === 'delta') bytes -= PPP.downloader.computeInstallBytes(manifest, []);
+            var mb = Math.round(bytes / 1048576);
+            sizeLabel.textContent = i18n.t('offlineSizeSelected').replace('{size}', mb);
+        }
+
+        function addRow(lang, base) {
+            var lbl = document.createElement('label');
+            lbl.className = 'offline-lang-row';
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.setAttribute('data-lang', lang);
+            if (base) { cb.checked = true; cb.disabled = true; }
+            else { cb.checked = !!pre[lang]; cb.onchange = refreshSize; }
+            var span = document.createElement('span');
+            span.textContent = _langLabel(lang) + (base ? ' (' + i18n.t('offlineLangBase') + ')' : '');
+            lbl.appendChild(cb);
+            lbl.appendChild(span);
+            wrap.appendChild(lbl);
+        }
+
+        if (opts.baseChecked) addRow('en', true);
+        langList.forEach(function (l) { addRow(l, false); });
+        wrap.appendChild(sizeLabel);
+        refreshSize();
+        return { el: wrap, getLangs: selectedLangs };
+    }
+
     /**
      * First-run flow: fetch the manifest, show the download-confirmation
-     * button (explicit Rājan decision — no silent 200 MB downloads), then
+     * button with a per-language selection (EN base + opt-in packs), then
      * install with a single byte-weighted progress bar.
      */
     function startFirstInstallFlow() {
         if (!navigator.onLine) {
             // First run offline — nothing to open yet; explain, and retry
             // automatically the moment a connection appears.
-            ui.showLoading(i18n.t('offlineFirstRun').replace('{size}', '200'));
+            ui.showLoading(i18n.t('offlineFirstRun').replace('{size}', String(_baseMB())));
             window.addEventListener('online', function retryInstall() {
                 window.removeEventListener('online', retryInstall);
                 loadData();
@@ -544,12 +653,14 @@ PPP.app = (function () {
             return Promise.resolve();
         }
         return PPP.downloader.fetchManifest().then(function (manifest) {
-            var sizeMB = Math.round(manifest.totals.bytes / (1024 * 1024));
+            _cacheBaseMB(manifest);
+            // Prompt headline shows the EN-only base size; ticking LV/RU grows it.
+            var sizeMB = Math.round(PPP.downloader.computeInstallBytes(manifest, []) / (1024 * 1024));
             // TEST HOOK: Playwright sets localStorage ppp_auto_install=1 so
             // headless runs exercise the REAL install flow without a click.
             var auto = false;
             try { auto = localStorage.getItem('ppp_auto_install') === '1'; } catch (e) {}
-            if (auto) return beginInstall(manifest);
+            if (auto) return beginInstall(manifest, _autoInstallLangs(manifest));
             showInstallPrompt(manifest, sizeMB);
         }).catch(function (err) {
             console.warn('Manifest fetch failed, using legacy load:', err);
@@ -558,12 +669,21 @@ PPP.app = (function () {
     }
 
     function showInstallPrompt(manifest, sizeMB) {
+        _cacheBaseMB(manifest);
         ui.showLoading(i18n.t('installPrompt').replace('{size}', sizeMB));
         ui.updateProgress(0);
         var bar = document.getElementById('progressBar');
         if (!bar) return;
         var old = document.getElementById('installOfflineBtn');
         if (old) old.remove();
+        var oldSel = document.getElementById('installLangSelect');
+        if (oldSel) oldSel.remove();
+
+        // EN mandatory base + LV/RU opt-in checkboxes with a live size label.
+        var selector = _buildLangSelector(manifest, { baseChecked: true, sizeMode: 'total' });
+        selector.el.id = 'installLangSelect';
+        bar.appendChild(selector.el);
+
         var btn = document.createElement('button');
         btn.id = 'installOfflineBtn';
         btn.type = 'button';
@@ -571,8 +691,10 @@ PPP.app = (function () {
         btn.style.marginTop = '8px';
         btn.textContent = i18n.t('installButton');
         btn.onclick = function () {
+            var langs = selector.getLangs();
+            selector.el.remove();
             btn.remove();
-            beginInstall(manifest);
+            beginInstall(manifest, langs);
         };
         bar.appendChild(btn);
     }
@@ -591,20 +713,20 @@ PPP.app = (function () {
         ui.toast(i18n.t('stillDownloading').replace('{pct}', _installPct));
     }
 
-    function beginInstall(manifest) {
+    function beginInstall(manifest, langs) {
         _installPct = 0;
         document.addEventListener('click', _installGuardHandler, true);
         ui.showLoading(i18n.t('downloadingAll'));
         ui.updateProgress(0);
 
-        var totalMB = Math.round(manifest.totals.bytes / (1024 * 1024));
+        var totalMB = Math.round(PPP.downloader.computeInstallBytes(manifest, langs) / (1024 * 1024));
         return PPP.downloader.firstInstall(function (p) {
             var frac = p.totalBytes ? p.loadedBytes / p.totalBytes : 0;
             _installPct = Math.round(frac * 100);
             ui.updateProgress(frac);
             ui.setLoadingText(i18n.t('downloadingAll') + ' ' +
                 Math.round(p.loadedBytes / (1024 * 1024)) + ' / ' + totalMB + ' MB');
-        }).then(function () {
+        }, langs).then(function () {
             document.removeEventListener('click', _installGuardHandler, true);
             PPP.offlineStore.requestPersist();
             return openFromIdb();
@@ -685,28 +807,7 @@ PPP.app = (function () {
         panel.innerHTML = '';
     }
 
-    function renderOfflineInfoPanel() {
-        var panel = document.getElementById('offlineInfoPanel');
-        if (!panel) return;
-        panel.innerHTML = '';
-
-        var text = document.createElement('span');
-        text.textContent = _offlineInstalled
-            ? i18n.t('offlineReadyText')
-            : i18n.t('offlineInfoText').replace('{size}', '196').replace('{min}', '20');
-        panel.appendChild(text);
-
-        if (!_offlineInstalled) {
-            // Offer state only — installed state has nothing to download.
-            var btn = document.createElement('button');
-            btn.type = 'button';
-            btn.id = 'offlineOfferBtn';
-            btn.className = 'search-button';
-            btn.textContent = i18n.t('offlineOfferBtn');
-            btn.onclick = function () { startBackgroundInstall(); };
-            panel.appendChild(btn);
-        }
-
+    function _appendCloseBtn(panel) {
         var closeBtn = document.createElement('button');
         closeBtn.type = 'button';
         closeBtn.setAttribute('aria-label', 'Close');
@@ -725,13 +826,144 @@ PPP.app = (function () {
     }
 
     /**
+     * Installed state UI: list installed languages (EN base + any opt-in) and,
+     * for languages not yet downloaded, a checkbox picker + "Add language"
+     * button that pulls just those packs into the existing library.
+     */
+    function _renderAddLanguageUI(panel) {
+        var holder = document.createElement('div');
+        holder.id = 'offlineAddLangs';
+        panel.appendChild(holder);
+        Promise.all([
+            PPP.downloader.fetchManifest(),
+            PPP.downloader.getInstalledLangs()
+        ]).then(function (res) {
+            var manifest = res[0], installed = res[1];
+            if (!document.body.contains(holder)) return;
+            _cacheBaseMB(manifest);
+            holder.innerHTML = '';
+
+            var line = document.createElement('div');
+            line.className = 'offline-lang-installed';
+            var names = ['en'].concat(installed).map(_langLabel).join(', ');
+            line.textContent = i18n.t('offlineLangsInstalled').replace('{langs}', names);
+            holder.appendChild(line);
+
+            var available = _optInLangsFromManifest(manifest).filter(function (l) {
+                return installed.indexOf(l) === -1;
+            });
+            if (available.length === 0) return;
+
+            var selector = _buildLangSelector(manifest, { langList: available, sizeMode: 'delta' });
+            holder.appendChild(selector.el);
+
+            var addBtn = document.createElement('button');
+            addBtn.type = 'button';
+            addBtn.id = 'offlineAddLangBtn';
+            addBtn.className = 'search-button';
+            addBtn.textContent = i18n.t('offlineAddLangBtn');
+            addBtn.onclick = function () {
+                var toAdd = selector.getLangs();
+                if (toAdd.length === 0) return;
+                _runAddLanguages(toAdd, holder);
+            };
+            holder.appendChild(addBtn);
+        }).catch(function (e) { console.warn('Add-language UI failed:', e); });
+    }
+
+    function _runAddLanguages(toAdd, holder) {
+        holder.innerHTML = '';
+        var msg = document.createElement('span');
+        msg.textContent = i18n.t('offlineDownloading')
+            .replace('{loaded}', '0').replace('{total}', '?').replace('{pct}', '0');
+        holder.appendChild(msg);
+        PPP.downloader.addLanguages(toAdd, function (p) {
+            var mb = Math.round(p.loadedBytes / 1048576);
+            var totalMB = Math.round(p.totalBytes / 1048576);
+            var pct = p.totalBytes ? Math.round(p.loadedBytes / p.totalBytes * 100) : 0;
+            msg.textContent = i18n.t('offlineDownloading')
+                .replace('{loaded}', mb).replace('{total}', totalMB).replace('{pct}', pct);
+        }).then(function () {
+            holder.innerHTML = '';
+            var done = document.createElement('span');
+            done.textContent = i18n.t('offlineLangAdded');
+            holder.appendChild(done);
+            var reloadBtn = document.createElement('button');
+            reloadBtn.type = 'button';
+            reloadBtn.className = 'search-button';
+            reloadBtn.textContent = i18n.t('offlineReloadBtn');
+            reloadBtn.onclick = function () { location.reload(); };
+            holder.appendChild(reloadBtn);
+        }).catch(function (err) {
+            console.error('Add language failed:', err);
+            holder.innerHTML = '';
+            var em = document.createElement('span');
+            em.textContent = i18n.t('offlineOfferError');
+            holder.appendChild(em);
+        });
+    }
+
+    function renderOfflineInfoPanel() {
+        var panel = document.getElementById('offlineInfoPanel');
+        if (!panel) return;
+        panel.innerHTML = '';
+
+        if (_offlineInstalled) {
+            var rtext = document.createElement('span');
+            rtext.textContent = i18n.t('offlineReadyText');
+            panel.appendChild(rtext);
+            _renderAddLanguageUI(panel);
+            _appendCloseBtn(panel);
+            return;
+        }
+
+        // Offer state: headline size (EN base) + language picker + Download.
+        var baseMB = _baseMB();
+        var text = document.createElement('span');
+        text.textContent = i18n.t('offlineInfoText')
+            .replace('{size}', String(baseMB))
+            .replace('{min}', String(Math.max(1, Math.round(baseMB / 10))));
+        panel.appendChild(text);
+
+        var selHolder = document.createElement('div');
+        selHolder.id = 'offlineOfferLangs';
+        panel.appendChild(selHolder);
+
+        // Selection is read at click time; defaults to EN-only until the
+        // manifest arrives and the checkboxes render.
+        var getLangs = function () { return []; };
+        PPP.downloader.fetchManifest().then(function (manifest) {
+            _cacheBaseMB(manifest);
+            if (!document.body.contains(selHolder)) return;
+            var selector = _buildLangSelector(manifest, { baseChecked: true, sizeMode: 'total' });
+            selHolder.innerHTML = '';
+            selHolder.appendChild(selector.el);
+            getLangs = selector.getLangs;
+            var mb = Math.round(PPP.downloader.computeInstallBytes(manifest, []) / 1048576);
+            text.textContent = i18n.t('offlineInfoText')
+                .replace('{size}', String(mb))
+                .replace('{min}', String(Math.max(1, Math.round(mb / 10))));
+        }).catch(function () {});
+
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.id = 'offlineOfferBtn';
+        btn.className = 'search-button';
+        btn.textContent = i18n.t('offlineOfferBtn');
+        btn.onclick = function () { startBackgroundInstall(getLangs()); };
+        panel.appendChild(btn);
+
+        _appendCloseBtn(panel);
+    }
+
+    /**
      * Optional, non-blocking offline install. Progress/completion render
      * ONLY inside #offlineProgress (below #offlineWorkBtn) — independent of
      * #offlineInfoPanel, so closing the info panel mid-download does not
      * hide progress. The app itself stays fully usable throughout (no click
      * guard, no full-screen loading overlay).
      */
-    function startBackgroundInstall() {
+    function startBackgroundInstall(langs) {
         if (!PPP.downloader) return Promise.resolve();
 
         var box = document.getElementById('offlineProgress');
@@ -746,7 +978,16 @@ PPP.app = (function () {
         }
 
         return PPP.downloader.fetchManifest().then(function (manifest) {
-            var totalMB = Math.round(manifest.totals.bytes / 1048576);
+            _cacheBaseMB(manifest);
+            // Selection: explicit arg wins; otherwise the auto/CI hook installs
+            // the full library, and a real user with no arg gets the EN base.
+            var sel = langs;
+            if (sel == null) {
+                var auto = false;
+                try { auto = localStorage.getItem('ppp_auto_install') === '1'; } catch (e) {}
+                sel = auto ? _autoInstallLangs(manifest) : [];
+            }
+            var totalMB = Math.round(PPP.downloader.computeInstallBytes(manifest, sel) / 1048576);
             return PPP.downloader.firstInstall(function (p) {
                 var mb = Math.round(p.loadedBytes / 1048576);
                 var pct = p.totalBytes ? Math.round(p.loadedBytes / p.totalBytes * 100) : 0;
@@ -755,7 +996,7 @@ PPP.app = (function () {
                     m.textContent = i18n.t('offlineDownloading')
                         .replace('{loaded}', mb).replace('{total}', totalMB).replace('{pct}', pct);
                 }
-            }).then(function () {
+            }, sel).then(function () {
                 PPP.offlineStore.requestPersist();
                 // Install finished this session — flip the status button to
                 // its installed ✓ state right away.
@@ -2837,9 +3078,15 @@ PPP.app = (function () {
         firstFetch.then(function (rows) {
             if (rows.length === 0) {
                 if (!net.online) {
-                    // Nothing in IDB and no network — honest offline message.
-                    title.textContent = i18n.t('requiresInternet');
-                    body.textContent = i18n.t('requiresInternet');
+                    // Nothing in IDB and no network. If the offline library is
+                    // installed, this language simply wasn't downloaded —
+                    // guide the user to reconnect or add it in offline settings;
+                    // otherwise the generic requires-internet message.
+                    var msg = _offlineInstalled
+                        ? i18n.t('offlineLangNotDownloaded')
+                        : i18n.t('requiresInternet');
+                    title.textContent = _offlineInstalled ? i18n.t('offlineLangNotDownloadedTitle') : i18n.t('requiresInternet');
+                    body.textContent = msg;
                     return;
                 }
                 if (driveUrl) {
@@ -3704,6 +3951,9 @@ PPP.app = (function () {
         buildShareUrl: buildShareUrl,
         toggleTheme: toggleTheme,
         startBackgroundInstall: startBackgroundInstall,
+        // Exposed for Playwright: drives the first-install confirmation prompt
+        // (language checkboxes) without the online-first offer-panel path.
+        startFirstInstallFlow: startFirstInstallFlow,
         toggleOfflineInfoPanel: toggleOfflineInfoPanel,
         closeOfflineInfoPanel: closeOfflineInfoPanel,
         openGuide: function () {

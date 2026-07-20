@@ -724,6 +724,40 @@ body.dark .text-search-btn.active {
     min-width: 200px;
 }
 
+/* ===== OFFLINE LANGUAGE SELECTOR (offline pack picker) ===== */
+.offline-lang-select {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    margin: 4px 0;
+}
+.offline-lang-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    cursor: pointer;
+}
+.offline-lang-row input[type="checkbox"]:disabled {
+    cursor: default;
+}
+.offline-lang-row input[type="checkbox"]:disabled + span {
+    opacity: 0.75;
+}
+.offline-lang-size {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--saffron, #e8842c);
+    margin-top: 2px;
+}
+.offline-lang-installed {
+    width: 100%;
+    font-size: 12px;
+    opacity: 0.85;
+    margin-bottom: 4px;
+}
+
 /* ===== HELP MODAL ===== */
 .help-modal-overlay {
     display: none;

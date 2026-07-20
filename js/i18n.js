@@ -141,7 +141,7 @@ PPP.i18n = (function () {
             rawLabel: 'Raw',
             notEnoughStorage: 'Not enough storage space on this device (~{size} MB needed)',
             // Optional offline download offer (online is the base experience)
-            offlineOfferText: 'Work offline? Download the full library with transcripts (196 MB, ~20 min).',
+            offlineOfferText: 'Work offline? Download the full library with transcripts ({size} MB, ~{min} min).',
             offlineWorkBtn: 'Work offline',
             offlineReadyBtn: 'Offline ✓',
             offlineReadyText: 'The offline library is downloaded — the finder works without internet too. Updates are checked automatically.',
@@ -150,7 +150,14 @@ PPP.i18n = (function () {
             offlineDownloading: 'Downloading offline library: {loaded} / {total} MB ({pct}%)',
             offlineReady: 'Offline library ready. Reload to use it offline.',
             offlineReloadBtn: 'Reload',
-            offlineOfferError: 'Download failed. Retry?'
+            offlineOfferError: 'Download failed. Retry?',
+            offlineSizeSelected: 'Selected: ~{size} MB',
+            offlineLangBase: 'base',
+            offlineLangsInstalled: 'Installed languages: {langs}',
+            offlineAddLangBtn: 'Add language',
+            offlineLangAdded: 'Language added. Reload to use it offline.',
+            offlineLangNotDownloadedTitle: 'Language not downloaded',
+            offlineLangNotDownloaded: 'This language is not downloaded — reconnect or add it in offline settings.'
         },
         ru: {
             pageTitle: '\u041f\u043e\u0438\u0441\u043a \u0430\u0443\u0434\u0438\u043e, \u0432\u0438\u0434\u0435\u043e \u0438 \u0442\u0440\u0430\u043d\u0441\u043a\u0440\u0438\u043f\u0442\u043e\u0432',
@@ -275,7 +282,7 @@ PPP.i18n = (function () {
             offlineBadge: '\u041e\u0444\u043b\u0430\u0439\u043d',
             rawLabel: 'Raw',
             notEnoughStorage: '\u041d\u0435\u0434\u043e\u0441\u0442\u0430\u0442\u043e\u0447\u043d\u043e \u043c\u0435\u0441\u0442\u0430 \u043d\u0430 \u044d\u0442\u043e\u043c \u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\u0435 (\u043d\u0443\u0436\u043d\u043e ~{size} \u041c\u0411)',
-            offlineOfferText: '\u0420\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u043e\u0444\u043b\u0430\u0439\u043d? \u0421\u043a\u0430\u0447\u0430\u0439\u0442\u0435 \u043f\u043e\u043b\u043d\u0443\u044e \u0431\u0438\u0431\u043b\u0438\u043e\u0442\u0435\u043a\u0443 \u0441 \u0442\u0440\u0430\u043d\u0441\u043a\u0440\u0438\u043f\u0442\u0430\u043c\u0438 (196 \u041c\u0411, ~20 \u043c\u0438\u043d).',
+            offlineOfferText: '\u0420\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u043e\u0444\u043b\u0430\u0439\u043d? \u0421\u043a\u0430\u0447\u0430\u0439\u0442\u0435 \u043f\u043e\u043b\u043d\u0443\u044e \u0431\u0438\u0431\u043b\u0438\u043e\u0442\u0435\u043a\u0443 \u0441 \u0442\u0440\u0430\u043d\u0441\u043a\u0440\u0438\u043f\u0442\u0430\u043c\u0438 ({size} \u041c\u0411, ~{min} \u043c\u0438\u043d).',
             offlineWorkBtn: '\u0420\u0430\u0431\u043e\u0442\u0430\u0442\u044c \u043e\u0444\u043b\u0430\u0439\u043d',
             offlineReadyBtn: '\u041e\u0444\u043b\u0430\u0439\u043d \u2713',
             offlineReadyText: '\u041e\u0444\u043b\u0430\u0439\u043d-\u0431\u0438\u0431\u043b\u0438\u043e\u0442\u0435\u043a\u0430 \u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043d\u0430 \u2014 \u043f\u043e\u0438\u0441\u043a \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442 \u0438 \u0431\u0435\u0437 \u0438\u043d\u0442\u0435\u0440\u043d\u0435\u0442\u0430. \u041e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f \u043f\u0440\u043e\u0432\u0435\u0440\u044f\u044e\u0442\u0441\u044f \u0430\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0438.',
@@ -284,7 +291,14 @@ PPP.i18n = (function () {
             offlineDownloading: '\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u043e\u0444\u043b\u0430\u0439\u043d-\u0431\u0438\u0431\u043b\u0438\u043e\u0442\u0435\u043a\u0438: {loaded} / {total} \u041c\u0411 ({pct}%)',
             offlineReady: '\u041e\u0444\u043b\u0430\u0439\u043d-\u0431\u0438\u0431\u043b\u0438\u043e\u0442\u0435\u043a\u0430 \u0433\u043e\u0442\u043e\u0432\u0430. \u041f\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u0435, \u0447\u0442\u043e\u0431\u044b \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u044c \u043e\u0444\u043b\u0430\u0439\u043d.',
             offlineReloadBtn: '\u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c',
-            offlineOfferError: '\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u043d\u0435 \u0443\u0434\u0430\u043b\u0430\u0441\u044c. \u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u044c?'
+            offlineOfferError: '\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u043d\u0435 \u0443\u0434\u0430\u043b\u0430\u0441\u044c. \u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u044c?',
+            offlineSizeSelected: '\u0412\u044b\u0431\u0440\u0430\u043d\u043e: ~{size} \u041c\u0411',
+            offlineLangBase: '\u0431\u0430\u0437\u0430',
+            offlineLangsInstalled: '\u0417\u0430\u0433\u0440\u0443\u0436\u0435\u043d\u043d\u044b\u0435 \u044f\u0437\u044b\u043a\u0438: {langs}',
+            offlineAddLangBtn: '\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u044f\u0437\u044b\u043a',
+            offlineLangAdded: '\u042f\u0437\u044b\u043a \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d. \u041f\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u0435 \u0434\u043b\u044f \u0440\u0430\u0431\u043e\u0442\u044b \u043e\u0444\u043b\u0430\u0439\u043d.',
+            offlineLangNotDownloadedTitle: '\u042f\u0437\u044b\u043a \u043d\u0435 \u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043d',
+            offlineLangNotDownloaded: '\u042d\u0442\u043e\u0442 \u044f\u0437\u044b\u043a \u043d\u0435 \u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043d \u2014 \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0438\u0442\u0435\u0441\u044c \u043a \u0438\u043d\u0442\u0435\u0440\u043d\u0435\u0442\u0443 \u0438\u043b\u0438 \u0434\u043e\u0431\u0430\u0432\u044c\u0442\u0435 \u0435\u0433\u043e \u0432 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0430\u0445 \u043e\u0444\u043b\u0430\u0439\u043d.'
         },
         lv: {
             pageTitle: 'Audio, video un transkriptu mekl\u0113t\u0101js',
@@ -408,7 +422,7 @@ PPP.i18n = (function () {
             offlineBadge: 'Bezsaistē',
             rawLabel: 'Raw',
             notEnoughStorage: 'Šajā ierīcē nepietiek brīvas vietas (nepieciešami ~{size} MB)',
-            offlineOfferText: 'Strādāt bezsaistē? Lejupielādē pilno bibliotēku ar transkriptiem (196 MB, ~20 min).',
+            offlineOfferText: 'Strādāt bezsaistē? Lejupielādē pilno bibliotēku ar transkriptiem ({size} MB, ~{min} min).',
             offlineWorkBtn: 'Darbam bezsaistē',
             offlineReadyBtn: 'Bezsaistē ✓',
             offlineReadyText: 'Bezsaistes bibliotēka ir lejupielādēta — meklētājs strādā arī bez interneta. Atjauninājumi tiek pārbaudīti automātiski.',
@@ -417,7 +431,14 @@ PPP.i18n = (function () {
             offlineDownloading: 'Lejupielādē offline bibliotēku: {loaded} / {total} MB ({pct}%)',
             offlineReady: 'Offline bibliotēka gatava. Pārlādē, lai lietotu bezsaistē.',
             offlineReloadBtn: 'Pārlādēt',
-            offlineOfferError: 'Lejupielāde neizdevās. Mēģināt vēlreiz?'
+            offlineOfferError: 'Lejupielāde neizdevās. Mēģināt vēlreiz?',
+            offlineSizeSelected: 'Izvēlēts: ~{size} MB',
+            offlineLangBase: 'pamata',
+            offlineLangsInstalled: 'Lejupielādētās valodas: {langs}',
+            offlineAddLangBtn: 'Pievienot valodu',
+            offlineLangAdded: 'Valoda pievienota. Pārlādē, lai lietotu bezsaistē.',
+            offlineLangNotDownloadedTitle: 'Valoda nav lejupielādēta',
+            offlineLangNotDownloaded: 'Šī valoda nav lejupielādēta — pievienojies internetam vai pievieno to bezsaistes iestatījumos.'
         },
         it: {
             pageTitle: 'Ricerca di audio, video e trascrizioni', listOfSources: 'Elenco fonti', lectureTopics: 'Per argomento', transcriptsByLabel: 'Cerca trascrizioni e traduzioni', recommendations: 'Ricerche principali', recommendationsTitle: 'Lezioni consigliate:', hideRecommendationsBtn: 'Clicca per nascondere le ricerche principali', hideTopicsBtn: 'Clicca per nascondere le trascrizioni per argomento', hideVerseSourcesBtn: 'Clicca per nascondere le fonti scritturali', hideTopCitationsBtn: 'Clicca per nascondere i Top 108 versetti', swipeHintText: 'Scorri per vedere le trascrizioni', latest20Files: 'Per aggiunta', by2026: 'Del 2026', addedDateDisplay: 'Per data di aggiunta', entries2026Display: 'Voci del 2026', latest20Transcripts: 'Pi\u00f9 recenti', newestTranscriptsDisplay: 'Trascrizioni pi\u00f9 recenti', transcriptsByDateDisplay: 'Trascrizioni per data', transcriptsByTopicDisplay: 'Trascrizioni per argomento', transcriptsAndTranslations: 'Trascrizioni e traduzioni', byDate: 'Per data', allTranscriptsByDate: 'Tutte le trascrizioni per data', searchPlaceholder: 'Cerca nei {count} titoli di registrazioni audio', searchPlaceholderSentences: 'Cerca nelle frasi delle trascrizioni', searchButton: 'Cerca', searchTime: 'Ricerca lato client \u2014 risultati istantanei.', enterSearchTerms: 'Inserisci parole di ricerca per vedere i risultati', filesFound: 'file trovati', showingResults: 'Mostra risultati', noResultsFound: 'Nessun risultato trovato', elapsedTime: 'Tempo trascorso:', seconds: 'secondi', searching: 'Ricerca...', page: 'pagina', pages: 'pagine', previous: 'Precedente', next: 'Successiva', sources: 'Fonti:', topics: 'Argomenti con trascrizioni:', transcriptsTitle: 'Trascrizioni / Traduzioni', transcriptsHint: '. Tutte le trascrizioni', clickWord: 'Clicca', colDate: 'Data', colType: 'Tipo', colOriginalFileName: 'Nome file', colCountry: 'Paese', colLang: 'Lingua', colLinks: 'Link', colDwnld: 'Scarica', colLength: 'Durata', helpButton: 'Come cercare per parole chiave?', helpModalTitle: 'Come usare il campo di ricerca?',
@@ -472,7 +493,7 @@ PPP.i18n = (function () {
             offlineBadge: 'Offline',
             rawLabel: 'Raw',
             notEnoughStorage: 'Spazio di archiviazione insufficiente su questo dispositivo (servono ~{size} MB)',
-            offlineOfferText: 'Lavorare offline? Scarica la libreria completa con le trascrizioni (196 MB, ~20 min).',
+            offlineOfferText: 'Lavorare offline? Scarica la libreria completa con le trascrizioni ({size} MB, ~{min} min).',
             offlineWorkBtn: 'Lavora offline',
             offlineReadyBtn: 'Offline ✓',
             offlineReadyText: 'La libreria offline è scaricata — il cercatore funziona anche senza internet. Gli aggiornamenti vengono controllati automaticamente.',
@@ -481,7 +502,14 @@ PPP.i18n = (function () {
             offlineDownloading: 'Download della libreria offline: {loaded} / {total} MB ({pct}%)',
             offlineReady: 'Libreria offline pronta. Ricarica per usarla offline.',
             offlineReloadBtn: 'Ricarica',
-            offlineOfferError: 'Download non riuscito. Riprovare?'
+            offlineOfferError: 'Download non riuscito. Riprovare?',
+            offlineSizeSelected: 'Selezionato: ~{size} MB',
+            offlineLangBase: 'base',
+            offlineLangsInstalled: 'Lingue scaricate: {langs}',
+            offlineAddLangBtn: 'Aggiungi lingua',
+            offlineLangAdded: 'Lingua aggiunta. Ricarica per usarla offline.',
+            offlineLangNotDownloadedTitle: 'Lingua non scaricata',
+            offlineLangNotDownloaded: 'Questa lingua non è scaricata — riconnettiti o aggiungila nelle impostazioni offline.'
         },
         fr: {
             pageTitle: 'Recherche d\u2019audio, vid\u00e9o et transcriptions', listOfSources: 'Liste des sources', lectureTopics: 'Par sujet', transcriptsByLabel: 'Recherche de transcriptions et traductions', recommendations: 'Recherches populaires', recommendationsTitle: 'Conf\u00e9rences recommand\u00e9es :', hideRecommendationsBtn: 'Cliquez pour masquer les recherches populaires', hideTopicsBtn: 'Cliquez pour masquer les transcriptions par sujet', hideVerseSourcesBtn: 'Cliquez pour masquer les sources scripturales', hideTopCitationsBtn: 'Cliquez pour masquer les 108 versets les plus cit\u00e9s', swipeHintText: 'Glissez pour voir les transcriptions', latest20Files: 'Par ajout', by2026: 'De 2026', addedDateDisplay: 'Par date d\'ajout', entries2026Display: 'Entr\u00e9es de 2026', latest20Transcripts: 'Plus r\u00e9cents', newestTranscriptsDisplay: 'Transcriptions les plus r\u00e9centes', transcriptsByDateDisplay: 'Transcriptions par date', transcriptsByTopicDisplay: 'Transcriptions par sujet', transcriptsAndTranslations: 'Transcriptions et traductions', byDate: 'Par date', allTranscriptsByDate: 'Toutes les transcriptions par date', searchPlaceholder: 'Recherche dans {count} titres d’enregistrements audio', searchPlaceholderSentences: 'Rechercher dans les phrases des transcriptions', searchButton: 'Rechercher', searchTime: 'Recherche c\u00f4t\u00e9 client \u2014 r\u00e9sultats instantan\u00e9s.', enterSearchTerms: 'Saisissez des mots de recherche pour voir les r\u00e9sultats', filesFound: 'fichiers trouv\u00e9s', showingResults: 'Affiche les r\u00e9sultats', noResultsFound: 'Aucun r\u00e9sultat trouv\u00e9', elapsedTime: 'Temps \u00e9coul\u00e9 :', seconds: 'secondes', searching: 'Recherche...', page: 'page', pages: 'pages', previous: 'Pr\u00e9c\u00e9dente', next: 'Suivante', sources: 'Sources :', topics: 'Sujets avec transcriptions :', transcriptsTitle: 'Transcriptions / Traductions', transcriptsHint: '. Toutes les transcriptions', clickWord: 'Cliquez', colDate: 'Date', colType: 'Type', colOriginalFileName: 'Nom du fichier', colCountry: 'Pays', colLang: 'Langue', colLinks: 'Liens', colDwnld: 'T\u00e9l\u00e9ch.', colLength: 'Dur\u00e9e', helpButton: 'Comment rechercher par mots-cl\u00e9s ?', helpModalTitle: 'Comment utiliser le champ de recherche ?',
@@ -536,7 +564,7 @@ PPP.i18n = (function () {
             offlineBadge: 'Hors ligne',
             rawLabel: 'Raw',
             notEnoughStorage: 'Espace de stockage insuffisant sur cet appareil (~{size} Mo nécessaires)',
-            offlineOfferText: 'Travailler hors ligne ? Téléchargez la bibliothèque complète avec les transcriptions (196 Mo, ~20 min).',
+            offlineOfferText: 'Travailler hors ligne ? Téléchargez la bibliothèque complète avec les transcriptions ({size} Mo, ~{min} min).',
             offlineWorkBtn: 'Travailler hors ligne',
             offlineReadyBtn: 'Hors ligne ✓',
             offlineReadyText: 'La bibliothèque hors ligne est téléchargée — la recherche fonctionne aussi sans internet. Les mises à jour sont vérifiées automatiquement.',
@@ -545,7 +573,14 @@ PPP.i18n = (function () {
             offlineDownloading: 'Téléchargement de la bibliothèque hors ligne : {loaded} / {total} Mo ({pct}%)',
             offlineReady: 'Bibliothèque hors ligne prête. Rechargez pour l\'utiliser hors ligne.',
             offlineReloadBtn: 'Recharger',
-            offlineOfferError: 'Échec du téléchargement. Réessayer ?'
+            offlineOfferError: 'Échec du téléchargement. Réessayer ?',
+            offlineSizeSelected: 'Sélectionné : ~{size} Mo',
+            offlineLangBase: 'base',
+            offlineLangsInstalled: 'Langues téléchargées : {langs}',
+            offlineAddLangBtn: 'Ajouter une langue',
+            offlineLangAdded: 'Langue ajoutée. Rechargez pour l\'utiliser hors ligne.',
+            offlineLangNotDownloadedTitle: 'Langue non téléchargée',
+            offlineLangNotDownloaded: 'Cette langue n\'est pas téléchargée — reconnectez-vous ou ajoutez-la dans les paramètres hors ligne.'
         },
         es: {
             pageTitle: 'Buscador de audio, v\u00eddeo y transcripciones', listOfSources: 'Lista de fuentes', lectureTopics: 'Por tema', transcriptsByLabel: 'Buscador de transcripciones y traducciones', recommendations: 'B\u00fasquedas principales', recommendationsTitle: 'Conferencias recomendadas:', hideRecommendationsBtn: 'Haz clic para ocultar las b\u00fasquedas principales', hideTopicsBtn: 'Haz clic para ocultar las transcripciones por tema', hideVerseSourcesBtn: 'Haz clic para ocultar las fuentes escriturales', hideTopCitationsBtn: 'Haz clic para ocultar los 108 vers\u00edculos m\u00e1s citados', swipeHintText: 'Desliza para ver las transcripciones', latest20Files: 'Por adici\u00f3n', by2026: 'De 2026', addedDateDisplay: 'Por fecha de adici\u00f3n', entries2026Display: 'Entradas de 2026', latest20Transcripts: 'M\u00e1s recientes', newestTranscriptsDisplay: 'Transcripciones m\u00e1s recientes', transcriptsByDateDisplay: 'Transcripciones por fecha', transcriptsByTopicDisplay: 'Transcripciones por tema', transcriptsAndTranslations: 'Transcripciones y traducciones', byDate: 'Por fecha', allTranscriptsByDate: 'Todas las transcripciones por fecha', searchPlaceholder: 'Busca en {count} t\u00edtulos de grabaciones de audio', searchPlaceholderSentences: 'Buscar en las frases de las transcripciones', searchButton: 'Buscar', searchTime: 'B\u00fasqueda del lado del cliente \u2014 resultados instant\u00e1neos.', enterSearchTerms: 'Introduce palabras de b\u00fasqueda para ver resultados', filesFound: 'archivos encontrados', showingResults: 'Mostrando resultados', noResultsFound: 'No se encontraron resultados', elapsedTime: 'Tiempo transcurrido:', seconds: 'segundos', searching: 'Buscando...', page: 'p\u00e1gina', pages: 'p\u00e1ginas', previous: 'Anterior', next: 'Siguiente', sources: 'Fuentes:', topics: 'Temas con transcripciones:', transcriptsTitle: 'Transcripciones / Traducciones', transcriptsHint: '. Todas las transcripciones', clickWord: 'Haz clic', colDate: 'Fecha', colType: 'Tipo', colOriginalFileName: 'Nombre del archivo', colCountry: 'Pa\u00eds', colLang: 'Idioma', colLinks: 'Enlaces', colDwnld: 'Desc.', colLength: 'Duraci\u00f3n', helpButton: '\u00bfC\u00f3mo buscar por palabras clave?', helpModalTitle: '\u00bfC\u00f3mo usar el campo de b\u00fasqueda?',
@@ -600,7 +635,7 @@ PPP.i18n = (function () {
             offlineBadge: 'Sin conexión',
             rawLabel: 'Raw',
             notEnoughStorage: 'No hay suficiente espacio en este dispositivo (se necesitan ~{size} MB)',
-            offlineOfferText: 'Trabajar sin conexión? Descarga la biblioteca completa con las transcripciones (196 MB, ~20 min).',
+            offlineOfferText: 'Trabajar sin conexión? Descarga la biblioteca completa con las transcripciones ({size} MB, ~{min} min).',
             offlineWorkBtn: 'Trabajar sin conexión',
             offlineReadyBtn: 'Sin conexión ✓',
             offlineReadyText: 'La biblioteca sin conexión está descargada — el buscador funciona también sin internet. Las actualizaciones se comprueban automáticamente.',
@@ -609,7 +644,14 @@ PPP.i18n = (function () {
             offlineDownloading: 'Descargando la biblioteca sin conexión: {loaded} / {total} MB ({pct}%)',
             offlineReady: 'Biblioteca sin conexión lista. Recarga para usarla sin conexión.',
             offlineReloadBtn: 'Recargar',
-            offlineOfferError: 'Descarga fallida. ¿Reintentar?'
+            offlineOfferError: 'Descarga fallida. ¿Reintentar?',
+            offlineSizeSelected: 'Seleccionado: ~{size} MB',
+            offlineLangBase: 'base',
+            offlineLangsInstalled: 'Idiomas descargados: {langs}',
+            offlineAddLangBtn: 'Añadir idioma',
+            offlineLangAdded: 'Idioma añadido. Recarga para usarlo sin conexión.',
+            offlineLangNotDownloadedTitle: 'Idioma no descargado',
+            offlineLangNotDownloaded: 'Este idioma no está descargado — vuelve a conectarte o añádelo en los ajustes sin conexión.'
         }
     };
 
