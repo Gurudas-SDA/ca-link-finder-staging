@@ -521,12 +521,10 @@ test.describe('PWA offline library', () => {
 // open / graceful-offline behaviour for a non-downloaded language.
 // ===========================================================================
 
-/** Pick an LV transcript nr that exists on disk (prefer 10011, in meta). */
-function pickLvNr() {
-  const dir = path.join(__dirname, '..', 'transcripts', 'lv');
-  const files = fs.readdirSync(dir).filter(f => /^\d+\.html$/.test(f)).map(f => f.replace('.html', ''));
-  return files.indexOf('10011') !== -1 ? '10011' : files[0];
-}
+/** LV transcript nr known-in-meta, used with a mocked fetch (see PL4) so the
+ *  test needs no real transcripts/lv/*.html file on disk — that directory is
+ *  gitignored (local-only, 246 MB) and absent in CI checkouts. */
+const LV_NR = '10011';
 
 /** Install the EN-only base (LV/RU unchecked) via the auto/CI hooks, then
  *  reload so the running session opens from IndexedDB. */
@@ -636,11 +634,18 @@ test.describe('PWA offline language selection (Phase A)', () => {
     });
 
     test('PL4. After EN-only install, an LV transcript opens online and shows a graceful message offline', async ({ page, context }) => {
-      const lvNr = pickLvNr();
+      const lvNr = LV_NR;
       await installEnOnly(page);
 
       // (a) Online: LV is not in IDB, so the viewer fetches the same-origin
-      // per-lecture HTML file. Assert the request fires and content renders.
+      // per-lecture HTML file. Mock that fetch (transcripts/ is gitignored and
+      // absent in CI) and assert the request fires and content renders.
+      const mockLvRoute = route => route.fulfill({
+        status: 200,
+        contentType: 'text/html; charset=utf-8',
+        body: '<div class="transcript-body">' + 'LV transcript content '.repeat(20) + '</div>',
+      });
+      await page.route('**/transcripts/lv/**', mockLvRoute);
       const lvReq = page.waitForRequest(u => u.url().includes('/transcripts/lv/' + lvNr + '.html'), { timeout: 15000 });
       await page.evaluate((nr) => PPP.app.openHtmlTranscriptViewer(nr, 'lv'), lvNr);
       await lvReq;
@@ -650,8 +655,10 @@ test.describe('PWA offline language selection (Phase A)', () => {
       }, { timeout: 15000 });
       await page.keyboard.press('Escape');
 
-      // (b) Offline: the same LV nr can't be fetched and isn't in IDB → the
-      // graceful "language not downloaded" copy (not the raw requires-internet).
+      // (b) Offline: remove the mock so the real fetch is attempted and fails
+      // offline (no real file, no IDB entry) → the graceful "language not
+      // downloaded" copy (not the raw requires-internet message).
+      await page.unroute('**/transcripts/lv/**', mockLvRoute);
       await context.setOffline(true);
       try {
         await page.evaluate((nr) => PPP.app.openHtmlTranscriptViewer(nr, 'lv'), lvNr);
