@@ -125,7 +125,8 @@ PPP.i18n = (function () {
             downloadingProgress: 'Downloading {done}/{total}…',
             zipCreating: 'Creating ZIP… {percent}%',
             zipLargeWarn: 'You selected {n} transcripts. Building this ZIP may be slow and use significant memory. Continue?',
-            mp3ZipWarning: 'You selected {n} MP3 files — the ZIP may be very large and use significant memory. Continue?',
+            mp3ZipMaxCount: 'At most {max} MP3 files per ZIP. Download this one in a new ZIP.',
+            searchInProgress: 'Please wait — the previous action isn\'t finished yet.',
             zipSummary: '{included} included, {unavailable} unavailable offline',
             zipNothing: 'Nothing available to download offline',
             // Offline PWA (full library in IndexedDB)
@@ -259,7 +260,8 @@ PPP.i18n = (function () {
             downloadingProgress: '\u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 {done}/{total}\u2026',
             zipCreating: '\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 ZIP\u2026 {percent}%',
             zipLargeWarn: '\u0412\u044b \u0432\u044b\u0431\u0440\u0430\u043b\u0438 {n} \u0442\u0440\u0430\u043d\u0441\u043a\u0440\u0438\u043f\u0442\u043e\u0432. \u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 \u0430\u0440\u0445\u0438\u0432\u0430 \u043c\u043e\u0436\u0435\u0442 \u0431\u044b\u0442\u044c \u043c\u0435\u0434\u043b\u0435\u043d\u043d\u044b\u043c \u0438 \u043f\u043e\u0442\u0440\u0435\u0431\u043e\u0432\u0430\u0442\u044c \u043c\u043d\u043e\u0433\u043e \u043f\u0430\u043c\u044f\u0442\u0438. \u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c?',
-            mp3ZipWarning: '\u0412\u044b \u0432\u044b\u0431\u0440\u0430\u043b\u0438 {n} MP3-\u0444\u0430\u0439\u043b\u043e\u0432 \u2014 \u0430\u0440\u0445\u0438\u0432 \u043c\u043e\u0436\u0435\u0442 \u043e\u043a\u0430\u0437\u0430\u0442\u044c\u0441\u044f \u043e\u0447\u0435\u043d\u044c \u0431\u043e\u043b\u044c\u0448\u0438\u043c \u0438 \u043f\u043e\u0442\u0440\u0435\u0431\u043e\u0432\u0430\u0442\u044c \u043c\u043d\u043e\u0433\u043e \u043f\u0430\u043c\u044f\u0442\u0438. \u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c?',
+            mp3ZipMaxCount: '\u041d\u0435 \u0431\u043e\u043b\u0435\u0435 {max} MP3-\u0444\u0430\u0439\u043b\u043e\u0432 \u0432 \u043e\u0434\u043d\u043e\u043c ZIP. \u0421\u043a\u0430\u0447\u0430\u0439\u0442\u0435 \u044d\u0442\u043e\u0442 \u0444\u0430\u0439\u043b \u0432 \u043d\u043e\u0432\u043e\u043c ZIP.',
+            searchInProgress: '\u041f\u043e\u0434\u043e\u0436\u0434\u0438\u0442\u0435 \u2014 \u043f\u0440\u0435\u0434\u044b\u0434\u0443\u0449\u0435\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435 \u0435\u0449\u0451 \u043d\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u043e.',
             zipSummary: '{included} \u0432\u043a\u043b\u044e\u0447\u0435\u043d\u043e, {unavailable} \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u043e \u043e\u0444\u043b\u0430\u0439\u043d',
             zipNothing: '\u041d\u0435\u0442 \u043d\u0438\u0447\u0435\u0433\u043e \u0434\u043b\u044f \u0441\u043a\u0430\u0447\u0438\u0432\u0430\u043d\u0438\u044f \u043e\u0444\u043b\u0430\u0439\u043d',
             // Offline PWA (full library in IndexedDB)
@@ -391,7 +393,8 @@ PPP.i18n = (function () {
             downloadingProgress: 'Lejupielādē {done}/{total}…',
             zipCreating: 'Veido ZIP… {percent}%',
             zipLargeWarn: 'Atlasīti {n} transkripti. ZIP veidošana var būt lēna un patērēt daudz atmiņas. Turpināt?',
-            mp3ZipWarning: 'Atzīmēti {n} MP3 faili — ZIP var būt ļoti liels un aizņemt daudz atmiņas. Turpināt?',
+            mp3ZipMaxCount: 'Vienā ZIP failā ne vairāk kā {max} MP3 faili. Lejupielādē šo jaunā ZIP failā.',
+            searchInProgress: 'Pagaidi — iepriekšējā darbība vēl nav pabeigta.',
             zipSummary: '{included} iekļauti, {unavailable} nav pieejami bezsaistē',
             zipNothing: 'Nav nekā, ko lejupielādēt bezsaistē',
             // Offline PWA (full library in IndexedDB)
@@ -454,7 +457,8 @@ PPP.i18n = (function () {
             downloadingProgress: 'Download {done}/{total}…',
             zipCreating: 'Creazione ZIP… {percent}%',
             zipLargeWarn: 'Hai selezionato {n} trascrizioni. La creazione dello ZIP può essere lenta e usare molta memoria. Continuare?',
-            mp3ZipWarning: 'Hai selezionato {n} file MP3 — lo ZIP potrebbe essere molto grande e usare molta memoria. Continuare?',
+            mp3ZipMaxCount: 'Massimo {max} file MP3 per ZIP. Scarica questo in un nuovo ZIP.',
+            searchInProgress: 'Attendere — l\'azione precedente non è ancora terminata.',
             zipSummary: '{included} inclusi, {unavailable} non disponibili offline',
             zipNothing: 'Niente disponibile per il download offline',
             // Offline PWA (full library in IndexedDB)
@@ -517,7 +521,8 @@ PPP.i18n = (function () {
             downloadingProgress: 'Téléchargement {done}/{total}…',
             zipCreating: 'Création du ZIP… {percent}%',
             zipLargeWarn: 'Vous avez sélectionné {n} transcriptions. La création du ZIP peut être lente et consommer beaucoup de mémoire. Continuer ?',
-            mp3ZipWarning: 'Vous avez sélectionné {n} fichiers MP3 — le ZIP pourrait être très volumineux et consommer beaucoup de mémoire. Continuer ?',
+            mp3ZipMaxCount: 'Au maximum {max} fichiers MP3 par ZIP. Téléchargez celui-ci dans un nouveau ZIP.',
+            searchInProgress: 'Veuillez patienter — l\'action précédente n\'est pas encore terminée.',
             zipSummary: '{included} inclus, {unavailable} indisponibles hors ligne',
             zipNothing: 'Rien à télécharger hors ligne',
             // Offline PWA (full library in IndexedDB)
@@ -580,7 +585,8 @@ PPP.i18n = (function () {
             downloadingProgress: 'Descargando {done}/{total}…',
             zipCreating: 'Creando ZIP… {percent}%',
             zipLargeWarn: 'Seleccionaste {n} transcripciones. Crear el ZIP puede ser lento y usar mucha memoria. ¿Continuar?',
-            mp3ZipWarning: 'Seleccionaste {n} archivos MP3 — el ZIP podría ser muy grande y usar mucha memoria. ¿Continuar?',
+            mp3ZipMaxCount: 'Como máximo {max} archivos MP3 por ZIP. Descarga este en un nuevo ZIP.',
+            searchInProgress: 'Espera — la acción anterior aún no ha terminado.',
             zipSummary: '{included} incluidos, {unavailable} no disponibles sin conexión',
             zipNothing: 'Nada disponible para descargar sin conexión',
             // Offline PWA (full library in IndexedDB)

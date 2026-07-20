@@ -1079,6 +1079,7 @@ PPP.app = (function () {
 
     // ===== SEARCH =====
     function doSearch() {
+        if (_sentenceSearchBusy) { ui.toast(i18n.t('searchInProgress')); return; }
         var term = document.getElementById('searchTerm').value.trim();
         if (!dataLoaded) return;
         // Allow empty search in citations mode (shows stats overview)
@@ -1297,6 +1298,8 @@ PPP.app = (function () {
     // ever preloaded — raw/premium bodies are fetched ONLY on demand here.
     // ===========================================================================
 
+    var MP3_ZIP_MAX_COUNT = 5; // maks. MP3 skaits uz vienu ZIP (pārlūka atmiņas aizsardzība; 5 × ~80MB worst-case)
+
     // --- ui.js reads these to render + reflect the per-language checkboxes ---
     function _selKey(nr, lang) { return String(nr) + '|' + String(lang).toLowerCase(); }
     function isSelectedPair(nr, lang) { return selectedNrs.has(_selKey(nr, lang)); }
@@ -1347,12 +1350,32 @@ PPP.app = (function () {
         }
     }
 
+    // Count how many MP3 pairs are currently selected.
+    function _selectedMp3Count() {
+        var n = 0;
+        selectedNrs.forEach(function (k) { if (k.split('|')[1] === 'mp3') n++; });
+        return n;
+    }
+
     // Toggle one (lecture x language) transcript in/out of the selection.
+    // Returns true if the toggle was applied, false if it was refused (hard
+    // MP3_ZIP_MAX_COUNT cap hit) — the caller (ui.js checkbox onchange) must
+    // then reset the checkbox back to unchecked.
     function toggleSelectPair(nr, lang, checked) {
         var key = _selKey(nr, lang);
-        if (checked) selectedNrs.add(key); else selectedNrs.delete(key);
+        if (checked) {
+            // Hard block: never let the selection exceed MP3_ZIP_MAX_COUNT MP3s.
+            if (String(lang).toLowerCase() === 'mp3' && !selectedNrs.has(key) && _selectedMp3Count() >= MP3_ZIP_MAX_COUNT) {
+                ui.toast(i18n.t('mp3ZipMaxCount').replace('{max}', MP3_ZIP_MAX_COUNT));
+                return false;
+            }
+            selectedNrs.add(key);
+        } else {
+            selectedNrs.delete(key);
+        }
         _updateDownloadSelectedBtn();
         _updateSelectBar();   // refresh panel count if it is open
+        return true;
     }
 
     // Clear the whole selection (unchecks every box on re-render) and close panel.
@@ -1507,8 +1530,10 @@ PPP.app = (function () {
     }
 
     // Add one lecture's transcript to the zip.
-    // Returns true (added), 'unavailable' (nothing offline), or throws on abort.
-    function _addOneToZip(zip, folder, nr, lang, meta, signal) {
+    // Returns true (added), 'unavailable' (nothing offline / MP3 count cap
+    // hit), or throws on abort. `zipCtx` carries cross-item ZIP state —
+    // currently just the running MP3 count (see MP3_ZIP_MAX_COUNT).
+    function _addOneToZip(zip, folder, nr, lang, meta, signal, zipCtx) {
         var title = (meta && meta.title ? meta.title : ('Nr_' + nr)).toString();
         var safeTitle = _sanitizeFilename(title);
 
@@ -1516,11 +1541,19 @@ PPP.app = (function () {
         if (lang === 'mp3') {
             var mp3Id = _driveIdFromUrl(meta && meta.dwnldUrl);
             if (!mp3Id) return Promise.resolve('unavailable');
+            // Safety net: the checkbox hard-block already prevents selecting
+            // more than MP3_ZIP_MAX_COUNT MP3s, but re-check here in case that
+            // block was ever bypassed (e.g. a future caller of downloadSelectedZip).
+            if (zipCtx && zipCtx.mp3Count >= MP3_ZIP_MAX_COUNT) {
+                zipCtx.mp3CapHit = true;
+                return Promise.resolve('unavailable');
+            }
             var mp3Key = (PPP.config && PPP.config.driveApiKey) || '';
             var mp3Url = 'https://www.googleapis.com/drive/v3/files/' + mp3Id + '?alt=media&key=' + encodeURIComponent(mp3Key);
             return fetch(mp3Url, { signal: signal }).then(function (rr) {
                 if (rr.status === 200 || rr.status === 206) {
                     return rr.arrayBuffer().then(function (buf) {
+                        if (zipCtx) zipCtx.mp3Count++;
                         zip.file(folder + '/Nr_' + nr + '_' + safeTitle + '.mp3', buf, { binary: true });
                         return true;
                     });
@@ -1601,12 +1634,9 @@ PPP.app = (function () {
             if (!window.confirm(i18n.t('zipLargeWarn').replace('{n}', pairs.length))) return Promise.resolve();
         }
 
-        // MP3s are large binary files — warn separately (independent, lower
-        // threshold) before fetching more than a few of them into memory.
-        var mp3Count = pairs.filter(function (p) { return p.split('|')[1] === 'mp3'; }).length;
-        if (mp3Count > 5) {
-            if (!window.confirm(i18n.t('mp3ZipWarning').replace('{n}', mp3Count))) return Promise.resolve();
-        }
+        // MP3 selection is already hard-capped at MP3_ZIP_MAX_COUNT by the
+        // checkbox toggle (toggleSelectPair) — nothing further to confirm here.
+        // The safety-net re-check lives in _addOneToZip via zipCtx below.
 
         var input = document.getElementById('zipNameInput');
         var name = (zipName != null ? zipName : (input ? input.value : '')) || _defaultZipName();
@@ -1621,6 +1651,10 @@ PPP.app = (function () {
         var abort = new AbortController();
         _zipAbort = abort;                     // Codex fix #1: capture the local controller
         var total = pairs.length, done = 0, included = 0, unavailable = 0;
+        // Cross-item ZIP state: running MP3 count, enforced against
+        // MP3_ZIP_MAX_COUNT inside _addOneToZip (safety net; the checkbox
+        // hard-block is the primary gate — see toggleSelectPair).
+        var zipCtx = { mp3Count: 0, mp3CapHit: false };
 
         _setZipDownloading(true);
         _setZipProgress(0, total);
@@ -1633,7 +1667,7 @@ PPP.app = (function () {
                 if (abort.signal.aborted || idx >= pairs.length) return Promise.resolve();
                 var parts = pairs[idx++].split('|');
                 var myNr = parts[0], myLang = parts[1];
-                return _addOneToZip(zip, folder, myNr, myLang, metaByNr[myNr] || {}, abort.signal)
+                return _addOneToZip(zip, folder, myNr, myLang, metaByNr[myNr] || {}, abort.signal, zipCtx)
                     .then(function (ok) {
                         if (ok === true) included++; else unavailable++;
                     })
@@ -1670,10 +1704,16 @@ PPP.app = (function () {
                 _setZipDownloading(false);
                 _zipAbort = null;
                 _triggerBlobDownload(blob, folder + '.zip');
-                track('zip-download', { included: included, unavailable: unavailable, pairs: total });
-                _showZipSummary(i18n.t('zipSummary')
+                track('zip-download', { included: included, unavailable: unavailable, pairs: total, mp3CapHit: zipCtx.mp3CapHit });
+                var summaryMsg = i18n.t('zipSummary')
                     .replace('{included}', included)
-                    .replace('{unavailable}', unavailable));
+                    .replace('{unavailable}', unavailable);
+                // Safety-net cap was hit (should not normally happen — the
+                // checkbox hard-block prevents it) — tell the user.
+                if (zipCtx.mp3CapHit) {
+                    summaryMsg += ' ' + i18n.t('mp3ZipMaxCount').replace('{max}', MP3_ZIP_MAX_COUNT);
+                }
+                _showZipSummary(summaryMsg);
                 // Close the panel cleanly after the summary has been shown briefly.
                 setTimeout(function () { if (_zipAbort == null) closeDownloadPanel(); }, 3500);
             });
@@ -1722,12 +1762,18 @@ PPP.app = (function () {
     }
 
     function setSearchMode(mode) {
+        if (_sentenceSearchBusy) { ui.toast(i18n.t('searchInProgress')); return; }
         closeAllPanels();
         setActiveCollection(null);
         var prevMode = searchMode;
         searchMode = mode || 'metadata';
         if (prevMode !== mode) {
             track('mode-switch', { from: prevMode, to: searchMode });
+            // Invalidate any in-flight performSentenceSearch: its stillCurrent()
+            // check re-reads searchMode, but bumping the token too makes the
+            // race fix robust even if a future edit adds more async hops that
+            // only check the token. See _sentenceSearchSeq above.
+            _sentenceSearchSeq++;
         }
         document.querySelectorAll('.search-mode-btn').forEach(function (btn) {
             btn.classList.toggle('active', btn.getAttribute('data-mode') === searchMode);
@@ -3225,6 +3271,21 @@ PPP.app = (function () {
     // setLanguage() tail fell through to ui.renderEmptyTable() because
     // sentence rows never live in allResults). null = nothing to restore.
     var _sentenceLastRender = null;
+    // Monotonic token for the CURRENT sentence search. Each performSentenceSearch
+    // call bumps it and captures the value; after every async hop it re-checks
+    // that its token is still the latest AND the app is still in 'sentences'
+    // mode before it renders or persists — so a superseded search (user started
+    // a newer query, or switched mode/language mid-flight) is dropped silently
+    // instead of leaking stale rows into the current view / _sentenceLastRender.
+    var _sentenceSearchSeq = 0;
+    // UI lock: true while a performSentenceSearch() run is in flight. Primary
+    // defense against the async race — mode switch / new search / language
+    // change are refused (with a toast) while this is true, so the race the
+    // _sentenceSearchSeq token protects against should never actually be
+    // triggered by normal UI interaction. Always reset in both the success
+    // and the catch tail of performSentenceSearch so it can never stick at
+    // true after an error.
+    var _sentenceSearchBusy = false;
 
     // Extract the flat, diacritic-folded, whole-word list a search matched on
     // (mirrors the word-splitting rule in search.js buildTranscriptSQL).
@@ -3240,36 +3301,57 @@ PPP.app = (function () {
     }
 
     function performSentenceSearch(startTime) {
-        var parsed = search.parseSearchQuery(lastSearchTerm);
+        // Capture this search's identity up front: a monotonic token, the exact
+        // query term, and the mode it was launched in. Every async continuation
+        // below verifies it is still the newest search AND still in 'sentences'
+        // mode before touching the UI or the persisted last-render state.
+        var mySeq = ++_sentenceSearchSeq;
+        var myTerm = lastSearchTerm;
+        function stillCurrent() {
+            return _sentenceSearchSeq === mySeq && searchMode === 'sentences';
+        }
+
+        var parsed = search.parseSearchQuery(myTerm);
         var q = search.buildTranscriptSQL(parsed);
         if (!q) {
-            // No free-text term — nothing to search on.
+            // No free-text term — nothing to search on. Synchronous path, no
+            // async hop, so the busy lock is never engaged here.
             document.getElementById('resultsInfo').innerHTML = '';
             document.getElementById('timer').textContent = '';
             _sentenceMatchesByNr = {};
             _sentenceWords = [];
             _sentenceLastRender = null;
-            ui.renderSentenceResults([], lastSearchTerm, { total: 0, lectures: 0, shown: 0 }, _sentenceWords);
+            ui.renderSentenceResults([], myTerm, { total: 0, lectures: 0, shown: 0 }, _sentenceWords);
             return;
         }
 
+        _sentenceSearchBusy = true;
+
         _sentenceParsed = parsed;
-        _sentenceTerm = lastSearchTerm;
+        _sentenceTerm = myTerm;
 
         ui.showLoading(i18n.t('preparingTextSearch'));
         ui.updateProgress(0);
 
         db.loadSentencesDB(function (p) { ui.updateProgress(p); }).then(function () {
+            // Superseded while the (potentially slow, one-time) sentences DB
+            // loaded — drop silently, do not hide another run's loader/render.
+            if (!stillCurrent()) return;
             ui.hideLoading();
             // COUNT first (totals for the summary line), then the capped page query.
             return db.querySentencesAsync(q.countSql, q.params).then(function (countRows) {
+                if (!stillCurrent()) return;
                 var c = countRows[0] || {};
                 var n = c.n || 0;
                 var lectures = c.lectures || 0;
                 return db.querySentencesAsync(q.sql, q.params).then(function (rows) {
+                    // Final gate before ANY render / persist: a newer search or a
+                    // mode/language switch since we started means these rows are
+                    // stale — never leak them into the current view.
+                    if (!stillCurrent()) return;
                     var elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
                     document.getElementById('timer').textContent = i18n.t('elapsedTime') + ' ' + elapsed + ' ' + i18n.t('seconds');
-                    track('search', { query: lastSearchTerm, mode: 'sentences', results: n });
+                    track('search', { query: myTerm, mode: 'sentences', results: n });
                     // Build the nr -> matched-sentence-texts map + word list for the
                     // ZIP export highlighter (downloadSelectedZip / _addOneToZip).
                     _sentenceMatchesByNr = {};
@@ -3279,14 +3361,24 @@ PPP.app = (function () {
                         _sentenceMatchesByNr[key].push(r.sentence || '');
                     });
                     _sentenceWords = _extractSentenceSearchWords(parsed);
-                    _sentenceLastRender = { rows: rows, term: lastSearchTerm, totals: { total: n, lectures: lectures, shown: rows.length } };
-                    ui.renderSentenceResults(rows, lastSearchTerm, _sentenceLastRender.totals, _sentenceWords);
+                    _sentenceLastRender = { rows: rows, term: myTerm, totals: { total: n, lectures: lectures, shown: rows.length } };
+                    ui.renderSentenceResults(rows, myTerm, _sentenceLastRender.totals, _sentenceWords);
                 });
             });
         }).catch(function (err) {
+            // Only surface an error for the still-current search — a superseded
+            // run rejecting must not overwrite the live view.
+            if (!stillCurrent()) return;
             ui.hideLoading();
             console.error('Sentence search error:', err);
             document.getElementById('resultsInfo').innerHTML = '<strong>Error: ' + utils.escapeHtml(err.message) + '</strong>';
+        }).then(function () {
+            // ALWAYS release the busy lock for THIS run (success or error), so
+            // it can never stick at true. Only clear the flag if no newer
+            // search has been issued since — an older run finishing after it
+            // was superseded must not unlock UI actions on behalf of the
+            // newer, still in-flight run (which owns the lock now).
+            if (mySeq === _sentenceSearchSeq) _sentenceSearchBusy = false;
         });
     }
 
@@ -3432,6 +3524,7 @@ PPP.app = (function () {
 
     // ===== LANGUAGE =====
     function setLanguage(lang) {
+        if (_sentenceSearchBusy) { ui.toast(i18n.t('searchInProgress')); return; }
         track('language', { lang: lang });
         i18n.setLanguage(lang);
         // A11Y: keep the document language in sync (screen readers, hyphenation).
@@ -3596,6 +3689,17 @@ PPP.app = (function () {
         // Internal — exposed only so Playwright can unit-test the two-tier
         // sentence/word ZIP-export highlighter without a full download round trip.
         _wrapMatchesInContainer: _wrapMatchesInContainer,
+        // Internal (test only) — unit-test the MP3 ZIP count cap in
+        // _addOneToZip / toggleSelectPair without fetching real audio.
+        _addOneToZip: _addOneToZip,
+        _getMp3ZipMaxCount: function () { return MP3_ZIP_MAX_COUNT; },
+        // Internal (test only) — read the persisted last sentence render so a
+        // test can prove a superseded search did NOT overwrite it (race fix).
+        _getSentenceLastRenderForTest: function () { return _sentenceLastRender; },
+        // Internal (test only) — read the sentence-search UI busy lock so a
+        // test can confirm it engages while a search is in flight and always
+        // releases afterwards (even on error).
+        _isSentenceSearchBusyForTest: function () { return _sentenceSearchBusy; },
         copyShareLink: copyShareLink,
         buildShareUrl: buildShareUrl,
         toggleTheme: toggleTheme,

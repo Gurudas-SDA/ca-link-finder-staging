@@ -1136,6 +1136,149 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await expect(page.locator('#resultsTable thead')).toContainText('File title / Sentence');
   });
 
+  test('36e. MP3 ZIP count cap: 6th MP3 checkbox is refused (stays unchecked) with a toast; download button still counts 5', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Drive toggleSelectPair directly (same function the real MP3 checkbox
+    // onchange handler calls) — deterministic, no dependency on which
+    // lectures happen to have MP3 links in the currently rendered page.
+    const result = await page.evaluate(() => {
+      // Start from a clean selection.
+      PPP.app.clearSelection();
+      const applied = [];
+      for (let i = 1; i <= 6; i++) {
+        applied.push(PPP.app.toggleSelectPair(String(i), 'mp3', true));
+      }
+      const btn = document.getElementById('downloadSelectedBtn');
+      const toastEl = document.getElementById('uiToast');
+      const out = {
+        applied,
+        maxCount: PPP.app._getMp3ZipMaxCount ? PPP.app._getMp3ZipMaxCount() : null,
+        btnText: btn ? btn.textContent : null,
+        toastText: toastEl ? toastEl.textContent : null,
+        toastShown: toastEl ? toastEl.classList.contains('show') : false
+      };
+      PPP.app.clearSelection();
+      return out;
+    });
+
+    expect(result.maxCount).toBe(5);
+    // First 5 MP3s are accepted, the 6th is refused (returns false).
+    expect(result.applied).toEqual([true, true, true, true, true, false]);
+    // Download button reflects exactly 5 selected, not 6.
+    expect(result.btnText).toContain('(5)');
+    // Toast fired with the mp3ZipMaxCount message (interpolated {max}=5).
+    expect(result.toastShown).toBe(true);
+    expect(result.toastText).toContain('5');
+
+    // Same message is reachable via i18n directly and mentions MP3.
+    const msg = await page.evaluate(() => PPP.i18n.t('mp3ZipMaxCount').replace('{max}', 5));
+    expect(msg).toContain('5');
+    expect(msg.toLowerCase()).toContain('mp3');
+  });
+
+  test('36e2. Checking a real MP3 checkbox in the results table beyond the cap is also refused (checkbox snaps back unchecked)', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await page.fill('#searchTerm', 'rice');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
+
+    const mp3Boxes = page.locator('#resultsTable tbody tr input.select-checkbox[data-lang="mp3"]');
+    const n = await mp3Boxes.count();
+    test.skip(n === 0, 'No MP3-linked lecture in this result page — cannot exercise MP3 checkbox');
+
+    // Pre-fill the selection with 5 synthetic MP3 picks (not tied to any
+    // visible row) so checking ONE real checkbox in the DOM is the 6th —
+    // this keeps the test deterministic regardless of how many MP3-linked
+    // rows the current result page happens to contain.
+    await page.evaluate(() => {
+      PPP.app.clearSelection();
+      for (let i = 1001; i <= 1005; i++) PPP.app.toggleSelectPair(String(i), 'mp3', true);
+    });
+
+    const box = mp3Boxes.nth(0);
+    // NOTE: Playwright's .check() asserts the box ENDS UP checked, which is
+    // exactly what this test disproves — use a plain .click() instead.
+    await box.click();
+    // Refused: the browser checkbox snaps back to unchecked.
+    await expect(box).not.toBeChecked();
+    await expect(page.locator('#uiToast')).toHaveClass(/show/);
+    await expect(page.locator('#uiToast')).toContainText('5');
+
+    await page.evaluate(() => PPP.app.clearSelection());
+  });
+
+  test('36f. Sentence-search busy lock: mode switch / new search / language change are refused while a search is in flight, and work again after it finishes', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    // Warm the sentences DB with a first real search so the DB load is not the
+    // variable here — the race we exercise is the query continuation, not the
+    // one-time DB download.
+    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await page.fill('#searchTerm', 'rice');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
+    expect(await page.locator('#resultsTable tbody .match-hint.sentence-hit').count()).toBeGreaterThan(0);
+
+    // Kick off a NEW sentence search, then IMMEDIATELY (same tick, before the
+    // async DB query resolves) try to switch mode, start another search, and
+    // change language. All three must be refused with the searchInProgress
+    // toast, and the in-flight search's own state must still be intact.
+    const attempt = await page.evaluate(() => {
+      document.getElementById('searchTerm').value = 'krishna';
+      PPP.app.search();               // kicks off performSentenceSearch (async), sets the busy lock
+      const busyDuringSearch = PPP.app._isSentenceSearchBusyForTest ? PPP.app._isSentenceSearchBusyForTest() : null;
+      const modeBefore = document.querySelector('.search-mode-btn.active').getAttribute('data-mode');
+      PPP.app.setSearchMode('metadata');   // must be refused
+      const modeAfterAttempt = document.querySelector('.search-mode-btn.active').getAttribute('data-mode');
+      PPP.app.search();                    // must be refused (no-op)
+      PPP.app.setLanguage('lv');           // must be refused
+      const langAfterAttempt = document.documentElement.lang;
+      return { busyDuringSearch, modeBefore, modeAfterAttempt, langAfterAttempt };
+    });
+
+    expect(attempt.busyDuringSearch).toBe(true);
+    // Mode switch was refused — still in sentences mode.
+    expect(attempt.modeBefore).toBe('sentences');
+    expect(attempt.modeAfterAttempt).toBe('sentences');
+    // Language switch was refused — still English (default test language).
+    expect(attempt.langAfterAttempt).toBe('en');
+    // The searchInProgress toast is visible.
+    await expect(page.locator('#uiToast')).toHaveClass(/show/);
+    await expect(page.locator('#uiToast')).toContainText(/wait|previous/i);
+
+    // Let the in-flight ("krishna") search finish — poll the busy lock instead
+    // of a fixed sleep so this isn't flaky under slow CI machines.
+    await page.waitForFunction(() => (
+      window.PPP && PPP.app._isSentenceSearchBusyForTest && PPP.app._isSentenceSearchBusyForTest() === false
+    ), { timeout: 30000 });
+
+    const busyAfter = await page.evaluate(() => (
+      PPP.app._isSentenceSearchBusyForTest ? PPP.app._isSentenceSearchBusyForTest() : null
+    ));
+    expect(busyAfter).toBe(false);
+
+    // Now that the lock is released, mode switching works again.
+    await page.evaluate(() => PPP.app.setSearchMode('metadata'));
+    const table = page.locator('#resultsTable');
+    await expect(table).not.toHaveClass(/sentence-mode/);
+  });
+
   test('37. Excel export — Script_EN URL cell is a clickable hyperlink', async ({ page }) => {
     test.setTimeout(120000);
     await page.goto('./');

@@ -33,7 +33,10 @@ PPP.ui = (function () {
         cb.onclick = function (e) { e.stopPropagation(); };
         cb.onchange = function (e) {
             var el = e.currentTarget;
-            PPP.app.toggleSelectPair(el.getAttribute('data-nr'), el.getAttribute('data-lang'), el.checked);
+            var applied = PPP.app.toggleSelectPair(el.getAttribute('data-nr'), el.getAttribute('data-lang'), el.checked);
+            // Rejected (e.g. MP3_ZIP_MAX_COUNT hard cap) — snap the checkbox
+            // back to unchecked; the selection Set was never touched.
+            if (applied === false) el.checked = false;
         };
         return cb;
     }
