@@ -828,6 +828,81 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     }
   });
 
+  test('31f. Phase B chunked sentence search — 21 shards, premium+raw, sorted, progress fired', async ({ page }) => {
+    // The chunked engine fetches 21 gz shards over the network (one resident
+    // at a time) — allow generous time on a cold static server.
+    test.setTimeout(180000);
+
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const out = await page.evaluate(async () => {
+      const db = window.PPP.db;
+      const search = window.PPP.search;
+      // "guru" is confirmed to yield BOTH premium and raw hits inside the
+      // merged top-500 (premium transcripts skew recent, raw fills the rest).
+      const parsed = search.parseSearchQuery('guru');
+      const q = search.buildTranscriptSQL(parsed);
+
+      const progress = [];
+      const res = await db.searchSentencesChunked(q.sql, q.countSql, q.params,
+        function (done, total) { progress.push([done, total]); });
+
+      const tiers = {};
+      res.rows.forEach(function (r) { tiers[r.tier] = (tiers[r.tier] || 0) + 1; });
+
+      // Verify the merged rows honor the SQL ORDER BY:
+      //   knowns-before-unknowns, date DESC, nr ASC, seq ASC.
+      let sortedOK = true;
+      for (let i = 1; i < res.rows.length; i++) {
+        const a = res.rows[i - 1], b = res.rows[i];
+        const au = (!a.date || a.date === 'unknown') ? 1 : 0;
+        const bu = (!b.date || b.date === 'unknown') ? 1 : 0;
+        let cmp = au - bu;
+        if (cmp === 0 && au === 0) {
+          cmp = (a.date < b.date) ? 1 : (a.date > b.date ? -1 : 0);
+        }
+        if (cmp === 0) cmp = (a.nr || 0) - (b.nr || 0);
+        if (cmp === 0) cmp = (a.seq || 0) - (b.seq || 0);
+        if (cmp > 0) { sortedOK = false; break; }
+      }
+
+      return {
+        rowCount: res.rows.length,
+        totalCount: res.count,
+        lectures: res.lectures,
+        tiers: tiers,
+        progressLen: progress.length,
+        lastProgress: progress[progress.length - 1],
+        sortedOK: sortedOK,
+        hasTsEnd: res.rows.length > 0 && ('ts_end' in res.rows[0]),
+        hasTs: res.rows.length > 0 && ('ts' in res.rows[0])
+      };
+    });
+
+    // Progress callback fired once per shard, for all 21 shards.
+    expect(out.progressLen).toBe(21);
+    expect(out.lastProgress).toEqual([21, 21]);
+
+    // Merged result is capped to the 500 default limit.
+    expect(out.rowCount).toBe(500);
+    // Total count is summed across shards and far exceeds the 500-row page.
+    expect(out.totalCount).toBeGreaterThan(500);
+    expect(out.lectures).toBeGreaterThan(0);
+
+    // BOTH tiers present in the merged top-500 — proves the search now covers
+    // premium AND raw (raw = lecture whose meta Script_EN=='Raw').
+    expect(out.tiers.premium).toBeGreaterThan(0);
+    expect(out.tiers.raw).toBeGreaterThan(0);
+
+    // Merge re-applies the ORDER BY correctly across shard boundaries.
+    expect(out.sortedOK).toBe(true);
+
+    // Row shape carries ts and the newly-selected ts_end (not rendered yet).
+    expect(out.hasTs).toBe(true);
+    expect(out.hasTsEnd).toBe(true);
+  });
+
   test('31c. "In Text" mode shows a dedicated search placeholder', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);
@@ -981,7 +1056,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await expect(page.locator('#selectCount')).toContainText('1 lectures');
   });
 
-  test('36b. Sentence table uses the unified metadata header (Timestamp before "File title / Sentence", no Length) + LV/RU chips in rows', async ({ page }) => {
+  test('36b. Sentence table: no standalone Time column; matched sentence shows inline start-only "(ts)"; no Length/Quality; LV/RU chips in rows', async ({ page }) => {
     test.setTimeout(120000);
     await page.goto('./');
     await waitForAppReady(page);
@@ -993,13 +1068,14 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
 
     // Main header row (2nd thead row — the 1st is the transparent spacer):
-    // star, share, Date, Type, Time, File title / Sentence, Country, Lang.,
-    // Links, Dwnld., Transcripts&Translations block. No Length, no Quality.
+    // star, share, Date, Type, File title / Sentence, Country, Lang.,
+    // Links, Dwnld., Transcripts&Translations block. Rājan correction #3:
+    // the standalone Time/Timestamp column was REMOVED — the matched
+    // sentence's start time renders inline as "Name (ts)" instead.
     const headers = await page.locator('#resultsTable thead tr:nth-child(2) th').allTextContents();
-    const timeIdx = headers.indexOf('Time');
-    const fileIdx = headers.indexOf('File title / Sentence');
-    expect(timeIdx).toBeGreaterThan(-1);
-    expect(fileIdx).toBe(timeIdx + 1); // Timestamp column sits right before the title column
+    expect(headers).not.toContain('Time');
+    expect(headers).not.toContain('Timestamp');
+    expect(headers).toContain('File title / Sentence');
     expect(headers).toContain('Date');
     expect(headers).toContain('Dwnld.');
     expect(headers).not.toContain('Length');
@@ -1020,6 +1096,15 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
     // Sentence line renders under the title.
     expect(await page.locator('#resultsTable tbody .match-hint.sentence-hit').count()).toBeGreaterThan(0);
+
+    // Rājan corrections #3+#4: the matched sentence shows an inline START-only
+    // timestamp "(ts)" appended to its name — verify the .sentence-ts span
+    // renders, is parenthesised, and is NOT the cancelled range (start–end) form.
+    const tsSpans = page.locator('#resultsTable tbody .sentence-ts');
+    expect(await tsSpans.count()).toBeGreaterThan(0);
+    const tsText = (await tsSpans.first().textContent()).trim();
+    expect(tsText).toMatch(/^\(\d{1,2}:\d{2}(?::\d{2})?\)$/);
+    expect(tsText).not.toContain('–'); // en-dash range form was cancelled
 
     // Rājan rule: sentence-hit rows show ONLY title + sentence — NO essence
     // line and NO translated-title hint (those belong to "In Titles" mode).
@@ -1796,6 +1881,31 @@ test.describe('Online-first UX (no forced install)', () => {
     await page.locator(sib('en')).last().uncheck();
     expect(await page.locator(sib('en') + ':checked').count()).toBe(0);
     await expect(page.locator('#downloadSelectedBtn')).toBeDisabled();
+  });
+
+  test('43. "In Text" search offline (shards not installed) shows a clean message, not a raw error', async ({ page }) => {
+    test.setTimeout(60000);
+
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Switch to sentence-search ("In Text") mode while still online.
+    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+
+    // Go offline — the sentence shards are opt-in and not installed on this
+    // profile, so the shard fetch has no network path and must reject.
+    const context = page.context();
+    await context.setOffline(true);
+
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+
+    // The catch handler must render the graceful offline message, never the
+    // raw "Error: ..." string surfaced for a real (online) failure.
+    await expect(page.locator('#resultsInfo')).not.toContainText('Error:', { timeout: 20000 });
+    await expect(page.locator('#resultsInfo')).toContainText(/offline|bezsaist|[оО]флайн/i, { timeout: 20000 });
+
+    await context.setOffline(false);
   });
 
 });

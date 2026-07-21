@@ -40,7 +40,7 @@
     <script defer src="https://cloud.umami.is/script.js" data-website-id="e50b4fd4-578a-4674-944d-4fefcb6999e1"></script>
 
     <!-- Application CSS -->
-    <link rel="stylesheet" href="css/styles.css?v=a9f333ac">
+    <link rel="stylesheet" href="css/styles.css?v=117b465c">
 </head>
 <body>
 
@@ -110,12 +110,12 @@
         <div class="search-card">
             <!-- Unified button row: Key words | 20 latest by date | Top Searches | Verses (all) | Verses (Top) -->
             <div class="search-quick-buttons main-button-row">
-                <button class="combo-btn combo-btn-1" onclick="PPP.app.showBy2026()" data-i18n="by2026">By 2026</button>
-                <button class="combo-btn combo-btn-2" onclick="PPP.app.showLatestFiles()" data-i18n="latest20Files">By Added</button>
-                <button class="combo-btn combo-btn-3" onclick="PPP.app.showRecommendations()" data-i18n="recommendations">Top Searches</button>
-                <button class="combo-btn combo-btn-4 search-mode-btn" data-mode="citations" data-i18n="searchModeCitations">By Verses</button>
-                <button class="combo-btn combo-btn-5 search-mode-btn" data-mode="citationsTop" data-i18n="searchModeCitationsTop">Verses (Top)</button>
-                <button class="combo-btn combo-btn-6" id="favoritesBtn" onclick="PPP.app.showFavorites()">&#9733; Favorites <span id="favCount" class="fav-count-badge" style="display:none"></span></button>
+                <button class="combo-btn combo-btn-1" data-navview="by2026" onclick="PPP.app.showBy2026()" data-i18n="by2026">By 2026</button>
+                <button class="combo-btn combo-btn-2" data-navview="byAdded" onclick="PPP.app.showLatestFiles()" data-i18n="latest20Files">By Added</button>
+                <button class="combo-btn combo-btn-3" data-navview="topSearches" onclick="PPP.app.showRecommendations()" data-i18n="recommendations">Top Searches</button>
+                <button class="combo-btn combo-btn-4 search-mode-btn" data-navview="citations" data-mode="citations" data-i18n="searchModeCitations">By Verses</button>
+                <button class="combo-btn combo-btn-5 search-mode-btn" data-navview="citationsTop" data-mode="citationsTop" data-i18n="searchModeCitationsTop">Verses (Top)</button>
+                <button class="combo-btn combo-btn-6" data-navview="favorites" id="favoritesBtn" onclick="PPP.app.showFavorites()">&#9733; Favorites <span id="favCount" class="fav-count-badge" style="display:none"></span></button>
             </div>
             <div class="search-row">
                 <button class="search-mode-btn active keywords-search-btn" data-mode="metadata" data-i18n="searchModeMetadata">Key words</button>
@@ -239,17 +239,17 @@
     <!-- ===== APPLICATION SCRIPTS ===== -->
     <!-- Load order matters: utils first, then i18n, db, search, ui, app last -->
     <script src="js/utils.js?v=aa1a3ba8"></script>
-    <script src="js/i18n.js?v=b8fbca2f"></script>
+    <script src="js/i18n.js?v=3ffc417f"></script>
     <script src="js/offline-store.js?v=d6ff5ddd"></script>
-    <script src="js/downloader.js?v=6bea5c3d"></script>
-    <script src="js/db.js?v=71e9d9c1"></script>
-    <script src="js/search.js?v=b8f42268"></script>
-    <script src="js/ui.js?v=ee4caad2"></script>
+    <script src="js/downloader.js?v=04faff33"></script>
+    <script src="js/db.js?v=d16136ef"></script>
+    <script src="js/search.js?v=7486b333"></script>
+    <script src="js/ui.js?v=5edb7a69"></script>
     <script src="js/favorites.js?v=7c80f4ac"></script>
     <script src="js/config.js?v=732be8cf"></script>
     <script src="js/vendor/jszip.min.js?v=acc7e414"></script>
     <script src="guide/menu-data.js?v=1"></script>
-    <script src="js/app.js?v=c6526bfc"></script>
+    <script src="js/app.js?v=f5b9c464"></script>
 
 </body>
 </html>

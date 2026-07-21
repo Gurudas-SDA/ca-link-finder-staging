@@ -46,25 +46,48 @@ PPP.downloader = (function () {
     }
 
     /**
+     * The manifest to persist as `localManifest`, made to reflect what was
+     * actually installed: when the sentence shards are opted out, their list is
+     * emptied so the delta check (checkForUpdates) neither spuriously "removes"
+     * never-downloaded shards nor re-pulls them. Shallow clone — only the
+     * sentenceShards field is replaced.
+     */
+    function _manifestForStore(manifest, includeShards) {
+        if (includeShards) return manifest;
+        var copy = {};
+        Object.keys(manifest).forEach(function (k) { copy[k] = manifest[k]; });
+        copy.sentenceShards = [];
+        return copy;
+    }
+
+    /**
      * Total install size in bytes for a given selection: every core file plus
      * the mandatory EN packs plus the opt-in language packs. `langs` is the
-     * opt-in list (EN excluded); pass [] for the EN-only base.
+     * opt-in list (EN excluded); pass [] for the EN-only base. The sentence
+     * shards (~200 MB offline text search) are OPT-IN — counted only when
+     * `includeShards` is true (default false).
      */
-    function computeInstallBytes(manifest, langs) {
+    function computeInstallBytes(manifest, langs, includeShards) {
         var sel = _normLangs(langs);
         var bytes = 0;
         var core = manifest.core || {};
-        Object.keys(core).forEach(function (k) {
+        ['meta', 'extras'].forEach(function (k) {
             if (core[k] && core[k].size) bytes += core[k].size;
         });
         (manifest.packs || []).forEach(function (p) {
             if (_packSelected(p, sel)) bytes += (p.size || 0);
         });
+        if (includeShards) {
+            (manifest.sentenceShards || []).forEach(function (s) {
+                if (s && s.size) bytes += s.size;
+            });
+        }
         return bytes;
     }
 
     function _itemUrl(item) {
-        return item.path + '?v=' + item.hash;
+        var v = item.hash || (item.sha256 ? String(item.sha256).slice(0, 16) : '');
+        return item.path + '?v=' + v;
     }
 
     /**
@@ -176,9 +199,9 @@ PPP.downloader = (function () {
      * full library (manifest bytes × 1.4 headroom). Advisory API — when
      * estimate() is unavailable the install just proceeds.
      */
-    function _storagePreflight(manifest, langs) {
+    function _storagePreflight(manifest, langs, includeShards) {
         if (!(navigator.storage && navigator.storage.estimate)) return Promise.resolve();
-        var needBytes = computeInstallBytes(manifest, langs);
+        var needBytes = computeInstallBytes(manifest, langs, includeShards);
         return navigator.storage.estimate().then(function (est) {
             if (!est || est.quota == null || est.usage == null) return;
             var free = est.quota - est.usage;
@@ -217,6 +240,16 @@ PPP.downloader = (function () {
                             );
                         });
                     }
+                    if (item.type === 'shard') {
+                        var skey = 'shard:' + entry.id;
+                        install.completedShards[entry.id] = { sha256: entry.sha256, size: entry.size };
+                        return _enqueueApply(function () {
+                            return store.putFile(
+                                { key: skey, packId: skey, gz: new Blob([buf], { type: 'application/gzip' }), raw: entry.raw },
+                                install._track ? { key: 'install', value: install } : null
+                            );
+                        });
+                    }
                     // Pack: parse + slice fully BEFORE the transaction opens.
                     var entries = store.parsePack(buf, _packKeyFn(entry));
                     install.completedPacks[entry.id] = { hash: entry.hash, size: entry.size };
@@ -229,6 +262,7 @@ PPP.downloader = (function () {
                     // One retry per item on mismatch/network error; roll back
                     // this item's progress bytes so the bar stays truthful.
                     if (item.type === 'core') delete install.completedCore[item.coreKey];
+                    else if (item.type === 'shard') delete install.completedShards[entry.id];
                     else delete install.completedPacks[entry.id];
                     resetBytes();
                     if (attempt < 2) return tryOnce();
@@ -242,14 +276,15 @@ PPP.downloader = (function () {
      * Build the outstanding work list for a manifest given resume state.
      * `langs` is the opt-in language selection (EN excluded); core is always
      * kept, EN packs are always kept, and a non-EN pack is kept only when its
-     * language is in the selection. doneBytes pre-counts already-completed
+     * language is in the selection. Sentence shards are opt-in — included only
+     * when `includeShards` is true. doneBytes pre-counts already-completed
      * items (for the progress bar) but only for selected items.
      */
-    function _buildWorkList(manifest, install, langs) {
+    function _buildWorkList(manifest, install, langs, includeShards) {
         var sel = _normLangs(langs);
         var work = [];
         var doneBytes = 0;
-        ['meta', 'extras', 'sentences'].forEach(function (k) {
+        ['meta', 'extras'].forEach(function (k) {
             var entry = manifest.core[k];
             if (!entry) return;
             var done = install.completedCore[k];
@@ -262,6 +297,13 @@ PPP.downloader = (function () {
             if (done && done.hash === p.hash) doneBytes += p.size;
             else work.push({ type: 'pack', name: p.id, entry: p });
         });
+        if (includeShards) {
+            (manifest.sentenceShards || []).forEach(function (s) {
+                var done = install.completedShards[s.id];
+                if (done && done.sha256 === s.sha256) doneBytes += s.size;
+                else work.push({ type: 'shard', name: s.id, entry: s });
+            });
+        }
         return { work: work, doneBytes: doneBytes };
     }
 
@@ -271,16 +313,18 @@ PPP.downloader = (function () {
      * are skipped and pre-counted into the progress bar.
      * onProgress({ loadedBytes, totalBytes }) — throttled to ~10/s.
      */
-    function firstInstall(onProgress, langs) {
+    function firstInstall(onProgress, langs, includeShards) {
         var sel = _normLangs(langs);
+        var wantShards = !!includeShards;
         return fetchManifest().then(function (manifest) {
-            return _storagePreflight(manifest, sel).then(function () {
+            return _storagePreflight(manifest, sel, wantShards).then(function () {
                 return store.getState('install');
             }).then(function (saved) {
-                var install = saved || { completedCore: {}, completedPacks: {} };
+                var install = saved || { completedCore: {}, completedPacks: {}, completedShards: {} };
+                if (!install.completedShards) install.completedShards = {};
                 install._track = true;   // commit install snapshots with each item
-                var plan = _buildWorkList(manifest, install, sel);
-                var totalBytes = computeInstallBytes(manifest, sel);
+                var plan = _buildWorkList(manifest, install, sel, wantShards);
+                var totalBytes = computeInstallBytes(manifest, sel, wantShards);
                 var baseBytes = plan.doneBytes;
                 var itemBytes = {};      // per-item received bytes (reset on retry)
                 var lastEmit = 0;
@@ -310,11 +354,20 @@ PPP.downloader = (function () {
                     });
                 }, CONCURRENCY).then(function () {
                     emit(true);
-                    return store.setState('localManifest', manifest);
+                    // The stored localManifest must reflect what was actually
+                    // installed: when shards are opted out, strip them so the
+                    // delta check never treats the (never-downloaded) shards as
+                    // present. Runtime shard search reads the LIVE manifest
+                    // (db.js), not this stored copy, so this is safe.
+                    return store.setState('localManifest', _manifestForStore(manifest, wantShards));
                 }).then(function () {
                     // Persist the installed opt-in language selection so delta
                     // updates and "add a language later" know what to maintain.
                     return store.setState('langs', sel);
+                }).then(function () {
+                    // Persist the shard opt-in choice so delta updates know
+                    // whether to keep the sentence shards fresh.
+                    return store.setState('shards', wantShards);
                 }).then(function () {
                     return store.deleteState('install');
                 }).then(function () {
@@ -332,16 +385,18 @@ PPP.downloader = (function () {
      * returns { changedItems, coreChanged } or { changedItems: 0, error }.
      */
     function checkForUpdates() {
-        var coreChanged = { meta: false, extras: false, sentences: false };
+        var coreChanged = { meta: false, extras: false };
         return fetchManifest().then(function (remote) {
             return store.getState('localManifest').then(function (local) {
                 if (!local) return { changedItems: 0, coreChanged: coreChanged };
                 return store.getState('langs').then(function (savedLangs) {
+                return store.getState('shards').then(function (savedShards) {
                 var sel = _normLangs(savedLangs);
+                var includeShards = !!savedShards;
 
                 var changedItems = 0;
                 var work = [];
-                ['meta', 'extras', 'sentences'].forEach(function (k) {
+                ['meta', 'extras'].forEach(function (k) {
                     var re = remote.core[k];
                     var lo = local.core && local.core[k];
                     if (re && (!lo || lo.hash !== re.hash)) {
@@ -370,12 +425,40 @@ PPP.downloader = (function () {
                 });
                 removed.forEach(function (p) { changedItems += (p.count || 1); });
 
+                // Sentence shards are OPT-IN (offline text search). Only sync
+                // them when the install chose them (persisted `shards` flag).
+                // When opted in: detect updated/new shards (sha256 compare) and
+                // shards dropped from the manifest. When opted out: any shards
+                // still recorded in localManifest (e.g. a prior opted-in install
+                // whose flag was later turned off) are treated as removed.
+                var removedShards = [];
+                if (includeShards) {
+                    var remoteShardIds = {};
+                    (remote.sentenceShards || []).forEach(function (s) { remoteShardIds[s.id] = true; });
+                    var localShardById = {};
+                    (local.sentenceShards || []).forEach(function (s) { localShardById[s.id] = s; });
+                    (remote.sentenceShards || []).forEach(function (s) {
+                        var lo = localShardById[s.id];
+                        if (!lo || lo.sha256 !== s.sha256) {
+                            changedItems += 1;
+                            work.push({ type: 'shard', name: s.id, entry: s });
+                        }
+                    });
+                    removedShards = (local.sentenceShards || []).filter(function (s) {
+                        return !remoteShardIds[s.id];
+                    });
+                } else {
+                    // Opted out — remove every locally recorded shard.
+                    removedShards = (local.sentenceShards || []).slice();
+                }
+                removedShards.forEach(function () { changedItems += 1; });
+
                 if (changedItems === 0) return { changedItems: 0, coreChanged: coreChanged };
 
                 // Updates share the install-state shape but do NOT track
                 // durable resume state (no _track) — a failed delta simply
                 // re-runs next time against the unchanged localManifest.
-                var install = { completedCore: {}, completedPacks: {} };
+                var install = { completedCore: {}, completedPacks: {}, completedShards: {} };
                 return _runPool(work, function (item) {
                     return _processItem(item, install, null, function () {});
                 }, CONCURRENCY).then(function () {
@@ -383,12 +466,22 @@ PPP.downloader = (function () {
                         return _enqueueApply(function () { return store.applyPack(p.id, []); });
                     }, 1);
                 }).then(function () {
+                    // Delete removed shards. A shard is stored as a single file
+                    // record whose byPack index == its 'shard:<id>' key, so the
+                    // existing applyPack(packId, []) primitive removes exactly it.
+                    return _runPool(removedShards, function (s) {
+                        return _enqueueApply(function () { return store.applyPack('shard:' + s.id, []); });
+                    }, 1);
+                }).then(function () {
                     // Fence: everything applied and verified — only now
-                    // advance the local manifest.
-                    return store.setState('localManifest', remote);
+                    // advance the local manifest. Keep the stored copy honest
+                    // about shards (empty when opted out) so the next delta
+                    // check matches what is actually in IDB.
+                    return store.setState('localManifest', _manifestForStore(remote, includeShards));
                 }).then(function () {
                     return { changedItems: changedItems, coreChanged: coreChanged };
                 });
+                });   // close store.getState('shards').then(savedShards)
                 });   // close store.getState('langs').then(savedLangs)
             });
         }).catch(function (err) {
@@ -424,7 +517,7 @@ PPP.downloader = (function () {
                     totalBytes += (p.size || 0);
                 }
             });
-            var install = { completedCore: {}, completedPacks: {} };
+            var install = { completedCore: {}, completedPacks: {}, completedShards: {} };
             var baseBytes = 0;
             var itemBytes = {};
             var lastEmit = 0;

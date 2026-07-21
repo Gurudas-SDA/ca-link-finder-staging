@@ -175,12 +175,9 @@ function openBuffer(dbName, buffer) {
 }
 
 /**
- * Execute a SQL query and return results as array of objects.
+ * Run one prepared statement on a specific SQL.Database handle.
  */
-function runQuery(dbName, sql, params) {
-    var db = databases[dbName];
-    if (!db) throw new Error('Database "' + dbName + '" not loaded');
-
+function runQueryOn(db, sql, params) {
     var results = [];
     var stmt = db.prepare(sql);
     try {
@@ -192,6 +189,47 @@ function runQuery(dbName, sql, params) {
         stmt.free();
     }
     return results;
+}
+
+/**
+ * Execute a SQL query against a named, resident DB and return array of objects.
+ */
+function runQuery(dbName, sql, params) {
+    var db = databases[dbName];
+    if (!db) throw new Error('Database "' + dbName + '" not loaded');
+    return runQueryOn(db, sql, params);
+}
+
+/**
+ * Build a SQL.Database from an already-decompressed buffer, run the query
+ * (and optional count query), dispose the handle, and return the rows.
+ * The handle is NEVER stored in `databases` — so no shard leaks across calls;
+ * peak memory stays at one shard. Returns { rows, count }.
+ */
+function queryCloseBuffer(buffer, sql, countSql, params) {
+    var db = new SQL.Database(new Uint8Array(buffer));
+    try {
+        var out = { rows: runQueryOn(db, sql, params) };
+        out.count = countSql ? runQueryOn(db, countSql, params) : null;
+        return out;
+    } finally {
+        db.close();
+    }
+}
+
+/**
+ * Decompress a gzipped shard buffer inside the Worker, then run + dispose via
+ * queryCloseBuffer (one-shard-resident invariant). Returns { rows, count }.
+ */
+function openQueryClose(gzBuffer, sql, countSql, params) {
+    if (typeof DecompressionStream !== 'function') {
+        return Promise.reject(new Error('DecompressionStream unavailable in worker'));
+    }
+    return new Response(
+        new Blob([gzBuffer]).stream().pipeThrough(new DecompressionStream('gzip'))
+    ).arrayBuffer().then(function (decompressed) {
+        return queryCloseBuffer(decompressed, sql, countSql, params);
+    });
 }
 
 /**
@@ -246,6 +284,28 @@ self.onmessage = function (e) {
             } catch (err) {
                 self.postMessage({ id: id, cmd: 'query', error: err.message });
             }
+            break;
+
+        case 'openQueryClose':
+            // Chunked shard search: decompress gz → open → query → dispose.
+            // Only ONE shard DB exists at a time (never stored in `databases`).
+            initEngine().then(function () {
+                return openQueryClose(msg.buffer, msg.sql, msg.countSql, msg.params);
+            }).then(function (res) {
+                self.postMessage({ id: id, cmd: 'openQueryClose', result: res });
+            }).catch(function (err) {
+                self.postMessage({ id: id, cmd: 'openQueryClose', error: err.message });
+            });
+            break;
+
+        case 'queryCloseBuffer':
+            // Fallback: main thread already decompressed → open → query → dispose.
+            initEngine().then(function () {
+                var res = queryCloseBuffer(msg.buffer, msg.sql, msg.countSql, msg.params);
+                self.postMessage({ id: id, cmd: 'queryCloseBuffer', result: res });
+            }).catch(function (err) {
+                self.postMessage({ id: id, cmd: 'queryCloseBuffer', error: err.message });
+            });
             break;
 
         case 'isLoaded':

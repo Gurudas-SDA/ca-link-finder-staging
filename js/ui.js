@@ -12,10 +12,12 @@ PPP.ui = (function () {
 
     var columnHeaders = ['Date', 'Type', 'Original file name', 'Country', 'Lang.', 'Links', 'Dwnld.', 'Length', 'Script_EN', 'Script_LV', 'Script_RU'];
     // "In Text" (sentence search) table — SAME column set/renderer as the
-    // metadata table, with exactly two differences (Rājan design, S-current):
-    // no Length column, and a Timestamp column immediately BEFORE the file
-    // name column (whose header reads "File title / Sentence" in this mode).
-    var sentenceColumnHeaders = ['Date', 'Type', 'Timestamp', 'Original file name', 'Country', 'Lang.', 'Links', 'Dwnld.', 'Script_EN', 'Script_LV', 'Script_RU'];
+    // metadata table, with these differences (Rājan design, Phase B):
+    // no Length column, and NO separate Timestamp column — the matched
+    // sentence's time is shown inline after the lecture name, in parentheses
+    // (see _renderLectureRow: "Name (ts)"). The name
+    // column header reads "File title / Sentence" in this mode.
+    var sentenceColumnHeaders = ['Date', 'Type', 'Original file name', 'Country', 'Lang.', 'Links', 'Dwnld.', 'Script_EN', 'Script_LV', 'Script_RU'];
 
     /**
      * Build a per-language selection checkbox. ALWAYS rendered next to each
@@ -132,8 +134,8 @@ PPP.ui = (function () {
 
     /**
      * Build the multi-row table header (same structure as original).
-     * mode 'sentences' swaps in the sentence-search column set (Timestamp
-     * instead of Length, "File title / Sentence" header on the name column).
+     * mode 'sentences' swaps in the sentence-search column set (no Length
+     * column, "File title / Sentence" header on the name column).
      */
     function buildHeader(thead, totalCount, mode) {
         var cols = (mode === 'sentences') ? sentenceColumnHeaders : columnHeaders;
@@ -174,9 +176,9 @@ PPP.ui = (function () {
 
         for (var idx = 0; idx < cols.length; idx++) {
             var h = cols[idx];
-            if (h === 'Length' || h === 'Timestamp') {
+            if (h === 'Length') {
                 var th = document.createElement('th');
-                th.textContent = (h === 'Timestamp') ? t('sentColTime') : getColumnHeader(h);
+                th.textContent = getColumnHeader(h);
                 th.rowSpan = 3;
                 row1.appendChild(th);
                 continue;
@@ -197,32 +199,62 @@ PPP.ui = (function () {
                 ttLabel.style.cssText = 'font-weight:700;font-size:14px;color:#1a3a6b;margin-bottom:6px;text-transform:none;text-align:center;letter-spacing:0.3px;';
                 comboContainer.appendChild(ttLabel);
 
-                var btnWrap = document.createElement('div');
-                btnWrap.className = 'tt-btnwrap'; // S94: mobile card CSS hook (inert on desktop)
-                btnWrap.style.cssText = 'display:inline-flex;gap:0;justify-content:flex-start;align-items:center;';
+                // The By Date / By Topic / Newest buttons are lecture-BROWSE
+                // navigation — they switch to a different view. In the sentence
+                // ("In Text") results they are redundant/confusing (clicking one
+                // throws the user out of their search), so render them only in the
+                // non-sentence (lecture) tables. Keep the label in every view.
+                if (mode !== 'sentences') {
+                    var btnWrap = document.createElement('div');
+                    btnWrap.className = 'tt-btnwrap'; // S94: mobile card CSS hook (inert on desktop)
+                    btnWrap.style.cssText = 'display:inline-flex;gap:0;justify-content:flex-start;align-items:center;';
 
-                var bdBtn = document.createElement('button');
-                bdBtn.setAttribute('data-i18n', 'byDate');
-                bdBtn.textContent = t('byDate');
-                bdBtn.style.cssText = 'background:linear-gradient(135deg,#e8842c,#f4a54b);color:#fff;border:none;padding:6px 14px;cursor:pointer;font-weight:700;border-radius:20px 0 0 20px;font-size:11px;transition:all 0.2s;letter-spacing:0.2px;';
-                bdBtn.onclick = function () { if (PPP.app && PPP.app.showAllTranscriptsByDate) PPP.app.showAllTranscriptsByDate(); };
+                    var bdBtn = document.createElement('button');
+                    bdBtn.setAttribute('data-i18n', 'byDate');
+                    bdBtn.textContent = t('byDate');
+                    bdBtn.style.cssText = 'background:linear-gradient(135deg,#e8842c,#f4a54b);color:#fff;border:none;padding:6px 14px;cursor:pointer;font-weight:700;border-radius:20px 0 0 20px;font-size:11px;transition:all 0.2s;letter-spacing:0.2px;';
+                    bdBtn.onclick = function () { if (PPP.app && PPP.app.showAllTranscriptsByDate) PPP.app.showAllTranscriptsByDate(); };
 
-                var btBtn = document.createElement('button');
-                btBtn.setAttribute('data-i18n', 'lectureTopics');
-                btBtn.textContent = t('lectureTopics');
-                btBtn.style.cssText = 'background:linear-gradient(135deg,#1a3a6b,#2a4f8a);color:#fff;border:none;padding:6px 14px;cursor:pointer;font-weight:700;border-radius:0;font-size:11px;transition:all 0.2s;letter-spacing:0.2px;';
-                btBtn.onclick = function () { if (PPP.app && PPP.app.showTopics) PPP.app.showTopics(); };
+                    var btBtn = document.createElement('button');
+                    btBtn.setAttribute('data-i18n', 'lectureTopics');
+                    btBtn.textContent = t('lectureTopics');
+                    btBtn.style.cssText = 'background:linear-gradient(135deg,#1a3a6b,#2a4f8a);color:#fff;border:none;padding:6px 14px;cursor:pointer;font-weight:700;border-radius:0;font-size:11px;transition:all 0.2s;letter-spacing:0.2px;';
+                    btBtn.onclick = function () { if (PPP.app && PPP.app.showTopics) PPP.app.showTopics(); };
 
-                var nBtn = document.createElement('button');
-                nBtn.setAttribute('data-i18n', 'latest20Transcripts');
-                nBtn.textContent = t('latest20Transcripts');
-                nBtn.style.cssText = 'background:linear-gradient(135deg,#b8860b,#d4a843);color:#fff;border:none;padding:6px 14px;cursor:pointer;font-weight:700;border-radius:0 20px 20px 0;font-size:11px;transition:all 0.2s;letter-spacing:0.2px;';
-                nBtn.onclick = function () { if (PPP.app && PPP.app.showLatestTranscripts) PPP.app.showLatestTranscripts(); };
+                    var nBtn = document.createElement('button');
+                    nBtn.setAttribute('data-i18n', 'latest20Transcripts');
+                    nBtn.textContent = t('latest20Transcripts');
+                    nBtn.style.cssText = 'background:linear-gradient(135deg,#b8860b,#d4a843);color:#fff;border:none;padding:6px 14px;cursor:pointer;font-weight:700;border-radius:0 20px 20px 0;font-size:11px;transition:all 0.2s;letter-spacing:0.2px;';
+                    nBtn.onclick = function () { if (PPP.app && PPP.app.showLatestTranscripts) PPP.app.showLatestTranscripts(); };
 
-                btnWrap.appendChild(bdBtn);
-                btnWrap.appendChild(btBtn);
-                btnWrap.appendChild(nBtn);
-                comboContainer.appendChild(btnWrap);
+                    // Single-active state (Rājan UX): highlight the button for
+                    // the currently-showing transcript view, dim the others so
+                    // the user can tell which sort is active. State lives in app
+                    // (PPP.app.getTranscriptView) so it survives re-renders.
+                    bdBtn.setAttribute('data-view', 'byDate');
+                    btBtn.setAttribute('data-view', 'byTopic');
+                    nBtn.setAttribute('data-view', 'newest');
+                    var _activeTv = (PPP.app && PPP.app.getTranscriptView) ? PPP.app.getTranscriptView() : null;
+                    // Single-active (Rājan): the active sort is vivid; the others
+                    // are ALWAYS clearly greyed — including when no sort is active
+                    // (then all three are greyed), matching the top button groups.
+                    [bdBtn, btBtn, nBtn].forEach(function (b) {
+                        if (_activeTv && b.getAttribute('data-view') === _activeTv) {
+                            b.classList.add('active');
+                            b.style.opacity = '1';
+                            b.style.filter = 'none';
+                            b.style.boxShadow = 'inset 0 0 0 2px rgba(255,255,255,0.65), 0 2px 6px rgba(0,0,0,0.28)';
+                        } else {
+                            b.style.opacity = '0.45';
+                            b.style.filter = 'grayscale(0.7)';
+                        }
+                    });
+
+                    btnWrap.appendChild(bdBtn);
+                    btnWrap.appendChild(btBtn);
+                    btnWrap.appendChild(nBtn);
+                    comboContainer.appendChild(btnWrap);
+                }
 
                 row1.appendChild(thBlock);
                 ['EN', 'LV', 'RU'].forEach(function (lang) {
@@ -293,9 +325,10 @@ PPP.ui = (function () {
      * Shared by the metadata table (cols = columnHeaders, sentCtx = null) and
      * the sentence-search table (cols = sentenceColumnHeaders, sentCtx =
      * { ts, sentenceHtml }) so the two tables render identically.
-     * sentCtx.ts fills the Timestamp column; sentCtx.sentenceHtml (already
-     * highlighted + escaped) is appended under the file title, using the same
-     * match-hint visual mechanism as translated titles / essence lines.
+     * sentCtx.ts is shown inline after the lecture name "Name (ts)";
+     * sentCtx.sentenceHtml (already highlighted + escaped) is appended under
+     * the file title, using the same match-hint visual mechanism as translated
+     * titles / essence lines.
      */
     function _renderLectureRow(tbody, row, searchTerms, cols, sentCtx) {
         {
@@ -350,12 +383,6 @@ PPP.ui = (function () {
                 var col = cols[ci];
                 var td = tr.insertCell();
                 var val = row[col] || '';
-
-                if (col === 'Timestamp') {
-                    // Sentence-mode only: the matched sentence's time position.
-                    td.textContent = (sentCtx && sentCtx.ts) ? sentCtx.ts : '';
-                    continue;
-                }
 
                 if (col === 'Links' || col === 'Dwnld.' || col === 'Script_EN' || col === 'Script_LV' || col === 'Script_RU') {
                     // For verse search results: all script columns get auto-scroll links
@@ -488,6 +515,17 @@ PPP.ui = (function () {
                     } else {
                         td.innerHTML = highlightSearchTerms(val, searchTerms);
                     }
+                    // Sentence-mode only: append the matched sentence's start
+                    // time inline after the lecture name, in parentheses —
+                    // always "Name (ts)" (start only; Rājan cancelled the
+                    // both-bounds range design). Replaces the former standalone
+                    // Timestamp column (removed in Phase B).
+                    if (sentCtx && sentCtx.ts) {
+                        var tsSpan = document.createElement('span');
+                        tsSpan.className = 'sentence-ts';
+                        tsSpan.textContent = ' (' + sentCtx.ts + ')';
+                        td.appendChild(tsSpan);
+                    }
                     if (!sentCtx) {
                         // Metadata ("In Titles") mode only — Rājan rule: a
                         // sentence-hit row shows ONLY title + matched sentence,
@@ -557,9 +595,10 @@ PPP.ui = (function () {
      * lecture row (star, share, Date, Type, Country, Lang., Links, Dwnld.
      * incl. mp3 checkbox, EN/LV/RU transcript chips incl. checkboxes) via the
      * shared _renderLectureRow, with exactly two differences from "In Titles":
-     * a Timestamp column replaces Length (placed just before the file title),
-     * and the matched sentence (highlighted) shows UNDER the file title in
-     * the "File title / Sentence" column (match-hint mechanism). One lecture
+     * no Length column, and the matched sentence's start time is shown inline
+     * after the lecture name "Name (ts)" while the matched sentence
+     * (highlighted) shows UNDER the file title in the "File title / Sentence"
+     * column (match-hint mechanism). One lecture
      * can appear in several rows — one per sentence hit.
      * rows: [{ ts, nr, seq, sentence, name, url, tier, date }]
      * totals: { total, lectures, shown }
@@ -620,6 +659,7 @@ PPP.ui = (function () {
                 }
                 var sentCtx = {
                     ts: row.ts || '',
+                    ts_end: row.ts_end || '',
                     sentenceHtml: highlightSentencePrefix(row.sentence || '', foldedWords)
                 };
                 // searchTerms deliberately [] — highlighting belongs to the

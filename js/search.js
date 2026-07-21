@@ -443,7 +443,7 @@ PPP.search = (function () {
         }
 
         var where = conditions.join(' AND ');
-        var sql = "SELECT s.ts, s.nr, s.seq, s.sentence, l.name AS name, l.url AS url, l.tier AS tier, l.date AS date " +
+        var sql = "SELECT s.ts, s.ts_end, s.nr, s.seq, s.sentence, l.name AS name, l.url AS url, l.tier AS tier, l.date AS date " +
                   "FROM sentences s LEFT JOIN lectures l ON s.nr = l.nr " +
                   "WHERE " + where +
                   " ORDER BY CASE WHEN l.date='unknown' OR l.date IS NULL THEN 1 ELSE 0 END, l.date DESC, s.nr, s.seq ASC LIMIT $limit";

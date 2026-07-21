@@ -429,13 +429,13 @@ test.describe('PWA offline library', () => {
           return PPP.offlineStore.getState('install').catch(() => null);
         });
         if (installState &&
-            Object.keys(installState.completedCore || {}).length === 3 &&
+            Object.keys(installState.completedCore || {}).length === 2 &&
             Object.keys(installState.completedPacks || {}).length >= expectedDonePacks) break;
         if (Date.now() > deadline) break;
         await page.waitForTimeout(500);
       }
       expect(installState).not.toBeNull();
-      expect(Object.keys(installState.completedCore || {}).length).toBe(3);
+      expect(Object.keys(installState.completedCore || {}).length).toBe(2);
       expect(Object.keys(installState.completedPacks || {}).length)
         .toBeGreaterThanOrEqual(expectedDonePacks);
 
@@ -561,20 +561,38 @@ test.describe('PWA offline language selection (Phase A)', () => {
     expect(boxes.find(b => b.lang === 'lv').checked).toBe(false);
     expect(boxes.find(b => b.lang === 'ru').checked).toBe(false);
 
-    // Base (EN-only) size ≈ 151 MB.
+    // Option B default: the sentence shards (offline text search) are OPT-IN,
+    // so the DEFAULT base (EN, shards unchecked) is ≈ 151 MB (meta+extras+EN
+    // packs; the shards and the old single core:sentences DB add nothing).
     const baseTxt = await page.textContent('#installLangSelect .offline-lang-size');
     const baseMB = parseInt(String(baseTxt).replace(/[^0-9]/g, ''), 10);
-    expect(baseMB).toBeGreaterThan(140);
+    expect(baseMB).toBeGreaterThan(130);
     expect(baseMB).toBeLessThan(160);
 
-    // Tick LV + RU → displayed size grows to ≈ 195 MB.
+    // The opt-in "Offline text search" shard checkbox exists and is UNCHECKED
+    // by default. Ticking it makes the estimate jump by ~200 MB to ≈ 342 MB
+    // (EN base + 21 sentence shards).
+    const shardBox = page.locator('#installLangSelect input[data-shard]');
+    await expect(shardBox).toHaveCount(1);
+    expect(await shardBox.isChecked()).toBe(false);
+    await shardBox.check();
+    const shardTxt = await page.textContent('#installLangSelect .offline-lang-size');
+    const shardMB = parseInt(String(shardTxt).replace(/[^0-9]/g, ''), 10);
+    expect(shardMB).toBeGreaterThan(320);
+    expect(shardMB).toBeLessThan(360);
+    await shardBox.uncheck();   // isolate the language-only growth below
+
+    // Tick LV + RU (shards still off) → displayed size grows to ≈ 177 MB
+    // (EN base + prem-lv + prem-ru packs; EXCLUDES the dead core:sentences,
+    // so this no longer equals manifest.totals.bytes, which still includes
+    // that dead core and reports ≈ 195 MB).
     await page.check('#installLangSelect input[data-lang="lv"]');
     await page.check('#installLangSelect input[data-lang="ru"]');
     const fullTxt = await page.textContent('#installLangSelect .offline-lang-size');
     const fullMB = parseInt(String(fullTxt).replace(/[^0-9]/g, ''), 10);
     expect(fullMB).toBeGreaterThan(baseMB);
-    expect(fullMB).toBeGreaterThan(190);
-    expect(fullMB).toBeLessThan(205);
+    expect(fullMB).toBeGreaterThan(170);
+    expect(fullMB).toBeLessThan(210);
   });
 
   test.describe('deterministic network (SW blocked)', () => {

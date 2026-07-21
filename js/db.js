@@ -84,7 +84,7 @@ PPP.db = (function () {
      */
     function tryInitWorker() {
         try {
-            worker = new Worker('js/db-worker.js?v=cache4');
+            worker = new Worker('js/db-worker.js?v=cache5');
             worker.onmessage = onWorkerMessage;
             worker.onerror = function (err) {
                 console.warn('DB Worker error, falling back to main thread:', err);
@@ -445,6 +445,223 @@ PPP.db = (function () {
         });
     }
 
+    // ===== CHUNKED SENTENCE SEARCH (Phase B — 21 shards) =====
+    //
+    // Instead of loading one big sentences DB whole-file, iterate the
+    // manifest's `sentenceShards`. For EACH shard: fetch its gz → open in
+    // sql.js → run the query → collect rows → FREE the DB before the next
+    // shard. Only ONE shard DB is ever resident (peak RAM ≈ one ~30 MB shard).
+    // Rows from all shards are concatenated, re-sorted with the SAME ORDER BY
+    // the SQL uses, then capped to $limit. Per-shard COUNTs sum to the total
+    // (shard nr-ranges are disjoint, so DISTINCT-lecture counts also sum).
+
+    var _shardsPromise = null;
+    function _getSentenceShards() {
+        if (!_shardsPromise) {
+            _shardsPromise = fetch('data/manifest.json', { cache: 'no-store' })
+                .then(function (r) { return r.ok ? r.json() : {}; })
+                .then(function (m) { return (m && m.sentenceShards) || []; })
+                .catch(function () { return []; });
+        }
+        return _shardsPromise;
+    }
+
+    // Fetch a gz shard over the network (XHR arraybuffer, same-origin baseline).
+    function _fetchGzBytes(url) {
+        return new Promise(function (resolve, reject) {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', url, true);
+            xhr.responseType = 'arraybuffer';
+            xhr.onload = function () {
+                if (xhr.status === 200 || xhr.status === 0) resolve(xhr.response);
+                else reject(new Error('HTTP ' + xhr.status + ' loading ' + url));
+            };
+            xhr.onerror = function () { reject(new Error('Network error loading ' + url)); };
+            xhr.send();
+        });
+    }
+
+    // Cheap O(1) integrity gate for a shard gz buffer: byte length must match
+    // the manifest's declared size. Catches truncated/partial/wrong-length
+    // blobs (network or IDB) without re-hashing (perf: no per-query sha256 —
+    // IDB copies were already sha256-validated at install time by
+    // downloader._verifyBuffer; re-hashing ~200MB per search would badly
+    // regress the already-slow (~9-11s) sentence search).
+    function _shardSizeOk(gz, shard) {
+        if (shard.size == null) return true;               // manifest lacks size → skip
+        var len = (gz && gz.byteLength != null) ? gz.byteLength
+                : (gz && gz.size != null) ? gz.size : null;
+        return len == null || len === shard.size;          // unknown length → don't block
+    }
+
+    // Delete a single corrupt shard from the offline IDB store. Shards are
+    // stored with packId === 'shard:'+id (see downloader.js _processItem),
+    // so an empty applyPack() removes just that shard's record(s) — the SAME
+    // mechanism the downloader itself uses to delete removed shards during
+    // delta sync (downloader.js, applyPack('shard:' + s.id, [])). Falls back
+    // to a silent no-op if the store API is unavailable — the caller still
+    // falls through to a network refetch.
+    function _deleteIdbShard(id) {
+        try {
+            if (PPP.offlineStore && PPP.offlineStore.applyPack) {
+                return Promise.resolve(PPP.offlineStore.applyPack('shard:' + id, []));
+            }
+        } catch (e) { /* fall through */ }
+        return Promise.resolve();
+    }
+
+    // Network fetch of a shard, cache-busted by its sha256 prefix (so a
+    // stale/updated shard at the same path can't be served from the SW cache),
+    // then size-validated. Fails closed on a size mismatch — never opens a
+    // truncated/corrupt buffer in sql.js.
+    function _fetchValidatedShard(shard) {
+        var netUrl = shard.path + (shard.sha256 ? ('?v=' + String(shard.sha256).slice(0, 16)) : '');
+        return _fetchGzBytes(netUrl).then(function (gz) {
+            if (!_shardSizeOk(gz, shard)) {
+                throw new Error('Corrupt/partial shard ' + shard.id + ' (size '
+                    + (gz && gz.byteLength) + ' != ' + shard.size + ')');
+            }
+            return gz;
+        });
+    }
+
+    // Get a shard's gz bytes: reuse an offline IDB copy when present (with a
+    // cheap size recheck), else the required same-origin network baseline
+    // (cache-busted + size-validated). A corrupt IDB copy is dropped and
+    // refetched from network; a corrupt network response fails closed.
+    // Returns Promise<ArrayBuffer>.
+    function _getShardGz(shard) {
+        if (_offlineStoreUsable()) {
+            return PPP.offlineStore.getGz('shard:' + shard.id).then(function (gz) {
+                if (gz && _shardSizeOk(gz, shard)) return gz;   // hot path: trust IDB (sha256-checked at install) + cheap size recheck
+                if (gz) {
+                    // Wrong size → corrupt IDB copy. Drop it, refetch from network.
+                    console.warn('Corrupt IDB shard ' + shard.id + ' — deleting + refetching');
+                    return _deleteIdbShard(shard.id).then(function () { return _fetchValidatedShard(shard); });
+                }
+                return _fetchValidatedShard(shard);             // IDB miss → network
+            }).catch(function () { return _fetchValidatedShard(shard); });
+        }
+        return _fetchValidatedShard(shard);
+    }
+
+    // Main-thread: open a decompressed shard buffer, run query (+count), free.
+    function _mainThreadShardQuery(decompressed, sql, countSql, params) {
+        var db = new SQL.Database(new Uint8Array(decompressed));
+        try {
+            var out = { rows: [] };
+            var stmt = db.prepare(sql);
+            try {
+                if (params) stmt.bind(params);
+                while (stmt.step()) out.rows.push(stmt.getAsObject());
+            } finally { stmt.free(); }
+            out.count = null;
+            if (countSql) {
+                var cstmt = db.prepare(countSql);
+                try {
+                    if (params) cstmt.bind(params);
+                    var crows = [];
+                    while (cstmt.step()) crows.push(cstmt.getAsObject());
+                    out.count = crows;
+                } finally { cstmt.free(); }
+            }
+            return out;
+        } finally {
+            db.close();  // free immediately — one-shard-resident invariant
+        }
+    }
+
+    // Open+query+dispose one shard's gz buffer. Worker path is the baseline;
+    // fallbacks mirror _openGzInto (worker openGz fail → main-thread decompress
+    // → worker openBuffer; worker unusable → pure main-thread sql.js).
+    function _shardQueryClose(gzArrayBuffer, sql, countSql, params) {
+        if (useWorker) {
+            var copy = gzArrayBuffer.slice(0);
+            return workerCall('openQueryClose',
+                { buffer: copy, sql: sql, countSql: countSql, params: params }, [copy])
+                .catch(function (err) {
+                    console.warn('Worker openQueryClose failed, decompressing on main thread:', err);
+                    return _mainThreadDecompress(gzArrayBuffer).then(function (buf) {
+                        if (useWorker && worker) {
+                            var b2 = buf;
+                            return workerCall('queryCloseBuffer',
+                                { buffer: b2, sql: sql, countSql: countSql, params: params }, [b2]);
+                        }
+                        return initSqlJsFallback().then(function () {
+                            return _mainThreadShardQuery(buf, sql, countSql, params);
+                        });
+                    });
+                });
+        }
+        return initSqlJsFallback().then(function () {
+            return _mainThreadDecompress(gzArrayBuffer);
+        }).then(function (buf) {
+            return _mainThreadShardQuery(buf, sql, countSql, params);
+        });
+    }
+
+    // Merge comparator — mirrors the SQL ORDER BY in buildTranscriptSQL:
+    //   CASE WHEN date unknown/null THEN 1 ELSE 0 END,  (knowns first)
+    //   date DESC,  s.nr ASC,  s.seq ASC
+    function _sentenceRowCmp(a, b) {
+        var au = (!a.date || a.date === 'unknown') ? 1 : 0;
+        var bu = (!b.date || b.date === 'unknown') ? 1 : 0;
+        if (au !== bu) return au - bu;
+        if (au === 0) {  // both dates known → DESC
+            if (a.date < b.date) return 1;
+            if (a.date > b.date) return -1;
+        }
+        if (a.nr !== b.nr) return (a.nr || 0) - (b.nr || 0);
+        return (a.seq || 0) - (b.seq || 0);
+    }
+
+    /**
+     * Chunked full-text sentence search across all manifest shards.
+     * Runs the given `sql` / `countSql` (built by search.buildTranscriptSQL)
+     * once per shard, one shard resident at a time, then merges + re-caps.
+     * `onProgress(done, total)` fires after each shard completes.
+     * Resolves { rows, count, lectures } (rows already capped to params.$limit).
+     */
+    function searchSentencesChunked(sql, countSql, params, onProgress) {
+        return _getSentenceShards().then(function (shards) {
+            var total = shards.length;
+            if (!total) throw new Error('No sentence shards in manifest');
+            var allRows = [];
+            var totalCount = 0;
+            var totalLectures = 0;
+            var idx = 0;
+
+            function next() {
+                if (idx >= total) return Promise.resolve();
+                var shard = shards[idx];
+                return _getShardGz(shard).then(function (gz) {
+                    return _shardQueryClose(gz, sql, countSql, params);
+                }).then(function (res) {
+                    if (res && res.rows && res.rows.length) {
+                        allRows = allRows.concat(res.rows);
+                    }
+                    if (res && res.count && res.count[0]) {
+                        totalCount += res.count[0].n || 0;
+                        totalLectures += res.count[0].lectures || 0;
+                    }
+                    idx++;
+                    if (onProgress) onProgress(idx, total);
+                    return next();
+                });
+            }
+
+            return next().then(function () {
+                allRows.sort(_sentenceRowCmp);
+                var limit = (params && params.$limit) || 500;
+                return {
+                    rows: allRows.slice(0, limit),
+                    count: totalCount,
+                    lectures: totalLectures
+                };
+            });
+        });
+    }
+
     /**
      * Run a SQL query. Returns array of objects (sync for fallback, async for Worker).
      * For backward compatibility, this is SYNCHRONOUS in fallback mode.
@@ -559,6 +776,7 @@ PPP.db = (function () {
         reloadMetaFromStore: reloadMetaFromStore,
         loadHtmlDB: loadHtmlDB,
         loadSentencesDB: loadSentencesDB,
+        searchSentencesChunked: searchSentencesChunked,
         // Sync queries (fallback mode only)
         queryMeta: queryMeta,
         queryHtmlTranscripts: queryHtmlTranscripts,

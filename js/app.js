@@ -63,6 +63,18 @@ PPP.app = (function () {
     var dataLoaded = false;
     var usingSqlite = false;        // true if SQLite loaded successfully
     var searchMode = 'metadata';    // 'metadata', 'citations', or 'citationsTop'
+    // ---- Single-active button state (Rājan "confusing mode" fix) ----
+    // Three independent button GROUPS, each shows exactly one active button:
+    //  A) In Titles / In Text   -> textSearchMode ('metadata' | 'sentences'),
+    //     sticky so one text mode always stays highlighted even in a verse view.
+    //  B) top nav row (By 2026 / By Added / Top Searches / By Verse /
+    //     Verses (Top) / Favorites) -> navView (a data-navview id, or null when
+    //     a plain text search is showing).
+    //  C) By Date / By Topic / Newest (transcripts header, built in ui.js)
+    //     -> transcriptView ('byDate' | 'byTopic' | 'newest' | null).
+    var textSearchMode = 'metadata';
+    var navView = null;
+    var transcriptView = null;
     var deferredPrompt = null;
     var installMode = 'ios';
     var totalLectures = (function () {
@@ -255,6 +267,13 @@ PPP.app = (function () {
         modeButtons.forEach(function (btn) {
             btn.addEventListener('click', function () {
                 var mode = btn.getAttribute('data-mode');
+                // Group B highlight: verse buttons live in the top nav row and
+                // ARE a browse view; In Titles/In Text are plain text search and
+                // clear the top-nav highlight. Group C also resets.
+                if (mode === 'citations') navView = 'citations';
+                else if (mode === 'citationsTop') navView = 'citationsTop';
+                else navView = null; // metadata / sentences
+                transcriptView = null;
                 setSearchMode(mode);
                 // Auto-show verse sources panel when switching to Verses
                 if (mode === 'citations') {
@@ -578,13 +597,26 @@ PPP.app = (function () {
     }
 
     /**
+     * Test/CI hook: ppp_install_shards === '1' opts the auto-install path into
+     * the sentence shards (offline text search). Real users choose via the
+     * "Offline text search" checkbox. Default OFF — shards are opt-in.
+     */
+    function _autoInstallShards() {
+        try { return localStorage.getItem('ppp_install_shards') === '1'; } catch (e) { return false; }
+    }
+
+    /**
      * Build a language-selection widget. opts:
      *   langList    — languages shown as checkboxes (default: opt-in langs)
      *   baseChecked — prepend a disabled, checked EN "base" row
      *   preselected — languages initially ticked
      *   sizeMode    — 'total' (core+EN+selected) | 'delta' (only selected packs)
-     * Returns { el, getLangs } where getLangs() reads the ticked opt-in langs.
-     * The live size label recomputes from the selection via computeInstallBytes.
+     *   shardToggle — add the opt-in "Offline text search" (sentence shards)
+     *                 checkbox (default unchecked); getIncludeShards() reads it
+     * Returns { el, getLangs, getIncludeShards }. getLangs() reads the ticked
+     * opt-in langs; getIncludeShards() reads the shard checkbox (false when the
+     * toggle is absent). The live size label recomputes from BOTH the language
+     * selection and the shard toggle via computeInstallBytes.
      */
     function _buildLangSelector(manifest, opts) {
         opts = opts || {};
@@ -594,6 +626,7 @@ PPP.app = (function () {
 
         var wrap = document.createElement('div');
         wrap.className = 'offline-lang-select';
+        var shardCb = null;   // set when the shard toggle is rendered
         var sizeLabel = document.createElement('div');
         sizeLabel.className = 'offline-lang-size';
 
@@ -606,9 +639,10 @@ PPP.app = (function () {
             }
             return out;
         }
+        function includeShards() { return !!(shardCb && shardCb.checked); }
         function refreshSize() {
             var sel = selectedLangs();
-            var bytes = PPP.downloader.computeInstallBytes(manifest, sel);
+            var bytes = PPP.downloader.computeInstallBytes(manifest, sel, includeShards());
             if (opts.sizeMode === 'delta') bytes -= PPP.downloader.computeInstallBytes(manifest, []);
             var mb = Math.round(bytes / 1048576);
             sizeLabel.textContent = i18n.t('offlineSizeSelected').replace('{size}', mb);
@@ -629,11 +663,27 @@ PPP.app = (function () {
             wrap.appendChild(lbl);
         }
 
+        function addShardRow() {
+            var lbl = document.createElement('label');
+            lbl.className = 'offline-lang-row offline-shard-row';
+            shardCb = document.createElement('input');
+            shardCb.type = 'checkbox';
+            shardCb.setAttribute('data-shard', '1');
+            shardCb.checked = false;              // opt-in — unchecked by default
+            shardCb.onchange = refreshSize;
+            var span = document.createElement('span');
+            span.textContent = i18n.t('offlineTextSearch');
+            lbl.appendChild(shardCb);
+            lbl.appendChild(span);
+            wrap.appendChild(lbl);
+        }
+
         if (opts.baseChecked) addRow('en', true);
         langList.forEach(function (l) { addRow(l, false); });
+        if (opts.shardToggle) addShardRow();
         wrap.appendChild(sizeLabel);
         refreshSize();
-        return { el: wrap, getLangs: selectedLangs };
+        return { el: wrap, getLangs: selectedLangs, getIncludeShards: includeShards };
     }
 
     /**
@@ -660,7 +710,7 @@ PPP.app = (function () {
             // headless runs exercise the REAL install flow without a click.
             var auto = false;
             try { auto = localStorage.getItem('ppp_auto_install') === '1'; } catch (e) {}
-            if (auto) return beginInstall(manifest, _autoInstallLangs(manifest));
+            if (auto) return beginInstall(manifest, _autoInstallLangs(manifest), _autoInstallShards());
             showInstallPrompt(manifest, sizeMB);
         }).catch(function (err) {
             console.warn('Manifest fetch failed, using legacy load:', err);
@@ -679,8 +729,9 @@ PPP.app = (function () {
         var oldSel = document.getElementById('installLangSelect');
         if (oldSel) oldSel.remove();
 
-        // EN mandatory base + LV/RU opt-in checkboxes with a live size label.
-        var selector = _buildLangSelector(manifest, { baseChecked: true, sizeMode: 'total' });
+        // EN mandatory base + LV/RU opt-in checkboxes + opt-in offline text
+        // search (sentence shards), with a live size label.
+        var selector = _buildLangSelector(manifest, { baseChecked: true, sizeMode: 'total', shardToggle: true });
         selector.el.id = 'installLangSelect';
         bar.appendChild(selector.el);
 
@@ -692,9 +743,10 @@ PPP.app = (function () {
         btn.textContent = i18n.t('installButton');
         btn.onclick = function () {
             var langs = selector.getLangs();
+            var incShards = selector.getIncludeShards();
             selector.el.remove();
             btn.remove();
-            beginInstall(manifest, langs);
+            beginInstall(manifest, langs, incShards);
         };
         bar.appendChild(btn);
     }
@@ -713,20 +765,20 @@ PPP.app = (function () {
         ui.toast(i18n.t('stillDownloading').replace('{pct}', _installPct));
     }
 
-    function beginInstall(manifest, langs) {
+    function beginInstall(manifest, langs, includeShards) {
         _installPct = 0;
         document.addEventListener('click', _installGuardHandler, true);
         ui.showLoading(i18n.t('downloadingAll'));
         ui.updateProgress(0);
 
-        var totalMB = Math.round(PPP.downloader.computeInstallBytes(manifest, langs) / (1024 * 1024));
+        var totalMB = Math.round(PPP.downloader.computeInstallBytes(manifest, langs, includeShards) / (1024 * 1024));
         return PPP.downloader.firstInstall(function (p) {
             var frac = p.totalBytes ? p.loadedBytes / p.totalBytes : 0;
             _installPct = Math.round(frac * 100);
             ui.updateProgress(frac);
             ui.setLoadingText(i18n.t('downloadingAll') + ' ' +
                 Math.round(p.loadedBytes / (1024 * 1024)) + ' / ' + totalMB + ' MB');
-        }, langs).then(function () {
+        }, langs, includeShards).then(function () {
             document.removeEventListener('click', _installGuardHandler, true);
             PPP.offlineStore.requestPersist();
             return openFromIdb();
@@ -929,16 +981,18 @@ PPP.app = (function () {
         selHolder.id = 'offlineOfferLangs';
         panel.appendChild(selHolder);
 
-        // Selection is read at click time; defaults to EN-only until the
-        // manifest arrives and the checkboxes render.
+        // Selection is read at click time; defaults to EN-only + shards OFF
+        // until the manifest arrives and the checkboxes render.
         var getLangs = function () { return []; };
+        var getIncludeShards = function () { return false; };
         PPP.downloader.fetchManifest().then(function (manifest) {
             _cacheBaseMB(manifest);
             if (!document.body.contains(selHolder)) return;
-            var selector = _buildLangSelector(manifest, { baseChecked: true, sizeMode: 'total' });
+            var selector = _buildLangSelector(manifest, { baseChecked: true, sizeMode: 'total', shardToggle: true });
             selHolder.innerHTML = '';
             selHolder.appendChild(selector.el);
             getLangs = selector.getLangs;
+            getIncludeShards = selector.getIncludeShards;
             var mb = Math.round(PPP.downloader.computeInstallBytes(manifest, []) / 1048576);
             text.textContent = i18n.t('offlineInfoText')
                 .replace('{size}', String(mb))
@@ -950,7 +1004,7 @@ PPP.app = (function () {
         btn.id = 'offlineOfferBtn';
         btn.className = 'search-button';
         btn.textContent = i18n.t('offlineOfferBtn');
-        btn.onclick = function () { startBackgroundInstall(getLangs()); };
+        btn.onclick = function () { startBackgroundInstall(getLangs(), getIncludeShards()); };
         panel.appendChild(btn);
 
         _appendCloseBtn(panel);
@@ -963,7 +1017,7 @@ PPP.app = (function () {
      * hide progress. The app itself stays fully usable throughout (no click
      * guard, no full-screen loading overlay).
      */
-    function startBackgroundInstall(langs) {
+    function startBackgroundInstall(langs, includeShards) {
         if (!PPP.downloader) return Promise.resolve();
 
         var box = document.getElementById('offlineProgress');
@@ -982,12 +1036,15 @@ PPP.app = (function () {
             // Selection: explicit arg wins; otherwise the auto/CI hook installs
             // the full library, and a real user with no arg gets the EN base.
             var sel = langs;
+            var incShards = includeShards;
             if (sel == null) {
                 var auto = false;
                 try { auto = localStorage.getItem('ppp_auto_install') === '1'; } catch (e) {}
                 sel = auto ? _autoInstallLangs(manifest) : [];
+                if (incShards == null) incShards = auto ? _autoInstallShards() : false;
             }
-            var totalMB = Math.round(PPP.downloader.computeInstallBytes(manifest, sel) / 1048576);
+            if (incShards == null) incShards = false;
+            var totalMB = Math.round(PPP.downloader.computeInstallBytes(manifest, sel, incShards) / 1048576);
             return PPP.downloader.firstInstall(function (p) {
                 var mb = Math.round(p.loadedBytes / 1048576);
                 var pct = p.totalBytes ? Math.round(p.loadedBytes / p.totalBytes * 100) : 0;
@@ -996,7 +1053,7 @@ PPP.app = (function () {
                     m.textContent = i18n.t('offlineDownloading')
                         .replace('{loaded}', mb).replace('{total}', totalMB).replace('{pct}', pct);
                 }
-            }, sel).then(function () {
+            }, sel, incShards).then(function () {
                 PPP.offlineStore.requestPersist();
                 // Install finished this session — flip the status button to
                 // its installed ✓ state right away.
@@ -1326,6 +1383,12 @@ PPP.app = (function () {
         // Allow empty search in citations mode (shows stats overview)
         if (!term && searchMode !== 'citations' && searchMode !== 'citationsTop') return;
         setActiveCollection(null);
+        // A typed search is not a browse view / transcript sort — clear both so
+        // the top-nav and By Date/Topic/Newest highlights don't linger. Verse
+        // modes keep their nav highlight (the search IS the verse view).
+        if (searchMode === 'metadata' || searchMode === 'sentences') navView = null;
+        transcriptView = null;
+        _refreshButtonGroups();
         lastSearchTerm = term;
         currentPage = 1;
         performSearch();
@@ -2002,6 +2065,28 @@ PPP.app = (function () {
         }
     }
 
+    // Reflect the current single-active state onto all three button groups.
+    // Called from setSearchMode and from every browse/view handler so the
+    // highlight always matches what the app is actually showing.
+    function _refreshButtonGroups() {
+        // Group A: In Titles / In Text. Active only when NOT in a browse/nav
+        // view (navView null) — so browsing (By 2026 etc.) greys them out and
+        // only one thing looks selected at a time.
+        var kw = document.querySelector('.keywords-search-btn');
+        var tx = document.querySelector('.text-search-btn');
+        if (kw) kw.classList.toggle('active', !navView && !transcriptView && textSearchMode === 'metadata');
+        if (tx) tx.classList.toggle('active', !navView && !transcriptView && textSearchMode === 'sentences');
+        // Group B: top nav row — exactly one active iff navView matches.
+        document.querySelectorAll('.main-button-row .combo-btn').forEach(function (btn) {
+            btn.classList.toggle('active', !!navView && btn.getAttribute('data-navview') === navView);
+        });
+        // Group C (By Date/Topic/Newest) is rebuilt inside the results header on
+        // every render, reading transcriptView via getTranscriptView() — so no
+        // direct DOM work is needed here.
+    }
+
+    function getTranscriptView() { return transcriptView; }
+
     function setSearchMode(mode) {
         if (_sentenceSearchBusy) { ui.toast(i18n.t('searchInProgress')); return; }
         closeAllPanels();
@@ -2016,9 +2101,12 @@ PPP.app = (function () {
             // only check the token. See _sentenceSearchSeq above.
             _sentenceSearchSeq++;
         }
-        document.querySelectorAll('.search-mode-btn').forEach(function (btn) {
-            btn.classList.toggle('active', btn.getAttribute('data-mode') === searchMode);
-        });
+        // Group A is sticky on the two TEXT search modes only — verse views
+        // (citations/citationsTop) do not blank out the In Titles/In Text pair.
+        if (searchMode === 'metadata' || searchMode === 'sentences') {
+            textSearchMode = searchMode;
+        }
+        _refreshButtonGroups();
         // Hide verse sources panel when switching away from citations mode
         var versePanel = document.getElementById('verseSourcesList');
         if (versePanel && mode !== 'citations') {
@@ -2085,6 +2173,7 @@ PPP.app = (function () {
         if (!dataLoaded) return;
         closeAllPanels();
         track('quick-action', { action: 'latest-files' });
+        navView = 'byAdded'; transcriptView = null;
         setSearchMode('metadata');
 
         if (usingSqlite) {
@@ -2138,6 +2227,7 @@ PPP.app = (function () {
         if (!dataLoaded) return;
         closeAllPanels();
         track('quick-action', { action: 'by-2026' });
+        navView = 'by2026'; transcriptView = null;
         setSearchMode('metadata');
 
         if (usingSqlite) {
@@ -2187,6 +2277,7 @@ PPP.app = (function () {
         if (!dataLoaded) return;
         closeAllPanels();
         track('quick-action', { action: 'latest-transcripts' });
+        navView = null; transcriptView = 'newest';
         setSearchMode('metadata');
 
         if (usingSqlite) {
@@ -2243,6 +2334,7 @@ PPP.app = (function () {
         if (!dataLoaded) return;
         closeAllPanels();
         track('quick-action', { action: 'all-transcripts-by-date' });
+        navView = null; transcriptView = 'byDate';
         setSearchMode('metadata');
 
         if (usingSqlite) {
@@ -2311,6 +2403,8 @@ PPP.app = (function () {
         var _rt = document.getElementById('resultsTable');
         if (_rt) _rt.style.display = '';
         track('quick-action', { action: 'favorites' });
+        navView = 'favorites'; transcriptView = null;
+        _refreshButtonGroups();
 
         var cols = PPP.favorites ? PPP.favorites.getCollections() : [];
         if (cols.length === 0) {
@@ -2501,12 +2595,17 @@ PPP.app = (function () {
         var div = document.getElementById('recommendationsList');
         var resultsTable = document.getElementById('resultsTable');
         if (div.style.display !== 'none' && div.style.display !== '') {
+            // Toggle OFF — panel closes, no browse view is active anymore.
             div.style.display = 'none';
             if (resultsTable) resultsTable.style.display = '';
+            navView = null;
+            _refreshButtonGroups();
             return;
         }
         closeAllPanels();
         if (!dataLoaded) return;
+        navView = 'topSearches'; transcriptView = null;
+        _refreshButtonGroups();
         if (resultsTable) resultsTable.style.display = 'none';
         setComboDisplay(i18n.t('recommendations'));
 
@@ -2581,13 +2680,18 @@ PPP.app = (function () {
         var div = document.getElementById('topicsList');
         var resultsTable = document.getElementById('resultsTable');
         if (div.style.display !== 'none' && div.style.display !== '') {
+            // Toggle OFF — By Topic no longer the active transcript view.
             div.style.display = 'none';
             if (resultsTable) resultsTable.style.display = '';
+            transcriptView = null;
+            _refreshButtonGroups();
             return;
         }
         closeAllPanels();
         document.getElementById('recommendationsList').style.display = 'none';
         if (!dataLoaded) return;
+        navView = null; transcriptView = 'byTopic';
+        _refreshButtonGroups();
         if (resultsTable) resultsTable.style.display = 'none';
 
         if (usingSqlite) {
@@ -3577,48 +3681,55 @@ PPP.app = (function () {
         _sentenceParsed = parsed;
         _sentenceTerm = myTerm;
 
-        ui.showLoading(i18n.t('preparingTextSearch'));
+        ui.showLoading(i18n.t('searching') + ' 0/21…');
         ui.updateProgress(0);
 
-        db.loadSentencesDB(function (p) { ui.updateProgress(p); }).then(function () {
-            // Superseded while the (potentially slow, one-time) sentences DB
-            // loaded — drop silently, do not hide another run's loader/render.
+        // Phase B: chunked search across all sentence shards (premium + raw).
+        // One shard DB resident at a time; per-shard progress line; merged +
+        // re-capped rows and summed totals come back in a single result.
+        db.searchSentencesChunked(q.sql, q.countSql, q.params, function (done, total) {
+            if (!stillCurrent()) return;
+            ui.updateProgress(done / total);
+            ui.showLoading(i18n.t('searching') + ' ' + done + '/' + total + '…');
+        }).then(function (res) {
+            // Final gate before ANY render / persist: a newer search or a
+            // mode/language switch since we started means these rows are
+            // stale — never leak them into the current view.
             if (!stillCurrent()) return;
             ui.hideLoading();
-            // COUNT first (totals for the summary line), then the capped page query.
-            return db.querySentencesAsync(q.countSql, q.params).then(function (countRows) {
-                if (!stillCurrent()) return;
-                var c = countRows[0] || {};
-                var n = c.n || 0;
-                var lectures = c.lectures || 0;
-                return db.querySentencesAsync(q.sql, q.params).then(function (rows) {
-                    // Final gate before ANY render / persist: a newer search or a
-                    // mode/language switch since we started means these rows are
-                    // stale — never leak them into the current view.
-                    if (!stillCurrent()) return;
-                    var elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
-                    document.getElementById('timer').textContent = i18n.t('elapsedTime') + ' ' + elapsed + ' ' + i18n.t('seconds');
-                    track('search', { query: myTerm, mode: 'sentences', results: n });
-                    // Build the nr -> matched-sentence-texts map + word list for the
-                    // ZIP export highlighter (downloadSelectedZip / _addOneToZip).
-                    _sentenceMatchesByNr = {};
-                    rows.forEach(function (r) {
-                        var key = String(r.nr);
-                        if (!_sentenceMatchesByNr[key]) _sentenceMatchesByNr[key] = [];
-                        _sentenceMatchesByNr[key].push(r.sentence || '');
-                    });
-                    _sentenceWords = _extractSentenceSearchWords(parsed);
-                    _sentenceLastRender = { rows: rows, term: myTerm, totals: { total: n, lectures: lectures, shown: rows.length } };
-                    ui.renderSentenceResults(rows, myTerm, _sentenceLastRender.totals, _sentenceWords);
-                });
+            var rows = (res && res.rows) || [];
+            var n = (res && res.count) || 0;
+            var lectures = (res && res.lectures) || 0;
+            var elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
+            document.getElementById('timer').textContent = i18n.t('elapsedTime') + ' ' + elapsed + ' ' + i18n.t('seconds');
+            track('search', { query: myTerm, mode: 'sentences', results: n });
+            // Build the nr -> matched-sentence-texts map + word list for the
+            // ZIP export highlighter (downloadSelectedZip / _addOneToZip).
+            _sentenceMatchesByNr = {};
+            rows.forEach(function (r) {
+                var key = String(r.nr);
+                if (!_sentenceMatchesByNr[key]) _sentenceMatchesByNr[key] = [];
+                _sentenceMatchesByNr[key].push(r.sentence || '');
             });
+            _sentenceWords = _extractSentenceSearchWords(parsed);
+            _sentenceLastRender = { rows: rows, term: myTerm, totals: { total: n, lectures: lectures, shown: rows.length } };
+            ui.renderSentenceResults(rows, myTerm, _sentenceLastRender.totals, _sentenceWords);
         }).catch(function (err) {
             // Only surface an error for the still-current search — a superseded
             // run rejecting must not overwrite the live view.
             if (!stillCurrent()) return;
             ui.hideLoading();
             console.error('Sentence search error:', err);
-            document.getElementById('resultsInfo').innerHTML = '<strong>Error: ' + utils.escapeHtml(err.message) + '</strong>';
+            var infoEl = document.getElementById('resultsInfo');
+            if (!navigator.onLine) {
+                // P2: offline + sentence shards not installed (opted out, or an
+                // older offline install that predates shards). The shard fetch
+                // can't reach the network — show a clean "not available offline"
+                // message instead of a raw error.
+                infoEl.innerHTML = '<strong>' + utils.escapeHtml(i18n.t('offlineTextSearchUnavailable')) + '</strong>';
+            } else {
+                infoEl.innerHTML = '<strong>Error: ' + utils.escapeHtml(err.message) + '</strong>';
+            }
         }).then(function () {
             // ALWAYS release the busy lock for THIS run (success or error), so
             // it can never stick at true. Only clear the flag if no newer
@@ -3636,7 +3747,10 @@ PPP.app = (function () {
         if (!q) return;
         q.params.$limit = 100000;
 
-        db.querySentencesAsync(q.sql, q.params).then(function (rows) {
+        // Phase B: full (uncapped) export must also loop every shard — one
+        // shard resident at a time — and merge, same as the on-screen search.
+        db.searchSentencesChunked(q.sql, q.countSql, q.params).then(function (res) {
+            var rows = (res && res.rows) || [];
             if (typeof XLSX === 'undefined') {
                 console.error('XLSX library not available');
                 return;
@@ -3928,6 +4042,7 @@ PPP.app = (function () {
         toggleSelectPair: toggleSelectPair,
         showSelectToggle: _showSelectToggle, // used by ui.js renderSentenceResults()
         getDbRowByNr: _findDbRowByNr, // used by ui.js renderSentenceResults() (Dwnld. lookup)
+        getTranscriptView: getTranscriptView, // used by ui.js buildHeader() (By Date/Topic/Newest active state)
         openDownloadPanel: openDownloadPanel,
         closeDownloadPanel: closeDownloadPanel,
         clearSelection: clearSelection,
