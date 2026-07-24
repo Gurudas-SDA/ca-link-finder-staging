@@ -429,13 +429,13 @@ test.describe('PWA offline library', () => {
           return PPP.offlineStore.getState('install').catch(() => null);
         });
         if (installState &&
-            Object.keys(installState.completedCore || {}).length === 2 &&
+            Object.keys(installState.completedCore || {}).length === 3 &&
             Object.keys(installState.completedPacks || {}).length >= expectedDonePacks) break;
         if (Date.now() > deadline) break;
         await page.waitForTimeout(500);
       }
       expect(installState).not.toBeNull();
-      expect(Object.keys(installState.completedCore || {}).length).toBe(2);
+      expect(Object.keys(installState.completedCore || {}).length).toBe(3);
       expect(Object.keys(installState.completedPacks || {}).length)
         .toBeGreaterThanOrEqual(expectedDonePacks);
 
@@ -786,7 +786,10 @@ test.describe('PWA interrupted install (Phase B)', () => {
 
       // (c) Both core files committed → the cheap offline-capable flag is set.
       expect(state.coreReady).toBe(true);
-      expect(Object.keys(state.install.completedCore).sort()).toEqual(['extras', 'meta']);
+      // All three core files land (see P14 — `sentences` is part of the base),
+      // but coreReady is gated on meta+extras only, so it flips long before.
+      expect(Object.keys(state.install.completedCore).sort())
+        .toEqual(['extras', 'meta', 'sentences']);
 
       // (d) Everything else really did land: the pool ran to the end instead
       // of aborting on the first failure (the old behaviour).
@@ -1056,6 +1059,107 @@ test.describe('Field bugs 2026-07-24 (quota loop, missing-lecture copy)', () => 
           .toContainText('not downloaded', { timeout: 15000 });
       } finally {
         await context.setOffline(false);
+      }
+    });
+  });
+});
+
+// ===========================================================================
+// core.sentences joins the offline base (2026-07-24).
+//
+// The manifest has always described core.sentences (the EN sentence DB, ~20 MB
+// packed / 66 MB raw, behind offline transcript-text search) and db.js has
+// always tried to open it as 'core:sentences' — but the downloader hardcoded
+// ['meta','extras'] in three places, so the file was never installed and that
+// lookup silently fell back to the network: no offline sentence search.
+// Now the core key list is one CORE_KEYS constant covering all three files, so
+// the base grows by exactly core.sentences.size. The tiered-readiness gate
+// (coreReady / isCoreInstalled) is deliberately untouched — meta+extras only.
+// ===========================================================================
+
+test.describe('core.sentences in the offline base', () => {
+  test.setTimeout(180000);
+
+  test('P14a. computeInstallBytes counts core.sentences: the EN-only base grows by exactly its manifest size', async ({ page }) => {
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.downloader.computeInstallBytes);
+
+    const sizes = await page.evaluate(async () => {
+      const m = await PPP.downloader.fetchManifest();
+      const enPacks = (m.packs || [])
+        .filter(p => p.lang === 'en')
+        .reduce((s, p) => s + (p.size || 0), 0);
+      return {
+        sentences: m.core.sentences ? m.core.sentences.size : 0,
+        metaExtras: m.core.meta.size + m.core.extras.size,
+        enPacks: enPacks,
+        base: PPP.downloader.computeInstallBytes(m, [], false),
+        withShards: PPP.downloader.computeInstallBytes(m, [], true),
+        shards: (m.sentenceShards || []).reduce((s, x) => s + (x.size || 0), 0),
+      };
+    });
+
+    // The manifest really describes the sentence DB (guard against a build
+    // that stops emitting it — the whole test would otherwise pass vacuously).
+    expect(sizes.sentences).toBeGreaterThan(1000000);
+
+    // EN-only base = meta + extras + sentences + EN packs. Stated as an exact
+    // identity: the base is the old (meta+extras+packs) total PLUS exactly
+    // core.sentences.size — nothing more, nothing double-counted.
+    const oldBase = sizes.metaExtras + sizes.enPacks;
+    expect(sizes.base).toBe(oldBase + sizes.sentences);
+
+    // The opt-in shard selection is additive on top of the same base.
+    expect(sizes.withShards).toBe(sizes.base + sizes.shards);
+  });
+
+  test.describe('deterministic network (SW blocked)', () => {
+    test.use({ serviceWorkers: 'block' });
+
+    test('P14b. core.sentences is in the install work list: it is downloaded and recorded in completedCore', async ({ page }) => {
+      // Mock the manifest down to core-only (no packs, no shards) so this test
+      // exercises the CORE work list in seconds instead of pulling the whole
+      // ~151 MB EN base. Same page.route fixture technique as P4/PL3.
+      const coreOnly = JSON.parse(JSON.stringify(realManifest));
+      coreOnly.packs = [];
+      coreOnly.sentenceShards = [];
+      expect(coreOnly.core.sentences).toBeTruthy();
+
+      await page.route('**/data/manifest.json*', route => route.fulfill({
+        status: 200, contentType: 'application/json', body: JSON.stringify(coreOnly),
+      }));
+
+      const coreReqs = [];
+      page.on('request', req => {
+        const u = req.url();
+        if (/\/data\/ppp_(meta|lecture_extras|sentences_en)/.test(u)) coreReqs.push(u);
+      });
+
+      await addAutoInstallHook(page);
+      await page.goto('./');
+      await waitForLocalManifestSet(page, 150000);
+
+      // (a) The sentence DB was actually fetched — the whole point: before the
+      // fix the work list only ever contained meta + extras.
+      expect(coreReqs.some(u => u.includes(realManifest.core.sentences.path))).toBe(true);
+
+      // (b) It is in IndexedDB under the key db.js opens ('core:sentences'),
+      // decompressible and of the manifest's raw size.
+      const stored = await page.evaluate(async () => {
+        const gz = await PPP.offlineStore.getGz('core:sentences');
+        return gz ? gz.byteLength : 0;
+      });
+      expect(stored).toBe(realManifest.core.sentences.size);
+
+      // (c) Recorded in the durable resume state, so a resume never re-pulls it.
+      const install = await page.evaluate(() => PPP.offlineStore.getState('install'));
+      const local = await page.evaluate(() => PPP.offlineStore.getState('localManifest'));
+      expect(local).not.toBeNull();
+      // A COMPLETED install deletes `install`; when it is still present (timing),
+      // sentences must already be flagged there.
+      if (install) {
+        expect(Object.keys(install.completedCore).sort())
+          .toEqual(['extras', 'meta', 'sentences']);
       }
     });
   });

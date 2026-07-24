@@ -12,6 +12,13 @@ PPP.downloader = (function () {
 
     var store = PPP.offlineStore;
     var CONCURRENCY = 2;
+    // Core files that every install downloads: the meta DB, the summaries /
+    // essence extras, and `sentences` — the EN sentence DB behind offline
+    // transcript-text search, which db.js opens as 'core:sentences' (without it
+    // that lookup silently falls back to the network, i.e. no offline search).
+    // NOTE: the tiered-readiness gate (coreReady / isCoreReady) deliberately
+    // waits only for meta+extras, so the app still opens after ~19.5 MB.
+    var CORE_KEYS = ['meta', 'extras', 'sentences'];
     // Per-item attempts and the pause before each retry. Mobile networks fail
     // in bursts (tunnel, lift, cell handover) — an immediate second try tends
     // to fail for the same reason, so back off before giving the item up.
@@ -95,7 +102,7 @@ PPP.downloader = (function () {
         var sel = _normLangs(langs);
         var bytes = 0;
         var core = manifest.core || {};
-        ['meta', 'extras'].forEach(function (k) {
+        CORE_KEYS.forEach(function (k) {
             if (core[k] && core[k].size) bytes += core[k].size;
         });
         (manifest.packs || []).forEach(function (p) {
@@ -337,7 +344,7 @@ PPP.downloader = (function () {
         var sel = _normLangs(langs);
         var work = [];
         var doneBytes = 0;
-        ['meta', 'extras'].forEach(function (k) {
+        CORE_KEYS.forEach(function (k) {
             var entry = manifest.core[k];
             if (!entry) return;
             var done = install.completedCore[k];
@@ -541,7 +548,11 @@ PPP.downloader = (function () {
      * returns { changedItems, coreChanged } or { changedItems: 0, error }.
      */
     function checkForUpdates() {
-        var coreChanged = { meta: false, extras: false };
+        // One flag per core key (derived, so a new core file cannot be
+        // forgotten here). Consumers read individual keys (app.js reads
+        // .meta / .extras), so extra keys are additive and break nothing.
+        var coreChanged = {};
+        CORE_KEYS.forEach(function (k) { coreChanged[k] = false; });
         return fetchManifest().then(function (remote) {
             return store.getState('localManifest').then(function (local) {
                 if (!local) return { changedItems: 0, coreChanged: coreChanged };
@@ -552,7 +563,7 @@ PPP.downloader = (function () {
 
                 var changedItems = 0;
                 var work = [];
-                ['meta', 'extras'].forEach(function (k) {
+                CORE_KEYS.forEach(function (k) {
                     var re = remote.core[k];
                     var lo = local.core && local.core[k];
                     if (re && (!lo || lo.hash !== re.hash)) {
