@@ -29,8 +29,8 @@ self.PRECACHE = [
   'guide/ru/index.html?v=eb6fe36b',
   'icon-192.png?v=fab41429',
   'icon-512.png?v=88196aa7',
-  'index.html?v=ee7c5417',
-  'js/app.js?v=cf9aab30',
+  'index.html?v=d0a8e736',
+  'js/app.js?v=615f5c5e',
   'js/auth-modal.js?v=2ba0f1fc',
   'js/auth.js?v=a4f11a49',
   'js/config.js?v=732be8cf',
@@ -51,4 +51,4 @@ self.PRECACHE = [
   'js/vendor/xlsx.full.min.js?v=cc015130',
   'manifest.json?v=abe52cf2',
 ];
-self.SHELL_VERSION = '67794d227e5a';
+self.SHELL_VERSION = '4e6556e07262';
