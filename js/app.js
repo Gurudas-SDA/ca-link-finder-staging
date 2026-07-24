@@ -3481,13 +3481,17 @@ PPP.app = (function () {
 
         firstFetch.then(function (rows) {
             if (rows.length === 0) {
-                if (_netFetchFailed) {
-                    // Nothing in IDB and the network fetch actually FAILED
-                    // (transport rejection) — this is a genuine offline state.
-                    // Gating on the real failure (not net.online) means a
-                    // device whose navigator.onLine lies "false" while online
-                    // no longer gets the offline modal after a successful or
-                    // 404 fetch (field bug 2026-07-24, Android LTE).
+                if (_netFetchFailed || !net.online) {
+                    // Nothing in IDB and we are offline by either signal:
+                    // the network fetch actually FAILED (transport rejection),
+                    // OR navigator.onLine says offline. Both arms are needed:
+                    // a device whose navigator.onLine lies "false" while
+                    // online opens the transcript via the (successful) fetch
+                    // and never reaches this branch; but a genuinely offline
+                    // device can receive a CACHED 404 response (fetch resolves,
+                    // no transport failure), and without the !net.online arm it
+                    // would fall through to the Drive-link modal whose link is
+                    // dead offline (field bugs 2026-07-24, Android).
                     if (!_offlineInstalled) {
                         title.textContent = i18n.t('requiresInternet');
                         body.textContent = i18n.t('requiresInternet');
