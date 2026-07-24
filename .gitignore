@@ -5,3 +5,6 @@ playwright-report/
 
 # Local-only: synced from deploy/transcripts (not tracked — 246 MB, deploy is canonical)
 transcripts/
+
+# Shard build intermediate (655 MB — exceeds GitHub's 100 MB file limit; runtime uses data/shards/)
+data/ppp_sentences_full_en.db
