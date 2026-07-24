@@ -239,13 +239,19 @@ PPP.offlineStore = (function () {
                 throw new Error('Pack member out of bounds: nr=' + mv.nr);
             }
         }
-        var packBlob = new Blob([arrayBuffer]);
+        // Each member gets its OWN copied bytes — NOT a slice of one parent
+        // Blob. WebKit (iOS Safari) serializes a Blob slice into IndexedDB by
+        // writing the slice's PARENT data per record, so ~600 slices of a
+        // 10 MB pack ballooned to gigabytes on disk (field bug 2026-07-24:
+        // an iPad lost ~19 GB to a half-finished 139 MB install). A Blob
+        // built from a typed-array view copies only the member's bytes.
         var entries = [];
         for (var i = 0; i < index.length; i++) {
             var m = index[i];
+            var memberBytes = new Uint8Array(arrayBuffer, blobStart + m.off, m.len);
             entries.push({
                 key: keyFn(m.nr, m),
-                gz: packBlob.slice(blobStart + m.off, blobStart + m.off + m.len, 'application/gzip'),
+                gz: new Blob([memberBytes], { type: 'application/gzip' }),
                 raw: m.raw
             });
         }
