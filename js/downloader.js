@@ -12,6 +12,15 @@ PPP.downloader = (function () {
 
     var store = PPP.offlineStore;
     var CONCURRENCY = 2;
+    // Per-item attempts and the pause before each retry. Mobile networks fail
+    // in bursts (tunnel, lift, cell handover) — an immediate second try tends
+    // to fail for the same reason, so back off before giving the item up.
+    var MAX_ATTEMPTS = 4;
+    var RETRY_DELAYS = [1000, 4000, 10000];
+
+    function _delay(ms) {
+        return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    }
 
     function fetchManifest() {
         return fetch('data/manifest.json', { cache: 'no-store' }).then(function (r) {
@@ -196,12 +205,16 @@ PPP.downloader = (function () {
 
     /**
      * Storage preflight: reject when the device clearly lacks room for the
-     * full library (manifest bytes × 1.4 headroom). Advisory API — when
-     * estimate() is unavailable the install just proceeds.
+     * bytes still to be written (needBytes × 1.4 headroom). Takes the byte
+     * count directly, because on a RESUME only the remaining bytes need room:
+     * est.usage already includes everything written so far, so checking the
+     * full selection would make a nearly-finished install fail more easily
+     * than a fresh one. Advisory API — when estimate() is unavailable the
+     * install just proceeds.
      */
-    function _storagePreflight(manifest, langs, includeShards) {
+    function _storagePreflight(needBytes) {
         if (!(navigator.storage && navigator.storage.estimate)) return Promise.resolve();
-        var needBytes = computeInstallBytes(manifest, langs, includeShards);
+        if (!(needBytes > 0)) return Promise.resolve();
         return navigator.storage.estimate().then(function (est) {
             if (!est || est.quota == null || est.usage == null) return;
             var free = est.quota - est.usage;
@@ -230,10 +243,19 @@ PPP.downloader = (function () {
             return _fetchWithProgress(_itemUrl(entry), onBytes)
                 .then(function (buf) { return _verifyBuffer(buf, entry, item.name); })
                 .then(function (buf) {
+                    // The `completedX` flags are set INSIDE the apply callback,
+                    // never at download-completion time. Downloads run at
+                    // CONCURRENCY 2, but applies are serialized; flagging early
+                    // meant item A's transaction could serialize an install
+                    // snapshot in which item B was already flagged complete
+                    // while B's own transaction had not run yet. A crash in
+                    // that window made the resume skip B forever — a silently
+                    // missing pack. Inside the apply callback the flag and the
+                    // records commit in the SAME transaction.
                     if (item.type === 'core') {
                         var key = 'core:' + item.coreKey;
-                        install.completedCore[item.coreKey] = { hash: entry.hash, size: entry.size };
                         return _enqueueApply(function () {
+                            install.completedCore[item.coreKey] = { hash: entry.hash, size: entry.size };
                             return store.putFile(
                                 { key: key, packId: key, gz: new Blob([buf], { type: 'application/gzip' }), raw: entry.raw },
                                 install._track ? { key: 'install', value: install } : null
@@ -242,8 +264,8 @@ PPP.downloader = (function () {
                     }
                     if (item.type === 'shard') {
                         var skey = 'shard:' + entry.id;
-                        install.completedShards[entry.id] = { sha256: entry.sha256, size: entry.size };
                         return _enqueueApply(function () {
+                            install.completedShards[entry.id] = { sha256: entry.sha256, size: entry.size };
                             return store.putFile(
                                 { key: skey, packId: skey, gz: new Blob([buf], { type: 'application/gzip' }), raw: entry.raw },
                                 install._track ? { key: 'install', value: install } : null
@@ -252,20 +274,24 @@ PPP.downloader = (function () {
                     }
                     // Pack: parse + slice fully BEFORE the transaction opens.
                     var entries = store.parsePack(buf, _packKeyFn(entry));
-                    install.completedPacks[entry.id] = { hash: entry.hash, size: entry.size };
                     return _enqueueApply(function () {
+                        install.completedPacks[entry.id] = { hash: entry.hash, size: entry.size };
                         return store.applyPack(entry.id, entries,
                             install._track ? { key: 'install', value: install } : null);
                     });
                 })
                 .catch(function (err) {
-                    // One retry per item on mismatch/network error; roll back
-                    // this item's progress bytes so the bar stays truthful.
+                    // Up to MAX_ATTEMPTS per item on mismatch/network error,
+                    // with a growing pause between them; roll back this item's
+                    // progress bytes so the bar stays truthful.
                     if (item.type === 'core') delete install.completedCore[item.coreKey];
                     else if (item.type === 'shard') delete install.completedShards[entry.id];
                     else delete install.completedPacks[entry.id];
                     resetBytes();
-                    if (attempt < 2) return tryOnce();
+                    if (attempt < MAX_ATTEMPTS) {
+                        return _delay(RETRY_DELAYS[attempt - 1] || RETRY_DELAYS[RETRY_DELAYS.length - 1])
+                            .then(tryOnce);
+                    }
                     throw new Error('Download failed: ' + item.name + ' (' + err.message + ')');
                 });
         }
@@ -316,17 +342,26 @@ PPP.downloader = (function () {
     function firstInstall(onProgress, langs, includeShards) {
         var sel = _normLangs(langs);
         var wantShards = !!includeShards;
+        // Ask for eviction protection BEFORE the first byte, not after the
+        // last: a ~139 MB library written into a non-persistent origin can be
+        // evicted by the phone halfway through the download. Fire-and-forget.
+        store.requestPersist();
         return fetchManifest().then(function (manifest) {
-            return _storagePreflight(manifest, sel, wantShards).then(function () {
-                return store.getState('install');
-            }).then(function (saved) {
+            return store.getState('install').then(function (saved) {
                 var install = saved || { completedCore: {}, completedPacks: {}, completedShards: {} };
                 if (!install.completedShards) install.completedShards = {};
+                // Record the selection ON the durable state, present in the
+                // very first persisted snapshot: a later auto-resume (boot,
+                // "online" event) must know WHICH languages and whether the
+                // sentence shards were chosen, without asking the user again.
+                install.langs = sel;
+                install.shards = wantShards;
                 install._track = true;   // commit install snapshots with each item
                 var plan = _buildWorkList(manifest, install, sel, wantShards);
                 var totalBytes = computeInstallBytes(manifest, sel, wantShards);
                 var baseBytes = plan.doneBytes;
                 var itemBytes = {};      // per-item received bytes (reset on retry)
+                var failed = [];         // items that exhausted their attempts
                 var lastEmit = 0;
 
                 function emit(force) {
@@ -339,6 +374,14 @@ PPP.downloader = (function () {
                     onProgress({ loadedBytes: Math.min(loaded, totalBytes), totalBytes: totalBytes });
                 }
 
+                // Preflight runs AFTER the work list so it can ask only for the
+                // REMAINING bytes (see _storagePreflight), and the resume
+                // record is persisted BEFORE the pool starts so that a crash
+                // before the first item completes still leaves a resumable,
+                // selection-carrying install state behind.
+                return _storagePreflight(totalBytes - plan.doneBytes).then(function () {
+                    return store.setState('install', install);
+                }).then(function () {
                 emit(true);
                 return _runPool(plan.work, function (item) {
                     itemBytes[item.name] = 0;
@@ -351,30 +394,106 @@ PPP.downloader = (function () {
                         delete itemBytes[item.name];
                         baseBytes += item.entry.size;
                         emit(true);
+                        // Cheap "the app can already open offline" flag: both
+                        // core files present = meta DB + extras in IDB.
+                        if (item.type === 'core' &&
+                            install.completedCore.meta && install.completedCore.extras) {
+                            return store.setState('coreReady', true).catch(function () {});
+                        }
+                    }).catch(function (err) {
+                        // Failure tolerance (firstInstall ONLY): one bad pack
+                        // must not throw away a 139 MB download. Record it and
+                        // let the pool run to the end; the caller resumes the
+                        // rest later. checkForUpdates/addLanguages keep their
+                        // original abort-on-error behaviour.
+                        delete itemBytes[item.name];
+                        failed.push({ name: item.name, error: String((err && err.message) || err) });
+                        emit(true);
                     });
                 }, CONCURRENCY).then(function () {
                     emit(true);
-                    // The stored localManifest must reflect what was actually
-                    // installed: when shards are opted out, strip them so the
-                    // delta check never treats the (never-downloaded) shards as
-                    // present. Runtime shard search reads the LIVE manifest
-                    // (db.js), not this stored copy, so this is safe.
-                    return store.setState('localManifest', _manifestForStore(manifest, wantShards));
-                }).then(function () {
-                    // Persist the installed opt-in language selection so delta
-                    // updates and "add a language later" know what to maintain.
-                    return store.setState('langs', sel);
-                }).then(function () {
-                    // Persist the shard opt-in choice so delta updates know
-                    // whether to keep the sentence shards fresh.
-                    return store.setState('shards', wantShards);
-                }).then(function () {
-                    return store.deleteState('install');
+                    if (failed.length > 0) {
+                        // Do NOT write localManifest: checkForUpdates treats it
+                        // as ground truth, so recording it over a library with
+                        // holes would make those holes permanent. The `install`
+                        // state stays in place so the next attempt resumes
+                        // exactly the missing items.
+                        var names = failed.map(function (f) { return f.name; }).join(', ');
+                        var perr = new Error('Offline install incomplete: ' +
+                            failed.length + ' item(s) failed (' + names + ')');
+                        perr.partial = true;
+                        perr.failedItems = failed;
+                        perr.doneBytes = baseBytes;
+                        perr.totalBytes = totalBytes;
+                        throw perr;
+                    }
+                    // Success tail, committed as ONE transaction. Written as
+                    // four separate transactions it had a half-finished window:
+                    // a reload between them could leave `localManifest` stored
+                    // with `install` never deleted (a stale resume record that
+                    // lingers forever), or worse `localManifest` stored with
+                    // `langs`/`shards` still missing — checkForUpdates then runs
+                    // with an empty selection and shards opted out, and deletes
+                    // every installed sentence shard. Atomic now: the install is
+                    // either fully complete or fully resumable, never half.
+                    //  - localManifest must reflect what was actually installed:
+                    //    when shards are opted out, strip them so the delta
+                    //    check never treats the (never-downloaded) shards as
+                    //    present. Runtime shard search reads the LIVE manifest
+                    //    (db.js), not this stored copy, so this is safe.
+                    //  - langs: the installed opt-in language selection, so
+                    //    delta updates and "add a language later" know what to
+                    //    maintain.
+                    //  - shards: the shard opt-in choice, so delta updates know
+                    //    whether to keep the sentence shards fresh.
+                    return store.commitState({
+                        localManifest: _manifestForStore(manifest, wantShards),
+                        langs: sel,
+                        shards: wantShards
+                    }, ['install']);
                 }).then(function () {
                     return manifest;
                 });
+                });   // close _storagePreflight().then(setState('install')).then(...)
             });
         });
+    }
+
+    /**
+     * Durable resume state of an interrupted first install, or null when there
+     * is none. `langs`/`shards` are the selection recorded at install START
+     * (see firstInstall), so the boot path can continue exactly what the user
+     * originally chose without asking again.
+     */
+    function getResumeState() {
+        return store.getState('install').then(function (install) {
+            if (!install) return null;
+            return {
+                install: install,
+                langs: install.langs || [],
+                shards: !!install.shards
+            };
+        });
+    }
+
+    /**
+     * Is the CORE of the library ('core:meta' + 'core:extras') on the device?
+     * When it is, the app can open fully offline even though packs are still
+     * missing — individual transcripts fall back to the network when online.
+     * Implemented as a cheap state flag written by firstInstall as soon as
+     * both core items commit; the getGz() probe is only a FALLBACK for
+     * libraries installed before the flag existed, because getGz reads the
+     * whole (~34 MB) stored blob into memory and is far too heavy to run on
+     * every boot.
+     */
+    function isCoreReady() {
+        return store.getState('coreReady').then(function (flag) {
+            if (flag) return true;
+            return store.getGz('core:meta').then(function (meta) {
+                if (!meta) return false;
+                return store.getGz('core:extras').then(function (extras) { return !!extras; });
+            });
+        }).catch(function () { return false; });
     }
 
     /**
@@ -561,6 +680,8 @@ PPP.downloader = (function () {
         checkForUpdates: checkForUpdates,
         computeInstallBytes: computeInstallBytes,
         getInstalledLangs: getInstalledLangs,
-        addLanguages: addLanguages
+        addLanguages: addLanguages,
+        getResumeState: getResumeState,
+        isCoreReady: isCoreReady
     };
 })();

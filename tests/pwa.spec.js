@@ -687,3 +687,265 @@ test.describe('PWA offline language selection (Phase A)', () => {
     });
   });
 });
+
+// ===========================================================================
+// Phase B — INTERRUPTED install: a half-downloaded library must still be a
+// FULLY OFFLINE app, and must finish itself.
+//
+// User-reported bug: after a download that broke off, "even English texts
+// don't work offline" — the app had ~150 MB in IndexedDB and still refused to
+// open without a network, because offline usability was gated on the
+// `localManifest` state key, which firstInstall only writes when EVERY item
+// succeeded.
+//
+// The fix (js/downloader.js firstInstall + js/app.js loadData):
+//   * one failed item no longer aborts the pool — failures are collected and
+//     firstInstall rejects with err.partial / failedItems / doneBytes /
+//     totalBytes AFTER the rest of the library has landed;
+//   * on a partial failure `localManifest` is deliberately NOT written (it must
+//     keep meaning "complete install" — checkForUpdates treats it as ground
+//     truth), while the `install` resume state (with .langs/.shards) survives;
+//   * a `coreReady` flag is set the moment core:meta + core:extras commit;
+//   * loadData(): no localManifest + resume state + coreReady → openFromIdb(),
+//     i.e. the app opens from IndexedDB with ZERO network, and resumes the
+//     rest by itself when online.
+// ===========================================================================
+
+/** The smallest EN pack — the one we sabotage. Small on purpose: the item is
+ *  retried MAX_ATTEMPTS=4 times with 1s/4s/10s backoff, so the cheapest
+ *  possible failing item keeps the wall clock down. Picked from the real
+ *  manifest — pack ids regenerate with every DB build. */
+const SMALLEST_EN_PACK = realManifest.packs
+  .filter(p => p.lang === 'en')
+  .slice()
+  .sort((a, b) => a.size - b.size)[0];
+
+/**
+ * Drive a REAL install (EN base only — ppp_install_langs='[]') with exactly
+ * one pack permanently failing, and return once the pool has finished and
+ * firstInstall has rejected with err.partial. The interrupted-copy in
+ * #offlineProgress (i18n offlineInterrupted, rendered ONLY in the
+ * `err.partial` branch of startBackgroundInstall) is the end-of-pool signal —
+ * unlike an IDB poll it cannot fire while items are still in flight.
+ */
+async function makePartialInstall(page, blockedPack) {
+  await page.addInitScript(() => {
+    try {
+      localStorage.setItem('ppp_auto_install', '1');
+      localStorage.setItem('ppp_install_langs', '[]'); // EN base only — smaller/faster
+    } catch (e) {}
+  });
+  await page.route('**/' + blockedPack.path + '*', route => route.abort());
+  await page.goto('./');
+  await expect(page.locator('#offlineProgress'))
+    .toContainText('Download interrupted', { timeout: 260000 });
+}
+
+/** Read the offline-install state keys straight out of IndexedDB. */
+function readOfflineState(page) {
+  return page.evaluate(async () => ({
+    localManifest: await PPP.offlineStore.getState('localManifest'),
+    install: await PPP.offlineStore.getState('install'),
+    coreReady: await PPP.offlineStore.getState('coreReady'),
+    langs: await PPP.offlineStore.getState('langs'),
+  }));
+}
+
+/** Make a page believe it has no connection BEFORE any app code runs
+ *  (navigator.onLine drives loadData's resume/update branches and net.online). */
+function forceOffline(page) {
+  return page.addInitScript(() => {
+    try {
+      Object.defineProperty(navigator, 'onLine', { get: function () { return false; }, configurable: true });
+    } catch (e) {}
+  });
+}
+
+test.describe('PWA interrupted install (Phase B)', () => {
+  // Two full ~151 MB EN-base installs fit in the resume test; the others do
+  // one plus a 15 s retry ladder. The 90 s config timeout is far too small.
+  test.setTimeout(420000);
+
+  // Same rationale as the blocks above: page.route must deterministically see
+  // every request, so no service worker may sit in front of the network.
+  test.describe('deterministic network (SW blocked)', () => {
+    test.use({ serviceWorkers: 'block' });
+
+    test('P7. Partial install leaves a resumable, NON-complete state (no localManifest, install kept, coreReady set)', async ({ page }) => {
+      await makePartialInstall(page, SMALLEST_EN_PACK);
+
+      const state = await readOfflineState(page);
+
+      // (a) The completeness fence was NOT advanced — a library with a hole
+      // must never look "installed" to checkForUpdates.
+      expect(state.localManifest).toBeNull();
+
+      // (b) The resume state survived the failure, carrying the selection.
+      expect(state.install).not.toBeNull();
+      expect(state.install.completedPacks[SMALLEST_EN_PACK.id]).toBeUndefined();
+
+      // (c) Both core files committed → the cheap offline-capable flag is set.
+      expect(state.coreReady).toBe(true);
+      expect(Object.keys(state.install.completedCore).sort()).toEqual(['extras', 'meta']);
+
+      // (d) Everything else really did land: the pool ran to the end instead
+      // of aborting on the first failure (the old behaviour).
+      const enPacks = realManifest.packs.filter(p => p.lang === 'en').length;
+      expect(Object.keys(state.install.completedPacks).length).toBe(enPacks - 1);
+    });
+
+    test('P8. A partial library opens FULLY OFFLINE (regression: "even English texts don\'t work offline")', async ({ page, context }) => {
+      await makePartialInstall(page, SMALLEST_EN_PACK);
+      await page.close();
+
+      // New page in the SAME context (same IndexedDB) with an airtight data
+      // blackout: every manifest/DB/pack/transcript request is aborted, and
+      // navigator.onLine is false before any app code runs, so nothing can
+      // silently repair the library mid-test. The shell (html/css/js/wasm) is
+      // still served because service workers are blocked in this describe —
+      // there is no SW cache to serve it from, and the shell is not what this
+      // regression is about; the DATA must come from IndexedDB alone.
+      const page2 = await context.newPage();
+      await forceOffline(page2);
+      const dataRequests = [];
+      page2.on('request', req => {
+        if (/\/(packs\/|transcripts\/|data\/)/.test(req.url())) dataRequests.push(req.url());
+      });
+      await page2.route(/\/(packs\/|transcripts\/|data\/)/, route => route.abort());
+
+      await page2.goto('./');
+
+      // The app opens from IndexedDB — this is the whole bug.
+      await waitForDataReady(page2, 60000);
+      await expectSearchWorks(page2, 'krishna');
+
+      // It did NOT fall into the legacy "Requires an internet connection" dead
+      // end (loadDataLegacy's offline guard).
+      await expect(page2.locator('#progressBar')).toBeHidden();
+      const label = await page2.locator('#progressBar .progress-label').textContent();
+      expect(label || '').not.toMatch(/Requires an internet/i);
+
+      // Not one byte of data came from the network.
+      expect(dataRequests).toEqual([]);
+      await page2.close();
+    });
+
+    test('P9. Auto-resume: the interrupted install finishes itself, with no click', async ({ page, context }) => {
+      await makePartialInstall(page, SMALLEST_EN_PACK);
+      const before = await readOfflineState(page);
+      expect(before.localManifest).toBeNull();
+      await page.close();
+
+      // Same context, no abort route this time, online. NOTHING is clicked:
+      // loadData() sees resume+coreReady, opens from IDB and calls
+      // startBackgroundInstall(resume.langs, resume.shards) by itself.
+      const page2 = await context.newPage();
+      const packRequests = [];
+      page2.on('request', req => {
+        if (req.url().includes('/packs/')) packRequests.push(req.url());
+      });
+      await page2.goto('./');
+
+      // Opens offline-style from IDB immediately (partial branch), then the
+      // resume commits the completeness fence.
+      await waitForDataReady(page2, 60000);
+      await waitForLocalManifestSet(page2, 180000);
+
+      // localManifest lands a few IDB transactions BEFORE `langs`/`shards` are
+      // written and `install` is deleted — poll for the tail of that chain
+      // instead of racing it (Node-side poll, see the note in P3).
+      const cleanupDeadline = Date.now() + 30000;
+      for (;;) {
+        const s = await readOfflineState(page2);
+        if (s.install === null) break;
+        if (Date.now() > cleanupDeadline) break;
+        await page2.waitForTimeout(250);
+      }
+
+      const after = await readOfflineState(page2);
+      expect(after.localManifest).not.toBeNull();
+      expect(after.install).toBeNull();          // resume state cleaned up
+      expect(after.langs).toEqual([]);           // EN-base selection persisted
+
+      // Only the missing pack was re-fetched — the resume did not restart.
+      expect(packRequests.length).toBeGreaterThanOrEqual(1);
+      for (const url of packRequests) {
+        expect(url).toContain(SMALLEST_EN_PACK.id);
+      }
+      await page2.close();
+    });
+
+    test('P10. Delta-update path unchanged: checkForUpdates does NOT complete a partial library', async ({ page, context }) => {
+      await makePartialInstall(page, SMALLEST_EN_PACK);
+      await page.close();
+
+      // Offline-forced boot (so the auto-resume cannot run and finish the
+      // library behind the assertion), packs/DBs blocked, but data/manifest.json
+      // allowed so checkForUpdates can really fetch a remote manifest.
+      const page2 = await context.newPage();
+      await forceOffline(page2);
+      const packRequests = [];
+      page2.on('request', req => {
+        if (req.url().includes('/packs/')) packRequests.push(req.url());
+      });
+      await page2.route(/\/(packs\/|transcripts\/|data\/ppp_)/, route => route.abort());
+
+      await page2.goto('./');
+      await waitForDataReady(page2, 60000);
+
+      // At the moment the app first opens, the library is explicitly NOT
+      // flagged complete — offline usability came from the records, not the
+      // manifest fence.
+      const atOpen = await readOfflineState(page2);
+      expect(atOpen.localManifest).toBeNull();
+      expect(atOpen.install).not.toBeNull();
+
+      // Run the delta check explicitly: with no localManifest it must be a
+      // no-op (downloader.checkForUpdates early-returns) — it must never fill
+      // the holes nor write the fence. Only firstInstall/resume may do that.
+      const res = await page2.evaluate(() => PPP.downloader.checkForUpdates());
+      expect(res.changedItems).toBe(0);
+
+      const afterCheck = await readOfflineState(page2);
+      expect(afterCheck.localManifest).toBeNull();
+      expect(afterCheck.install).not.toBeNull();
+      expect(packRequests).toEqual([]);
+      await page2.close();
+    });
+
+    test('P11. The selection chosen at install START is persisted on the resume state', async ({ page }) => {
+      // Ask for a non-default selection (LV on top of the EN base). Only the
+      // START of the install matters here: firstInstall persists the `install`
+      // record — carrying .langs/.shards — BEFORE the pool runs, so a later
+      // auto-resume continues exactly what the user chose without asking again.
+      await page.addInitScript(() => {
+        try {
+          localStorage.setItem('ppp_auto_install', '1');
+          localStorage.setItem('ppp_install_langs', '["lv"]');
+        } catch (e) {}
+      });
+      await page.goto('./');
+
+      // Node-side poll (see the async-predicate note in P3).
+      const deadline = Date.now() + 60000;
+      let install = null;
+      for (;;) {
+        install = await page.evaluate(async () => {
+          if (!(window.PPP && PPP.offlineStore)) return null;
+          return PPP.offlineStore.getState('install').catch(() => null);
+        });
+        if (install) break;
+        if (Date.now() > deadline) break;
+        await page.waitForTimeout(250);
+      }
+      expect(install).not.toBeNull();
+      expect(install.langs).toEqual(['lv']);   // EN is the implicit base
+      expect(install.shards).toBe(false);      // ppp_install_shards not set
+
+      // And getResumeState() surfaces exactly that selection to the boot path.
+      const resume = await page.evaluate(() => PPP.downloader.getResumeState());
+      expect(resume.langs).toEqual(['lv']);
+      expect(resume.shards).toBe(false);
+    });
+  });
+});

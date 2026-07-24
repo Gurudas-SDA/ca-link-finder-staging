@@ -412,15 +412,50 @@ PPP.app = (function () {
                     if (navigator.onLine) backgroundUpdateCheck();
                 });
             }
-            // ONLINE is the base experience: load online immediately (fully usable).
-            // The offline download is OPTIONAL and offered only via the small
-            // "Work offline" button once the online DB is ready (see
-            // loadDataLegacy() -> onDataLoaded() -> maybeShowOfflineWorkButton()),
-            // never as an upfront banner while the DB is still loading.
-            loadDataLegacy();
-            var auto = false; try { auto = localStorage.getItem('ppp_auto_install') === '1'; } catch (e) {}
-            if (auto) { startBackgroundInstall(); }   // test/CI hook keeps exercising install
-            return;
+            // PARTIAL install (interrupted download). A half-downloaded library
+            // used to give zero offline capability; it no longer does. When the
+            // two core files landed, the meta DB is in IDB and the app opens
+            // FULLY offline — individual missing transcripts fall back to the
+            // network inside openHtmlTranscriptViewer (fetchTranscriptFile,
+            // guarded by net.online), so nothing breaks while the rest arrives.
+            // CRITICAL: this path never writes localManifest — offline
+            // usability here comes from the presence of the records, not from
+            // the manifest fence (which must keep meaning "complete install").
+            return Promise.all([
+                PPP.downloader.getResumeState ? PPP.downloader.getResumeState() : null,
+                PPP.downloader.isCoreReady ? PPP.downloader.isCoreReady() : false
+            ]).then(function (res) {
+                var resume = res[0];
+                var coreReady = res[1];
+                if (resume && coreReady) {
+                    // The app opens offline, but the library is NOT complete —
+                    // the info panel must say "continue", not "all downloaded".
+                    _offlinePartial = true;
+                    return openFromIdb().then(function () {
+                        // Continue the SAME selection the user originally
+                        // chose, in the background, with visible progress.
+                        if (navigator.onLine) startBackgroundInstall(resume.langs, resume.shards);
+                        else _ensureInstallListeners(resume.langs, resume.shards);
+                    });
+                }
+                if (resume) {
+                    // Core not there yet — today's behaviour (online app), but
+                    // the interrupted install resumes by itself.
+                    loadDataLegacy();
+                    if (navigator.onLine) startBackgroundInstall(resume.langs, resume.shards);
+                    else _ensureInstallListeners(resume.langs, resume.shards);
+                    return;
+                }
+                // ONLINE is the base experience: load online immediately (fully usable).
+                // The offline download is OPTIONAL and offered only via the small
+                // "Work offline" button once the online DB is ready (see
+                // loadDataLegacy() -> onDataLoaded() -> maybeShowOfflineWorkButton()),
+                // never as an upfront banner while the DB is still loading.
+                loadDataLegacy();
+                var auto = false; try { auto = localStorage.getItem('ppp_auto_install') === '1'; } catch (e) {}
+                if (auto) { startBackgroundInstall(); }   // test/CI hook keeps exercising install
+                return;
+            });
         }).catch(function (err) {
             console.warn('Offline store startup failed, using legacy load:', err);
             loadDataLegacy();
@@ -765,6 +800,96 @@ PPP.app = (function () {
         ui.toast(i18n.t('stillDownloading').replace('{pct}', _installPct));
     }
 
+    // ---- Install continuity (single flight, auto-retry, wake lock) ---------
+    // A phone download of ~139 MB is routinely interrupted: the screen sleeps,
+    // the tab is backgrounded, the network flaps. These three helpers make the
+    // install survive all of it — exactly ONE install runs at a time, it is
+    // retried automatically the moment the device is online and visible, and
+    // the screen is (best-effort) kept awake while it runs.
+    var _installInFlight = false;
+    var _installListenersOn = false;
+    var _retryLangs = null;         // selection to resume with (null = default)
+    var _retryShards = false;
+    var _wakeLock = null;
+
+    function _acquireWakeLock() {
+        // Advisory only: unsupported browsers, denied permission or a hidden
+        // document must never break the install, hence the blanket try/catch.
+        try {
+            if (_wakeLock) return;
+            if (!(navigator.wakeLock && navigator.wakeLock.request)) return;
+            navigator.wakeLock.request('screen').then(function (lock) {
+                _wakeLock = lock;
+                lock.addEventListener('release', function () { _wakeLock = null; });
+            }).catch(function () {});
+        } catch (e) {}
+    }
+
+    function _releaseWakeLock() {
+        try {
+            if (_wakeLock && _wakeLock.release) _wakeLock.release().catch(function () {});
+        } catch (e) {}
+        _wakeLock = null;
+    }
+
+    function _installRetryTick() {
+        // De-duplication: the guard is the single source of truth, so an
+        // 'online' burst plus a visibilitychange can never start two pools.
+        if (_installInFlight || !navigator.onLine) return;
+        startBackgroundInstall(_retryLangs, _retryShards);
+    }
+
+    function _onlineRetryHandler() { _installRetryTick(); }
+
+    function _visibilityRetryHandler() {
+        if (document.visibilityState !== 'visible') return;
+        if (_installInFlight) {
+            // Coming back to the foreground: the OS drops the screen wake lock
+            // whenever the document is hidden, so re-request it.
+            _acquireWakeLock();
+            return;
+        }
+        _installRetryTick();
+    }
+
+    /**
+     * Arm the automatic-retry listeners for the remaining install work and
+     * remember the selection they should resume with. Idempotent.
+     */
+    function _ensureInstallListeners(langs, includeShards) {
+        if (langs != null) _retryLangs = langs;
+        if (includeShards != null) _retryShards = includeShards;
+        if (_installListenersOn) return;
+        _installListenersOn = true;
+        window.addEventListener('online', _onlineRetryHandler);
+        document.addEventListener('visibilitychange', _visibilityRetryHandler);
+    }
+
+    /** Remove the retry listeners — only on a fully successful install. */
+    function _removeInstallListeners() {
+        if (!_installListenersOn) return;
+        _installListenersOn = false;
+        window.removeEventListener('online', _onlineRetryHandler);
+        document.removeEventListener('visibilitychange', _visibilityRetryHandler);
+    }
+
+    /**
+     * Bytes already on the device according to a resume state: every completed
+     * core file / pack / shard records its own size, so the "already
+     * downloaded" figure needs no manifest lookup.
+     */
+    function _resumeDoneBytes(install) {
+        var bytes = 0;
+        ['completedCore', 'completedPacks', 'completedShards'].forEach(function (group) {
+            var map = install && install[group];
+            if (!map) return;
+            Object.keys(map).forEach(function (id) {
+                bytes += (map[id] && map[id].size) || 0;
+            });
+        });
+        return bytes;
+    }
+
     function beginInstall(manifest, langs, includeShards) {
         _installPct = 0;
         document.addEventListener('click', _installGuardHandler, true);
@@ -772,6 +897,9 @@ PPP.app = (function () {
         ui.updateProgress(0);
 
         var totalMB = Math.round(PPP.downloader.computeInstallBytes(manifest, langs, includeShards) / (1024 * 1024));
+        _installInFlight = true;
+        _ensureInstallListeners(langs, includeShards);
+        _acquireWakeLock();
         return PPP.downloader.firstInstall(function (p) {
             var frac = p.totalBytes ? p.loadedBytes / p.totalBytes : 0;
             _installPct = Math.round(frac * 100);
@@ -780,14 +908,36 @@ PPP.app = (function () {
                 Math.round(p.loadedBytes / (1024 * 1024)) + ' / ' + totalMB + ' MB');
         }, langs, includeShards).then(function () {
             document.removeEventListener('click', _installGuardHandler, true);
+            _installInFlight = false;
+            _offlinePartial = false;
+            _removeInstallListeners();
+            _releaseWakeLock();
             PPP.offlineStore.requestPersist();
             return openFromIdb();
         }).catch(function (err) {
             document.removeEventListener('click', _installGuardHandler, true);
+            _installInFlight = false;
+            _releaseWakeLock();
             console.error('Offline install failed:', err);
             if (err && err.notEnoughStorage) {
                 ui.showLoading(i18n.t('notEnoughStorage').replace('{size}', totalMB));
                 return;
+            }
+            if (err && err.partial) {
+                // Some items failed but the rest IS on the device and the
+                // resume state survived. Never fail silently: say what is left
+                // and that it continues by itself (the retry listeners stay
+                // armed), then give the user the best app we can right now —
+                // the offline one when the core landed.
+                var leftMB = Math.max(1, Math.round(
+                    (((err.totalBytes || 0) - (err.doneBytes || 0)) / 1048576)));
+                _offlinePartial = true;
+                ui.hideLoading();
+                ui.toast(i18n.t('offlineInterrupted').replace('{left}', String(leftMB)));
+                return PPP.downloader.isCoreReady().then(function (ready) {
+                    if (ready) return openFromIdb();
+                    loadDataLegacy();
+                });
             }
             // Partial progress is durable (resume state) — next start resumes.
             // For THIS session, fall back to the legacy network path so the
@@ -802,6 +952,13 @@ PPP.app = (function () {
     // not installed = download offer, installed = "Offline ✓" status button.
     var _offlineInstalled = false;
 
+    // True when the app runs offline-capable from a PARTIAL library (core
+    // present, packs still missing). openFromIdb flips _offlineInstalled to
+    // its ✓ state on this path too — which is honest about "offline works" —
+    // but the info panel must still offer "continue the download", not claim
+    // the library is complete. Cleared when an install finishes fully.
+    var _offlinePartial = false;
+
     /**
      * Reveal the small "Work offline" button (next to "How to use search?")
      * once the database is ready — on BOTH paths: legacy/online load (offer
@@ -811,8 +968,20 @@ PPP.app = (function () {
      * feature isn't available. The session "dismissed" flag only suppresses
      * the OFFER state; the installed ✓ status button always shows so the
      * user can see offline already works for them.
+     *
+     * Browsers without DecompressionStream/IndexedDB/serviceWorker (old
+     * Safari/iOS, old Chrome) can never use the offline store — that's the
+     * `!store.supported()` branch below. Those users used to get silence
+     * (button just never appeared, no explanation). Now they get a single
+     * quiet note in the button's place so they know WHY there's no offline
+     * option, instead of assuming the app is broken.
      */
     function maybeShowOfflineWorkButton(installed) {
+        var store = PPP.offlineStore;
+        if (!store || !store.supported()) {
+            _showOfflineUnsupportedNote();
+            return;
+        }
         if (!PPP.downloader) return;
         if (installed) _offlineInstalled = true;
         var btn = document.getElementById('offlineWorkBtn');
@@ -829,6 +998,28 @@ PPP.app = (function () {
             if (sessionStorage.getItem('ppp_offline_offer_dismissed') === '1') return;
         } catch (e) {}
         btn.style.display = '';
+    }
+
+    /**
+     * Unsupported-browser explanation, shown ONCE in the same spot the
+     * "Work offline" button would otherwise sit (inside .search-time, next
+     * to "How to use search?"). No CSS class needed: a plain <span> there
+     * already inherits .search-time's muted/small styling (11px,
+     * var(--text-muted)), so it reads as a quiet hint, not an error banner.
+     * Idempotent via the element id — safe to call more than once (loadData
+     * only reaches here after the DB is ready, so it never races the
+     * loading state, but maybeShowOfflineWorkButton() is also invoked from a
+     * couple of other spots and must not duplicate the note).
+     */
+    function _showOfflineUnsupportedNote() {
+        if (document.getElementById('offlineUnsupportedNote')) return;
+        var btn = document.getElementById('offlineWorkBtn');
+        if (!btn || !btn.parentNode) return;
+        var note = document.createElement('span');
+        note.id = 'offlineUnsupportedNote';
+        note.setAttribute('data-i18n', 'offlineUnsupported');
+        note.textContent = i18n.t('offlineUnsupported');
+        btn.parentNode.insertBefore(note, btn.nextSibling);
     }
 
     /**
@@ -960,7 +1151,7 @@ PPP.app = (function () {
         if (!panel) return;
         panel.innerHTML = '';
 
-        if (_offlineInstalled) {
+        if (_offlineInstalled && !_offlinePartial) {
             var rtext = document.createElement('span');
             rtext.textContent = i18n.t('offlineReadyText');
             panel.appendChild(rtext);
@@ -985,6 +1176,9 @@ PPP.app = (function () {
         // until the manifest arrives and the checkboxes render.
         var getLangs = function () { return []; };
         var getIncludeShards = function () { return false; };
+        // Set by the resume check below; both blocks are async, so the
+        // from-scratch copy must never overwrite the resume copy.
+        var hasResume = false;
         PPP.downloader.fetchManifest().then(function (manifest) {
             _cacheBaseMB(manifest);
             if (!document.body.contains(selHolder)) return;
@@ -993,6 +1187,7 @@ PPP.app = (function () {
             selHolder.appendChild(selector.el);
             getLangs = selector.getLangs;
             getIncludeShards = selector.getIncludeShards;
+            if (hasResume) { selHolder.style.display = 'none'; return; }
             var mb = Math.round(PPP.downloader.computeInstallBytes(manifest, []) / 1048576);
             text.textContent = i18n.t('offlineInfoText')
                 .replace('{size}', String(mb))
@@ -1007,6 +1202,33 @@ PPP.app = (function () {
         btn.onclick = function () { startBackgroundInstall(getLangs(), getIncludeShards()); };
         panel.appendChild(btn);
 
+        // Interrupted install: offering the full base size "as if from
+        // scratch" would be a lie — those megabytes are already on the device
+        // and are not downloaded again. Show what is done vs. the total of the
+        // ORIGINAL selection, and continue exactly that selection (so the
+        // language picker is hidden — the choice was already made).
+        if (PPP.downloader.getResumeState) {
+            PPP.downloader.getResumeState().then(function (resume) {
+                if (!resume || !document.body.contains(btn)) return;
+                hasResume = true;
+                selHolder.style.display = 'none';
+                btn.textContent = i18n.t('offlineResumeBtn');
+                btn.onclick = function () { startBackgroundInstall(resume.langs, resume.shards); };
+                var doneMB = Math.round(_resumeDoneBytes(resume.install) / 1048576);
+                text.textContent = i18n.t('offlineResumeText')
+                    .replace('{done}', String(doneMB))
+                    .replace('{total}', '?');
+                return PPP.downloader.fetchManifest().then(function (manifest) {
+                    if (!document.body.contains(text)) return;
+                    var totalMB = Math.round(PPP.downloader.computeInstallBytes(
+                        manifest, resume.langs, resume.shards) / 1048576);
+                    text.textContent = i18n.t('offlineResumeText')
+                        .replace('{done}', String(doneMB))
+                        .replace('{total}', String(totalMB));
+                });
+            }).catch(function () {});
+        }
+
         _appendCloseBtn(panel);
     }
 
@@ -1019,6 +1241,12 @@ PPP.app = (function () {
      */
     function startBackgroundInstall(langs, includeShards) {
         if (!PPP.downloader) return Promise.resolve();
+        // Single flight: boot auto-resume, the online/visibility retries and a
+        // manual Download click all land here — never run two pools at once.
+        if (_installInFlight) return Promise.resolve();
+        _installInFlight = true;
+        _ensureInstallListeners(langs, includeShards);
+        _acquireWakeLock();
 
         var box = document.getElementById('offlineProgress');
         if (box) {
@@ -1044,6 +1272,10 @@ PPP.app = (function () {
                 if (incShards == null) incShards = auto ? _autoInstallShards() : false;
             }
             if (incShards == null) incShards = false;
+            // Remember the RESOLVED selection so an automatic retry continues
+            // the same library, not the EN-only default.
+            _retryLangs = sel;
+            _retryShards = incShards;
             var totalMB = Math.round(PPP.downloader.computeInstallBytes(manifest, sel, incShards) / 1048576);
             return PPP.downloader.firstInstall(function (p) {
                 var mb = Math.round(p.loadedBytes / 1048576);
@@ -1054,6 +1286,10 @@ PPP.app = (function () {
                         .replace('{loaded}', mb).replace('{total}', totalMB).replace('{pct}', pct);
                 }
             }, sel, incShards).then(function () {
+                _installInFlight = false;
+                _offlinePartial = false;
+                _removeInstallListeners();
+                _releaseWakeLock();
                 PPP.offlineStore.requestPersist();
                 // Install finished this session — flip the status button to
                 // its installed ✓ state right away.
@@ -1073,19 +1309,34 @@ PPP.app = (function () {
                 }
             });
         }).catch(function (err) {
+            _installInFlight = false;
+            _releaseWakeLock();
+            // Listeners stay armed on failure — that is the whole point: the
+            // remaining work restarts by itself once online and visible.
             console.error('Background offline install failed:', err);
             var b = document.getElementById('offlineProgress');
             if (b) {
                 b.style.display = 'flex';
                 b.innerHTML = '';
                 var errMsg = document.createElement('span');
-                errMsg.textContent = i18n.t('offlineOfferError');
+                if (err && err.partial) {
+                    // Interrupted, not lost: say how much is left and that it
+                    // continues automatically (the Retry button stays as a
+                    // manual shortcut).
+                    _offlinePartial = true;
+                    var leftMB = Math.max(1, Math.round(
+                        (((err.totalBytes || 0) - (err.doneBytes || 0)) / 1048576)));
+                    errMsg.textContent = i18n.t('offlineInterrupted').replace('{left}', String(leftMB));
+                } else {
+                    errMsg.textContent = i18n.t('offlineOfferError');
+                }
                 b.appendChild(errMsg);
                 var retryBtn = document.createElement('button');
                 retryBtn.type = 'button';
                 retryBtn.className = 'search-button';
                 retryBtn.textContent = i18n.t('offlineOfferBtn');
-                retryBtn.onclick = function () { startBackgroundInstall(); };
+                // Retry the SAME selection that failed, not the EN-only default.
+                retryBtn.onclick = function () { startBackgroundInstall(_retryLangs, _retryShards); };
                 b.appendChild(retryBtn);
             }
         });

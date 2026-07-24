@@ -182,6 +182,33 @@ PPP.offlineStore = (function () {
     }
 
     /**
+     * Commit several state writes and deletes in ONE readwrite transaction.
+     * `puts` = { key: value } written to the state store, `deletes` = array of
+     * state keys removed; either may be omitted or empty. Used for the tails
+     * that finish an install or an update, where a half-written group (e.g.
+     * `localManifest` stored but `install` not yet deleted, or `langs` still
+     * missing) would leave the library describing itself incorrectly after a
+     * reload. All-or-nothing: the browser either commits every write or none.
+     */
+    function commitState(puts, deletes) {
+        return open().then(function (idb) {
+            return new Promise(function (resolve, reject) {
+                var tx = idb.transaction('state', 'readwrite');
+                var st = tx.objectStore('state');
+                if (puts) {
+                    Object.keys(puts).forEach(function (k) { st.put(puts[k], k); });
+                }
+                if (deletes) {
+                    for (var i = 0; i < deletes.length; i++) st.delete(deletes[i]);
+                }
+                tx.oncomplete = function () { resolve(); };
+                tx.onerror = function () { reject(tx.error); };
+                tx.onabort = function () { reject(tx.error || new Error('tx aborted')); };
+            });
+        });
+    }
+
+    /**
      * Parse a CAP1 pack: "CAP1" magic (bytes 0-3), uint32 LE index-JSON
      * length (bytes 4-7), index JSON array [{nr, off, len, raw}] sorted by nr,
      * then the blob area (off relative to blob start; each member is a
@@ -247,6 +274,7 @@ PPP.offlineStore = (function () {
         getState: getState,
         setState: setState,
         deleteState: deleteState,
+        commitState: commitState,
         parsePack: parsePack,
         requestPersist: requestPersist
     };
