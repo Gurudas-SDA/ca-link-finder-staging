@@ -500,11 +500,32 @@ PPP.search = (function () {
         }
 
         var where = conditions.join(' AND ');
+
+        // year: filter (Filters panel) — ANDed onto the text match. The sentence
+        // DB's `lectures` table carries `date` (but NOT country, so country: is
+        // not supported here). Only applied ON TOP of a text term: a year alone
+        // in "In Text" would scan a whole year of sentences, which belongs to
+        // the "In Titles" browse, not the transcript-text search.
+        var yearWhere = '';
+        if (parsed.filters && parsed.filters.year && parsed.filters.year.length > 0) {
+            var yearConds = parsed.filters.year.map(function (y) {
+                var yk = '$syr' + (paramIdx++);
+                params[yk] = y + '%';
+                return "l.date LIKE " + yk;
+            });
+            yearWhere = '(' + yearConds.join(' OR ') + ')';
+        }
+
+        var mainWhere = yearWhere ? (where + ' AND ' + yearWhere) : where;
         var sql = "SELECT s.ts, s.ts_end, s.nr, s.seq, s.sentence, l.name AS name, l.url AS url, l.tier AS tier, l.date AS date " +
                   "FROM sentences s LEFT JOIN lectures l ON s.nr = l.nr " +
-                  "WHERE " + where +
+                  "WHERE " + mainWhere +
                   " ORDER BY CASE WHEN l.date='unknown' OR l.date IS NULL THEN 1 ELSE 0 END, l.date DESC, s.nr, s.seq ASC LIMIT $limit";
-        var countSql = "SELECT COUNT(*) AS n, COUNT(DISTINCT s.nr) AS lectures FROM sentences s WHERE " + where;
+        // The count query normally skips the lectures JOIN for speed; the year
+        // filter needs l.date, so join only when a year is actually selected.
+        var countSql = yearWhere
+            ? "SELECT COUNT(*) AS n, COUNT(DISTINCT s.nr) AS lectures FROM sentences s LEFT JOIN lectures l ON s.nr = l.nr WHERE " + mainWhere
+            : "SELECT COUNT(*) AS n, COUNT(DISTINCT s.nr) AS lectures FROM sentences s WHERE " + where;
         params.$limit = 500;
 
         return { sql: sql, countSql: countSql, params: params };

@@ -2454,20 +2454,28 @@ PPP.app = (function () {
     function _renderFiltersPanel(panel, opts) {
         var esc = utils.escapeHtml;
         var lang = i18n.getLanguage() || 'en';
+        // The transcript-sentence DB carries date but NOT country, so in the
+        // "In Text" mode only the Years section is offered.
+        var sentenceMode = (searchMode === 'sentences');
         var years = opts.years.map(function (y) {
             return '<label class="flt-item"><input type="checkbox" class="flt-year" value="' + y + '"><span>' + y + '</span></label>';
         }).join('');
-        var countries = opts.countries.map(function (code) {
-            var name = PPP.config.countryName(code, lang);
-            return '<label class="flt-item"><input type="checkbox" class="flt-country" value="' + esc(code) +
-                '"><span>' + esc(code) + ' (' + esc(name) + ')</span></label>';
-        }).join('');
+        var countrySec = '';
+        if (!sentenceMode) {
+            var countries = opts.countries.map(function (code) {
+                var name = PPP.config.countryName(code, lang);
+                return '<label class="flt-item"><input type="checkbox" class="flt-country" value="' + esc(code) +
+                    '"><span>' + esc(code) + ' (' + esc(name) + ')</span></label>';
+            }).join('');
+            countrySec =
+                '<div class="flt-sec"><div class="flt-title">' + esc(i18n.t('filtersCountries')) + '</div>' +
+                    '<div class="flt-grid flt-countries">' + countries + '</div></div>';
+        }
         panel.innerHTML =
             '<div class="flt-cols">' +
                 '<div class="flt-sec"><div class="flt-title">' + esc(i18n.t('filtersYears')) + '</div>' +
                     '<div class="flt-grid flt-years">' + years + '</div></div>' +
-                '<div class="flt-sec"><div class="flt-title">' + esc(i18n.t('filtersCountries')) + '</div>' +
-                    '<div class="flt-grid flt-countries">' + countries + '</div></div>' +
+                countrySec +
             '</div>' +
             '<div class="flt-actions">' +
                 '<button type="button" class="flt-apply" onclick="PPP.app.applyFilters()">' + esc(i18n.t('filtersApply')) + '</button>' +
@@ -2514,15 +2522,31 @@ PPP.app = (function () {
         if (!panel) return;
         var years = Array.prototype.map.call(panel.querySelectorAll('.flt-year:checked'), function (c) { return c.value; });
         var countries = Array.prototype.map.call(panel.querySelectorAll('.flt-country:checked'), function (c) { return c.value; });
-        var tokens = [];
-        if (years.length) tokens.push('year:' + years.join(','));
-        if (countries.length) tokens.push('country:' + countries.join(','));
-        closeFilters();
-        // Filters query lecture metadata — make sure we are in the titles
-        // (metadata) search mode. setSearchMode clears the field on a real
-        // mode change, so set the value AFTER it.
-        setSearchMode('metadata');
         var input = document.getElementById('searchTerm');
+        var sentenceMode = (searchMode === 'sentences');
+
+        // Keep any free-text the user already typed; drop only the OLD filter
+        // tokens so re-applying replaces (not stacks) year/country.
+        var kept = input.value.split(';').map(function (s) { return s.trim(); }).filter(Boolean)
+            .filter(function (seg) { return !/^year:/i.test(seg) && !/^country:/i.test(seg); });
+
+        var tokens = kept.slice();
+        if (years.length) tokens.push('year:' + years.join(','));
+        // Country applies to lecture metadata only (the sentence DB has no
+        // country column), so it is never emitted in "In Text" mode.
+        if (countries.length && !sentenceMode) tokens.push('country:' + countries.join(','));
+        closeFilters();
+
+        if (sentenceMode) {
+            // "In Text": a year narrows a TEXT search — it needs a word to run.
+            if (kept.length === 0) { ui.toast(i18n.t('enterSearchTerms')); return; }
+            input.value = tokens.join('; ');
+            doSearch();
+            return;
+        }
+        // Titles/verse modes → normalize to the metadata search. setSearchMode
+        // clears the field on a real mode change, so set the value AFTER it.
+        if (searchMode !== 'metadata') setSearchMode('metadata');
         input.value = tokens.join('; ');
         if (tokens.length) doSearch();
     }

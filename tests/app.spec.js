@@ -939,6 +939,35 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(out.sql).toContain('l.country_norm');
   });
 
+  test('50b2. In Text: buildTranscriptSQL ANDs a year onto the phrase, and the count query joins lectures only then', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const out = await page.evaluate(() => {
+      const s = window.PPP.search;
+      const withYear = s.buildTranscriptSQL(s.parseSearchQuery('guru tattva; year:2025'));
+      const noYear = s.buildTranscriptSQL(s.parseSearchQuery('guru tattva'));
+      const yearOnly = s.buildTranscriptSQL(s.parseSearchQuery('year:2025'));
+      return {
+        withYearParams: Object.keys(withYear.params).filter(k => k !== '$limit').map(k => withYear.params[k]),
+        withYearSql: withYear.sql,
+        withYearCount: withYear.countSql,
+        noYearCount: noYear.countSql,
+        yearOnly: yearOnly,   // null — a year alone is not a text search
+      };
+    });
+
+    // Phrase param + year param, both present.
+    expect(out.withYearParams).toContain('% guru tattva%');
+    expect(out.withYearParams).toContain('2025%');
+    expect(out.withYearSql).toContain('l.date LIKE');
+    // Count joins lectures ONLY when a year is filtered (perf: no JOIN otherwise).
+    expect(out.withYearCount).toContain('LEFT JOIN lectures');
+    expect(out.noYearCount).not.toContain('JOIN lectures');
+    // Year with no text term is not a transcript-text search.
+    expect(out.yearOnly).toBeNull();
+  });
+
   test('50c. Filters button opens a panel; Apply writes tokens into the search field and filters results', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);
@@ -977,6 +1006,28 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.waitForSelector('#resultsInfo strong', { timeout: 15000 });
     const rows = await page.locator('#resultsTable tbody tr').count();
     expect(rows).toBeGreaterThan(0);
+  });
+
+  test('50e. In Text mode: Filters panel hides Countries and keeps the typed word, adding only the year', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.locator('.text-search-btn').click();
+    await page.fill('#searchTerm', 'krishna');
+
+    await page.locator('.main-button-row .combo-btn-1').click();
+    const panel = page.locator('#filtersPanel');
+    await expect(panel).toBeVisible();
+    expect(await panel.locator('.flt-year').count()).toBeGreaterThan(5);
+    expect(await panel.locator('.flt-country').count()).toBe(0);   // no country in sentence DB
+
+    await panel.locator('.flt-year[value="2025"]').check();
+    await panel.locator('.flt-apply').click();
+
+    const val = await page.locator('#searchTerm').inputValue();
+    expect(val).toContain('krishna');       // typed word preserved
+    expect(val).toContain('year:2025');
+    expect(val).not.toContain('country:');
   });
 
   test('50d. Filters state does not survive a reload (panel opens empty every time)', async ({ page }) => {
