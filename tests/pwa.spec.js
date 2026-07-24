@@ -1163,4 +1163,116 @@ test.describe('core.sentences in the offline base', () => {
       }
     });
   });
+
+  // =========================================================================
+  // P14c/P14d — the delta-update side of the same change. Once core.sentences
+  // is installed, checkForUpdates() can report coreChanged.sentences, but
+  // backgroundUpdateCheck() only ever handled meta and extras: a running
+  // session kept querying the sentence DB it opened at startup until reload.
+  // Both tests stub checkForUpdates rather than mutate a remote manifest —
+  // the branch under test is app-side wiring, not diff computation.
+  // =========================================================================
+
+  /** Make checkForUpdates() report exactly the given coreChanged flags. */
+  function stubUpdateResult(page, coreChanged) {
+    return page.evaluate((flags) => {
+      window.__reloadCalls = { meta: 0, sentences: 0 };
+      PPP.downloader.checkForUpdates = function () {
+        return Promise.resolve({ changedItems: 1, coreChanged: flags });
+      };
+      const realMeta = PPP.db.reloadMetaFromStore;
+      PPP.db.reloadMetaFromStore = function () {
+        window.__reloadCalls.meta += 1;
+        return Promise.resolve(false);   // no view refresh — not under test
+      };
+      const realSentences = PPP.db.reloadSentencesFromStore;
+      PPP.db.reloadSentencesFromStore = function () {
+        window.__reloadCalls.sentences += 1;
+        return realSentences.call(PPP.db);
+      };
+      void realMeta;
+    }, coreChanged);
+  }
+
+  test('P14c. a delta update that changed core.sentences reloads the sentence DB in place', async ({ page }) => {
+    const pageErrors = [];
+    page.on('pageerror', e => pageErrors.push(e.message));
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.db && PPP.app && PPP.downloader);
+
+    // The reload entry point must exist and be exported next to its meta twin.
+    expect(await page.evaluate(() => typeof PPP.db.reloadSentencesFromStore)).toBe('function');
+
+    // (a) sentences-only change → the sentence branch fires, meta's does not.
+    await stubUpdateResult(page, { meta: false, extras: false, sentences: true });
+    await page.evaluate(() => PPP.app._backgroundUpdateCheckForTest());
+    await expect.poll(() => page.evaluate(() => window.__reloadCalls.sentences)).toBe(1);
+    expect(await page.evaluate(() => window.__reloadCalls.meta)).toBe(0);
+
+    // (b) The reload is a no-op when this session never opened the sentence DB
+    // — it must not gratuitously pull ~66 MB into memory on an update note.
+    expect(await page.evaluate(() => PPP.db.isSentencesLoaded())).toBe(false);
+    expect(await page.evaluate(() => PPP.db.reloadSentencesFromStore())).toBe(false);
+
+    // (c) A failing refresh is swallowed: no unhandled rejection, app alive.
+    await page.evaluate(() => {
+      PPP.db.reloadSentencesFromStore = function () {
+        return Promise.reject(new Error('boom'));
+      };
+    });
+    await page.evaluate(() => PPP.app._backgroundUpdateCheckForTest());
+    await page.waitForTimeout(500);
+    expect(pageErrors).toEqual([]);
+    expect(await page.evaluate(() => !!(PPP.app && PPP.db))).toBe(true);
+
+    // (d) meta still routes to its own reload (the branch was not disturbed).
+    await stubUpdateResult(page, { meta: true, extras: false, sentences: false });
+    await page.evaluate(() => PPP.app._backgroundUpdateCheckForTest());
+    await expect.poll(() => page.evaluate(() => window.__reloadCalls.meta)).toBe(1);
+    expect(await page.evaluate(() => window.__reloadCalls.sentences)).toBe(0);
+  });
+
+  // SW blocked: the service worker answers data/manifest.json from its cache,
+  // which both defeats page.route and makes the read counter meaningless.
+  test.describe('deterministic network (SW blocked, shard cache)', () => {
+    test.use({ serviceWorkers: 'block' });
+
+    test('P14d. an applied delta drops the memoized shard list so the next sentence search re-reads the manifest', async ({ page }) => {
+      // Shard-less manifest fixture: _getSentenceShards() resolves [] and
+      // searchSentencesChunked rejects immediately — enough to prove WHEN the
+      // manifest is read without fetching a single ~30 MB shard.
+      const noShards = JSON.parse(JSON.stringify(realManifest));
+      noShards.sentenceShards = [];
+
+      let manifestReads = 0;
+      await page.route('**/data/manifest.json*', route => {
+        manifestReads += 1;
+        route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(noShards) });
+      });
+
+      await page.goto('./');
+      await page.waitForFunction(() => window.PPP && PPP.db && PPP.app && PPP.downloader);
+      // Let the boot-time manifest reads (offer panel / downloader) settle
+      // first, so the counter only moves for reads this test triggers.
+      await page.waitForTimeout(2000);
+
+      const probe = () => page.evaluate(() =>
+        PPP.db.searchSentencesChunked('SELECT 1', 'SELECT 1', { $limit: 1 })
+          .then(() => 'resolved', e => e.message));
+
+      // Two searches, one manifest read: the list is memoized (existing design).
+      expect(await probe()).toContain('No sentence shards');
+      const afterFirst = manifestReads;
+      expect(await probe()).toContain('No sentence shards');
+      expect(manifestReads).toBe(afterFirst);
+
+      // An applied delta invalidates it — the next search re-reads the manifest.
+      await stubUpdateResult(page, { meta: false, extras: false, sentences: false });
+      await page.evaluate(() => PPP.app._backgroundUpdateCheckForTest());
+      await page.waitForTimeout(500);
+      expect(await probe()).toContain('No sentence shards');
+      expect(manifestReads).toBe(afterFirst + 1);
+    });
+  });
 });

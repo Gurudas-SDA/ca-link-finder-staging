@@ -388,6 +388,22 @@ PPP.db = (function () {
     }
 
     /**
+     * Force-reopen the sentence DB from the offline store — same delta-update
+     * problem as reloadMetaFromStore(), same bypass of the loadedDBs dedup.
+     * No-op (false) when this session never opened it: the bytes it would
+     * replace do not exist, and the next loadSentencesDB() reads the fresh
+     * IDB copy on its own. Resolves true when reloaded.
+     */
+    function reloadSentencesFromStore() {
+        if (!_offlineStoreUsable()) return Promise.resolve(false);
+        if (!isSentencesLoaded()) return Promise.resolve(false);
+        return PPP.offlineStore.getGz('core:sentences').then(function (gz) {
+            if (!gz) return false;
+            return _openGzInto('sentences_en', gz).then(function () { return true; });
+        });
+    }
+
+    /**
      * Fetch and open the metadata database.
      * NEW first path: the offline store (IndexedDB, no network). The legacy
      * network path stays for unsupported browsers / not-yet-installed state.
@@ -464,6 +480,17 @@ PPP.db = (function () {
                 .catch(function () { return []; });
         }
         return _shardsPromise;
+    }
+
+    /**
+     * Drop the memoized shard list so the next chunked search re-reads
+     * data/manifest.json. Same staleness shape as the core DBs: a delta
+     * update can add/remove/re-version shards while this session holds the
+     * boot-time list. Cost of being wrong the other way is one small
+     * manifest.json fetch, so the caller may reset on any applied update.
+     */
+    function resetSentenceShards() {
+        _shardsPromise = null;
     }
 
     // Fetch a gz shard over the network (XHR arraybuffer, same-origin baseline).
@@ -774,6 +801,8 @@ PPP.db = (function () {
         openDBFromGz: openDBFromGz,
         fetchGzDB: fetchGzDB,
         reloadMetaFromStore: reloadMetaFromStore,
+        reloadSentencesFromStore: reloadSentencesFromStore,
+        resetSentenceShards: resetSentenceShards,
         loadHtmlDB: loadHtmlDB,
         loadSentencesDB: loadSentencesDB,
         searchSentencesChunked: searchSentencesChunked,

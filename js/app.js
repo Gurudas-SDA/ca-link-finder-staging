@@ -1432,6 +1432,18 @@ PPP.app = (function () {
                 if (ui.clearExtrasCache) ui.clearExtrasCache();
                 startExtrasLoad();
             }
+            if (res.coreChanged && res.coreChanged.sentences) {
+                // Swap the sentence DB this session has open for the fresh IDB
+                // copy. No view refresh: sentence results are queried live, so
+                // the next search already sees the new bytes.
+                db.reloadSentencesFromStore()
+                    .catch(function (e) { console.warn('Sentences refresh failed:', e); });
+            }
+            // Shard set / shard versions can change in the same delta. The
+            // chunked search memoizes them from manifest.json at first use, so
+            // drop that cache whenever anything was applied — cost is one
+            // small manifest re-fetch on the next sentence search.
+            if (db.resetSentenceShards) db.resetSentenceShards();
         });
     }
 
@@ -4441,6 +4453,10 @@ PPP.app = (function () {
         // Internal (test only) — drive the background install directly so the
         // quota-exceeded UI path can be exercised deterministically (P12).
         startBackgroundInstall: startBackgroundInstall,
+        // Internal (test only) — drive the delta-update refresh directly so the
+        // per-core-key reload branches can be exercised with a stubbed
+        // checkForUpdates instead of a real remote manifest change (P14c).
+        _backgroundUpdateCheckForTest: backgroundUpdateCheck,
         // Internal (test only) — unit-test the MP3 ZIP count cap in
         // _addOneToZip / toggleSelectPair without fetching real audio.
         _addOneToZip: _addOneToZip,
