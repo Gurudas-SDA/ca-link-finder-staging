@@ -8,6 +8,9 @@
 //   - waits for the SQLite DB, runs a real live-search for "Krishna" and asserts
 //     result rows render.
 // Generated alongside scripts/build_portable.py (Versija A portable build).
+// Requires portable-build/CA-Portable/ to have been built first via
+// scripts/build_portable.py; if that ~1.5GB local artifact is missing (e.g. in
+// CI, which never builds it), the whole suite skips cleanly instead of failing.
 const { test, expect } = require('@playwright/test');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -16,6 +19,18 @@ const fs = require('fs');
 const PORTABLE_ROOT = path.join(__dirname, '..', '..', 'portable-build', 'CA-Portable');
 const BUNDLED_NODE = path.join(PORTABLE_ROOT, 'runtime', 'node.exe');
 const PORTABLE_SERVER = path.join(PORTABLE_ROOT, 'server', 'static-server.cjs');
+const PORTABLE_SERVER_DIR = path.join(PORTABLE_ROOT, 'server');
+
+// The portable build is a large local artifact (scripts/build_portable.py)
+// that is NOT checked into git and is never built in CI. Detect its real
+// presence on disk (not an env var) so the suite skips cleanly wherever it's
+// absent, and runs for real wherever it exists (locally or otherwise).
+const PORTABLE_BUILD_AVAILABLE = fs.existsSync(PORTABLE_SERVER) && fs.existsSync(PORTABLE_SERVER_DIR);
+const SKIP_REASON = 'portable-build/CA-Portable not found — run scripts/build_portable.py first to test the offline build; skipping cleanly (this is an unbuilt artifact, not a failing test).';
+
+if (!PORTABLE_BUILD_AVAILABLE) {
+  console.log(`[portable.spec.js] SKIPPED: ${SKIP_REASON}`);
+}
 
 // Prefer the bundled node.exe (proves the portable runtime works); fall back to
 // system `node` if the bundle is missing for any reason.
@@ -69,7 +84,13 @@ async function waitForAppReady(page) {
   }, { timeout: 60000 });
 }
 
-test.describe('CA-Portable — offline build smoke test', () => {
+// Gate the whole suite (not just individual tests) on the artifact's real
+// presence: if portable-build/CA-Portable is missing, test.describe.skip
+// prevents beforeAll from ever attempting to spawn(nodeBin, ...) with a
+// nonexistent cwd (which is what threw ENOENT in CI).
+const describeOrSkip = PORTABLE_BUILD_AVAILABLE ? test.describe : test.describe.skip;
+
+describeOrSkip('CA-Portable — offline build smoke test', () => {
 
   test('portable build loads, is fully offline-vendored, and search works', async ({ page }) => {
     expect(baseUrl, 'portable server URL captured from stdout').toBeTruthy();
