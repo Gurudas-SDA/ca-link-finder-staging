@@ -24,7 +24,7 @@ PPP.search = (function () {
      * Supports: AND (;), OR (//), has:, subject:, lang:, source: (@), latest_files:, latest_transcripts:
      */
     function parseSearchQuery(input) {
-        if (!input) return { terms: [], filters: {}, isLatestFiles: false, isLatestTranscripts: false, orGroups: [] };
+        if (!input) return { terms: [], filters: { source: [], has: [], subject: [], lang: [], year: [], country: [], latestTranscripts: [], latestFiles: [] }, isLatestFiles: false, isLatestTranscripts: false, otherTerms: [], orGroups: [] };
 
         var searchTerms = input.split(';').map(function (s) { return s.trim(); }).filter(Boolean);
 
@@ -32,6 +32,8 @@ PPP.search = (function () {
         var hasTerms = [];
         var subjectTerms = [];
         var langTerms = [];
+        var yearTerms = [];
+        var countryTerms = [];
         var latestTranscriptsTerms = [];
         var latestFilesTerms = [];
         var otherTerms = [];
@@ -46,6 +48,18 @@ PPP.search = (function () {
                 subjectTerms.push(t);
             } else if (tl.startsWith('lang:')) {
                 langTerms.push(t);
+            } else if (tl.startsWith('year:')) {
+                // year:2024,2025 — comma-separated 4-digit years (Filters panel).
+                t.slice(5).split(',').forEach(function (y) {
+                    y = y.trim();
+                    if (/^\d{4}$/.test(y)) yearTerms.push(y);
+                });
+            } else if (tl.startsWith('country:')) {
+                // country:RUS,LVA — comma-separated canonical codes (Filters panel).
+                t.slice(8).split(',').forEach(function (cc) {
+                    cc = cc.trim();
+                    if (cc) countryTerms.push(cc);
+                });
             } else if (tl.startsWith('latest_transcripts:')) {
                 latestTranscriptsTerms.push(t);
             } else if (tl.startsWith('latest_files:')) {
@@ -67,6 +81,8 @@ PPP.search = (function () {
                 has: hasTerms,
                 subject: subjectTerms,
                 lang: langTerms,
+                year: yearTerms,
+                country: countryTerms,
                 latestTranscripts: latestTranscriptsTerms,
                 latestFiles: latestFilesTerms
             },
@@ -124,6 +140,40 @@ PPP.search = (function () {
                 return "(LOWER(l.lang) = " + key + " OR LOWER(l.lang) LIKE " + keyP + ")";
             });
             conditions.push('(' + langConds.join(' OR ') + ')');
+        }
+
+        // year: filter (Filters panel). OR within the group (any selected year),
+        // ANDed against the rest. Matches the 4-digit prefix of the date column.
+        if (parsed.filters.year && parsed.filters.year.length > 0) {
+            var yearConds = parsed.filters.year.map(function (y) {
+                var key = '$yr' + (paramIdx++);
+                params[key] = y + '%';
+                return "l.date LIKE " + key;
+            });
+            conditions.push('(' + yearConds.join(' OR ') + ')');
+        }
+
+        // country: filter (Filters panel). OR within the group (any selected
+        // country), ANDed against the rest. The stored cell is "CODE" or
+        // "CODE, City", so a code-prefix match on country_norm covers both.
+        // "Online" has no comma but the same prefix match still works.
+        if (parsed.filters.country && parsed.filters.country.length > 0) {
+            var cfg = (window.PPP && PPP.config) || {};
+            var ctryConds = [];
+            parsed.filters.country.forEach(function (cc) {
+                // Expand the canonical code to every raw variant it folds from
+                // (LVA also matches the drifted "lat" rows). Each raw code
+                // matches the bare cell or a "code, city" cell.
+                var raws = cfg.countryMatchCodes ? cfg.countryMatchCodes(cc) : [cc.toLowerCase()];
+                raws.forEach(function (lc) {
+                    var codeKey = '$ccode' + (paramIdx++);
+                    var cityKey = '$ccity' + (paramIdx++);
+                    params[codeKey] = lc;              // bare code, no city
+                    params[cityKey] = lc + ',%';       // "code, city"
+                    ctryConds.push("l.country_norm = " + codeKey + " OR l.country_norm LIKE " + cityKey);
+                });
+            });
+            if (ctryConds.length > 0) conditions.push('(' + ctryConds.join(' OR ') + ')');
         }
 
         // has: filter (AND, check non-empty columns; includes duplicate-labeled transcripts)

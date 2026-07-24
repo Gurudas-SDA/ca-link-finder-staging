@@ -110,13 +110,15 @@
         <div class="search-card">
             <!-- Unified button row: Key words | 20 latest by date | Top Searches | Verses (all) | Verses (Top) -->
             <div class="search-quick-buttons main-button-row">
-                <button class="combo-btn combo-btn-1" data-navview="by2026" onclick="PPP.app.showBy2026()" data-i18n="by2026">By 2026</button>
+                <button class="combo-btn combo-btn-1" data-navview="filters" onclick="PPP.app.toggleFilters(event)" data-i18n="filtersBtn">Filters</button>
                 <button class="combo-btn combo-btn-2" data-navview="byAdded" onclick="PPP.app.showLatestFiles()" data-i18n="latest20Files">By Added</button>
                 <button class="combo-btn combo-btn-3" data-navview="topSearches" onclick="PPP.app.showRecommendations()" data-i18n="recommendations">Top Searches</button>
                 <button class="combo-btn combo-btn-4 search-mode-btn" data-navview="citations" data-mode="citations" data-i18n="searchModeCitations">By Verses</button>
                 <button class="combo-btn combo-btn-5 search-mode-btn" data-navview="citationsTop" data-mode="citationsTop" data-i18n="searchModeCitationsTop">Verses (Top)</button>
                 <button class="combo-btn combo-btn-6" data-navview="favorites" id="favoritesBtn" onclick="PPP.app.showFavorites()">&#9733; Favorites <span id="favCount" class="fav-count-badge" style="display:none"></span></button>
             </div>
+            <!-- Filters panel (toggled by the Filters button; empty on every load) -->
+            <div id="filtersPanel" class="filters-panel" hidden></div>
             <div class="search-row">
                 <button class="search-mode-btn active keywords-search-btn" data-mode="metadata" data-i18n="searchModeMetadata">Key words</button>
                 <button class="search-mode-btn text-search-btn" data-mode="sentences" data-i18n="searchModeSentences">Text</button>

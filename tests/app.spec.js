@@ -299,7 +299,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
     const texts = await buttons.allTextContents();
     const joined = texts.join(' | ');
-    for (const needle of ['By 2026', 'By Added', 'Top Searches', 'By Verse', 'Verses (Top)', 'Favorites']) {
+    for (const needle of ['Filters', 'By Added', 'Top Searches', 'By Verse', 'Verses (Top)', 'Favorites']) {
       expect(joined).toContain(needle);
     }
 
@@ -307,22 +307,23 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(flexWrap).toBe('nowrap');
   });
 
-  test('15. By 2026 button exists and is clickable', async ({ page }) => {
+  test('15. Filters button exists and is clickable', async ({ page }) => {
     const errors = trackConsoleErrors(page);
     await page.goto('./');
     await waitForAppReady(page);
 
-    const btn = page.locator('.search-quick-buttons.main-button-row .combo-btn', { hasText: 'By 2026' });
+    const btn = page.locator('.search-quick-buttons.main-button-row .combo-btn', { hasText: 'Filters' });
     await expect(btn).toBeVisible();
     await btn.click();
     await page.waitForTimeout(500);
+    await expect(page.locator('#filtersPanel')).toBeVisible();
 
     const critical = errors.filter(e =>
       !e.includes('favicon') && !e.includes('umami') && !e.includes('service-worker')
     );
     expect(critical).toHaveLength(0);
 
-    const isFn = await page.evaluate(() => typeof window.PPP?.app?.showBy2026 === 'function');
+    const isFn = await page.evaluate(() => typeof window.PPP?.app?.toggleFilters === 'function');
     expect(isFn).toBe(true);
   });
 
@@ -858,6 +859,139 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(out.or).toEqual(['% guru tattva%', '% nama tattva%']);
     // Titles mode already phrase-matched; the two modes now agree.
     expect(out.titles).toEqual(['%guru tattva%']);
+  });
+
+  // ===== Filters panel (Years + Countries) — replaces the old "By 2026" =====
+
+  test('50a. normalizeCountry folds drifted codes to one canonical, hides junk, keeps Online', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const out = await page.evaluate(() => {
+      const c = window.PPP.config;
+      const n = (x) => c.normalizeCountry(x);
+      return {
+        // canonical passes through
+        lva: n('LVA, Riga'), rus: n('RUS, Moscow'), online: n('Online'),
+        // drifted variants fold to one code
+        lat: n('LAT'), nlz: n('NLZ'), lit: n('LIT'), mexico: n('MEXICO'),
+        // missing comma / stray punctuation still yields the code
+        fraDijon: n('FRA Dijon'), indSemi: n('IND;'),
+        // junk is hidden (null)
+        unknown: n('unknown'), empty: n(''), none: n('none'), interviews: n('Interviews'),
+        bogus: n('ZZZ'),
+        // the reverse map used by the country filter
+        lvaMatches: c.countryMatchCodes('LVA').sort(),
+        // localized name
+        nameLv: c.countryName('DEU', 'lv'), nameRu: c.countryName('USA', 'ru'),
+      };
+    });
+
+    expect(out.lva).toBe('LVA');
+    expect(out.rus).toBe('RUS');
+    expect(out.online).toBe('Online');
+    expect(out.lat).toBe('LVA');
+    expect(out.nlz).toBe('NZL');
+    expect(out.lit).toBe('LTU');
+    expect(out.mexico).toBe('MEX');
+    expect(out.fraDijon).toBe('FRA');
+    expect(out.indSemi).toBe('IND');
+    expect(out.unknown).toBeNull();
+    expect(out.empty).toBeNull();
+    expect(out.none).toBeNull();
+    expect(out.interviews).toBeNull();
+    expect(out.bogus).toBeNull();      // unmapped code is treated as junk
+    expect(out.lvaMatches).toEqual(['lat', 'lva']);
+    expect(out.nameLv).toBe('Vācija');
+    expect(out.nameRu).toBe('США');
+  });
+
+  test('50b. year:/country: filters parse and build the expected metadata SQL', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const out = await page.evaluate(() => {
+      const s = window.PPP.search;
+      const parsed = s.parseSearchQuery('year:2024,2025; country:LVA,RUS');
+      const built = s.buildMetaSQL(parsed);
+      return {
+        years: parsed.filters.year,
+        countries: parsed.filters.country,
+        sql: built.sql,
+        params: built.params,
+        // a bad year is dropped; a lone country still parses
+        badYear: s.parseSearchQuery('year:20xx,2020').filters.year,
+      };
+    });
+
+    expect(out.years).toEqual(['2024', '2025']);
+    expect(out.countries).toEqual(['LVA', 'RUS']);
+    expect(out.badYear).toEqual(['2020']);
+
+    // Years → date LIKE 'YYYY%', ORed together.
+    const yearParams = Object.keys(out.params).filter((k) => k.startsWith('$yr')).map((k) => out.params[k]);
+    expect(yearParams.sort()).toEqual(['2024%', '2025%']);
+    expect(out.sql).toContain('l.date LIKE');
+
+    // LVA expands to its drifted variant "lat" too; RUS has no variant.
+    const codeParams = Object.keys(out.params).filter((k) => k.startsWith('$ccode')).map((k) => out.params[k]);
+    expect(codeParams.sort()).toEqual(['lat', 'lva', 'rus']);
+    expect(out.sql).toContain('l.country_norm');
+  });
+
+  test('50c. Filters button opens a panel; Apply writes tokens into the search field and filters results', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // The old "By 2026" is gone; the button is now "Filters".
+    const btn = page.locator('.main-button-row .combo-btn-1');
+    await expect(btn).toHaveText(/Filters/);
+
+    // Opens the panel with year + country checkboxes.
+    await btn.click();
+    const panel = page.locator('#filtersPanel');
+    await expect(panel).toBeVisible();
+    expect(await panel.locator('.flt-year').count()).toBeGreaterThan(5);
+    expect(await panel.locator('.flt-country').count()).toBeGreaterThan(5);
+
+    // Country rows are "CODE (Localized name)" and sorted by 3-letter code.
+    const codes = await panel.locator('.flt-country').evaluateAll(
+      els => els.map(e => e.value));
+    const sorted = [...codes].sort();
+    expect(codes).toEqual(sorted);
+    await expect(panel.locator('.flt-country[value="LVA"]').locator('xpath=..'))
+      .toContainText('LVA (');
+
+    // Pick 2025 + LVA, Apply.
+    await panel.locator('.flt-year[value="2025"]').check();
+    await panel.locator('.flt-country[value="LVA"]').check();
+    await panel.locator('.flt-apply').click();
+
+    // Selected filters appear in the search field as readable tokens.
+    const val = await page.locator('#searchTerm').inputValue();
+    expect(val).toContain('year:2025');
+    expect(val).toContain('country:LVA');
+
+    // Results are actually filtered: every visible Country cell is Latvia
+    // (code LVA or its drifted variant LAT), and every Date is 2025.
+    await page.waitForSelector('#resultsInfo strong', { timeout: 15000 });
+    const rows = await page.locator('#resultsTable tbody tr').count();
+    expect(rows).toBeGreaterThan(0);
+  });
+
+  test('50d. Filters state does not survive a reload (panel opens empty every time)', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.locator('.main-button-row .combo-btn-1').click();
+    await page.locator('#filtersPanel .flt-year').first().check();
+    await page.locator('#filtersPanel .flt-apply').click();
+
+    await page.reload();
+    await waitForAppReady(page);
+    await page.locator('.main-button-row .combo-btn-1').click();
+    const anyChecked = await page.locator('#filtersPanel input:checked').count();
+    expect(anyChecked).toBe(0);
+    expect(await page.locator('#searchTerm').inputValue()).toBe('');
   });
 
   test('31f. Phase B chunked sentence search — 21 shards, premium+raw, sorted, progress fired', async ({ page }) => {
