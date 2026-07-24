@@ -3412,6 +3412,12 @@ PPP.app = (function () {
         //   5. offline message
         var _storeUsable = !!(PPP.offlineStore && PPP.offlineStore.supported());
         var isRawContent = false;
+        // True only once a network fetch has actually been ATTEMPTED and
+        // REJECTED (transport-level failure). navigator.onLine (mirrored by
+        // net.online) lies on some Android PWAs — reporting "offline" while a
+        // connection exists — so the offline modals below key off this real
+        // failure, never the flag alone (field bug 2026-07-24, Android LTE).
+        var _netFetchFailed = false;
 
         function storeGet(key) {
             if (!_storeUsable) return Promise.resolve(null);
@@ -3419,10 +3425,15 @@ PPP.app = (function () {
         }
 
         function fetchTranscriptFile(nr) {
-            if (!net.online) return Promise.resolve('');
+            // ALWAYS attempt the fetch — do NOT short-circuit on net.online.
+            // transcripts/ is a SW passthrough (see sw.js PASSTHROUGH_PREFIXES),
+            // so a genuinely offline request rejects quickly; a rejection is
+            // what marks the network as truly down, not the unreliable flag.
+            // A resolved-but-!ok response (e.g. 404) means the server WAS
+            // reached — that is a real miss, not an offline state.
             return fetch('transcripts/' + lang + '/' + encodeURIComponent(String(nr)) + '.html')
                 .then(function (r) { return r.ok ? r.text() : ''; })
-                .catch(function () { return ''; });
+                .catch(function () { _netFetchFailed = true; return ''; });
         }
 
         // IDB + network lookup for one nr (premium content).
@@ -3470,8 +3481,13 @@ PPP.app = (function () {
 
         firstFetch.then(function (rows) {
             if (rows.length === 0) {
-                if (!net.online) {
-                    // Nothing in IDB and no network.
+                if (_netFetchFailed) {
+                    // Nothing in IDB and the network fetch actually FAILED
+                    // (transport rejection) — this is a genuine offline state.
+                    // Gating on the real failure (not net.online) means a
+                    // device whose navigator.onLine lies "false" while online
+                    // no longer gets the offline modal after a successful or
+                    // 404 fetch (field bug 2026-07-24, Android LTE).
                     if (!_offlineInstalled) {
                         title.textContent = i18n.t('requiresInternet');
                         body.textContent = i18n.t('requiresInternet');
@@ -3502,19 +3518,42 @@ PPP.app = (function () {
                     });
                 }
                 if (driveUrl) {
-                    // Raw transcript: HTML not in-app, but the txt exists on Drive.
-                    var rawTitle = (i18n.t && i18n.t('rawTranscriptTitle')) || 'Raw transcript (txt)';
-                    var rawBody = (i18n.t && i18n.t('rawTranscriptBody')) ||
-                        'This is a Raw transcript, available only in txt format. Open it from Google Drive.';
+                    // HTML is not in the app, but a Drive source exists. The
+                    // correct copy depends on the lecture's script status for
+                    // this language (query the meta DB):
+                    //   'Raw'  \u2192 a genuine auto (Raw) txt transcript: keep the
+                    //            raw WARNING modal.
+                    //   other  \u2192 a PREMIUM transcript that simply is not in the
+                    //            app yet; driveUrl points at its premium docx.
+                    //            Show the neutral "available on Drive" copy \u2014
+                    //            NOT the raw-accuracy disclaimer (field bug
+                    //            2026-07-24).
                     var openLabel = (i18n.t && i18n.t('openInGoogleDrive')) || 'Open in Google Drive';
-                    title.textContent = rawTitle;
-                    body.innerHTML = '<p>' + rawBody.split('\n').map(function (ln) { return utils.escapeHtml(ln); }).join('<br>') + '</p><p><a href="' + driveUrl +
+                    var driveAnchor = '<p><a href="' + driveUrl +
                         '" target="_blank" rel="noopener" style="color:var(--saffron)">' +
                         utils.escapeHtml(openLabel) + ' \u2197</a></p>';
-                } else {
-                    title.textContent = 'Transcript not found';
-                    body.textContent = 'No ' + lang.toUpperCase() + ' transcript for lecture Nr.' + lectureNr;
+                    return db.queryMetaAsync(
+                        "SELECT script_" + lang + " AS st FROM lectures WHERE nr = $nr LIMIT 1",
+                        { $nr: String(lectureNr) }
+                    ).catch(function () { return []; }).then(function (stRows) {
+                        var st = (stRows[0] && stRows[0].st) || '';
+                        var isRawStatus = (String(st).trim().toLowerCase() === 'raw');
+                        var mTitle, mBody;
+                        if (isRawStatus) {
+                            mTitle = (i18n.t && i18n.t('rawTranscriptTitle')) || 'Raw transcript (txt)';
+                            mBody = (i18n.t && i18n.t('rawTranscriptBody')) ||
+                                'This is a Raw transcript, available only in txt format. Open it from Google Drive.';
+                        } else {
+                            mTitle = (i18n.t && i18n.t('transcriptOnDriveTitle')) || 'Transcript available on Google Drive';
+                            mBody = (i18n.t && i18n.t('transcriptOnDriveBody')) ||
+                                'This transcript is not yet available inside the app. Open it from Google Drive.';
+                        }
+                        title.textContent = mTitle;
+                        body.innerHTML = '<p>' + mBody.split('\n').map(function (ln) { return utils.escapeHtml(ln); }).join('<br>') + '</p>' + driveAnchor;
+                    });
                 }
+                title.textContent = 'Transcript not found';
+                body.textContent = 'No ' + lang.toUpperCase() + ' transcript for lecture Nr.' + lectureNr;
                 return;
             }
 
@@ -3536,6 +3575,18 @@ PPP.app = (function () {
             }).then(function (info) {
                 // Insert HTML content
                 var htmlContent = rows[0].html_content || '';
+                // Raw content (IDB raw:en:{nr} or the online Drive raw-txt
+                // path) ships with a baked-in ENGLISH-only disclaimer. Prepend
+                // a LOCALIZED warning box (reusing the existing rawTranscriptBody
+                // key, present in all 6 languages) so an LV/RU/… user actually
+                // sees the caveat. Newlines → <br>, HTML-escaped exactly like
+                // the driveUrl modal above (field bug 2026-07-24).
+                if (isRawContent) {
+                    var warnText = (i18n.t && i18n.t('rawTranscriptBody')) || '';
+                    var warnHtml = warnText.split('\n').map(function (ln) { return utils.escapeHtml(ln); }).join('<br>');
+                    htmlContent = '<div style="border-left:4px solid var(--saffron);background:rgba(255,153,51,0.08);padding:10px 14px;margin:0 0 14px;border-radius:4px;font-size:0.9em;line-height:1.5;">' +
+                        warnHtml + '</div>' + htmlContent;
+                }
                 body.innerHTML = htmlContent;
 
                 // Raw transcript: keep the Google Drive source as a discreet

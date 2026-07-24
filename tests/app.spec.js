@@ -1908,4 +1908,115 @@ test.describe('Online-first UX (no forced install)', () => {
     await context.setOffline(false);
   });
 
+  // ---- Field-bug fixes (2026-07-24, Android reports) ----------------------
+
+  test('44. Premium transcript opens when net.online lies "false" but the network works (fetch, not flag)', async ({ page }) => {
+    // FIX 1: navigator.onLine (mirrored by PPP.net.online) can report "offline"
+    // on some Android PWAs while a real connection exists. The viewer must
+    // ALWAYS attempt the transcript fetch and decide by its actual outcome — a
+    // working fetch renders, never the offline "not in library" modal.
+    const MARK = 'NETLIVE_PREMIUM_BODY_9f3a';
+    await page.route('**/transcripts/en/**', route => route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      body: '<p>' + MARK + ' ' + 'lecture text '.repeat(20) + '</p>',
+    }));
+
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // A lecture nr that is NOT in the installed IDB library, so the ONLY way to
+    // render it is the network fetch. Force the unreliable flag to "offline".
+    await page.evaluate(() => { if (window.PPP && PPP.net) PPP.net.online = false; });
+    await page.evaluate(() => PPP.app.openHtmlTranscriptViewer('9990001', 'en'));
+
+    // The served body renders despite net.online === false — proof the fetch
+    // was attempted rather than short-circuited on the flag.
+    await expect(page.locator('#transcriptModalBody')).toContainText(MARK, { timeout: 15000 });
+    // And none of the offline miss-modals fired.
+    await expect(page.locator('#transcriptModalBody')).not.toContainText('not downloaded');
+    await expect(page.locator('#transcriptModalTitle')).not.toContainText('Not in the offline library');
+  });
+
+  test('45. Inline raw transcript carries the LOCALIZED Raw warning (not only the baked-in English one)', async ({ page }) => {
+    // FIX 2: raw content ships an English-only baked-in disclaimer; an
+    // LV-interface user saw "no raw lecture shows a disclaimer". Every raw
+    // render must prepend a warning built from the localized rawTranscriptBody.
+    // This block's beforeEach disables auto-install, so IDB starts empty — seed
+    // ONE raw:en record directly (fast + deterministic, no library download).
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const RAW_NR = '9990045';
+    // Store a gzipped raw:en record in the same shape the installer writes
+    // (offline-store.js getText() decompresses rec.gz), so the viewer's
+    // raw:en:{nr} lookup hits it and renders the raw path.
+    await page.evaluate(async (nr) => {
+      const text = '<p>' + 'Seeded raw transcript sentence for the disclaimer test. '.repeat(20) + '</p>';
+      const gz = await new Response(
+        new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'))
+      ).blob();
+      await PPP.offlineStore.putFile({ key: 'raw:en:' + nr, packId: 'test-seed', gz: gz, raw: true });
+    }, RAW_NR);
+
+    // No per-lecture HTML on the server, so the premium fetch misses and the
+    // lookup falls through to the seeded raw:en record.
+    await page.route('**/transcripts/en/**', route => route.fulfill({ status: 404, body: '' }));
+
+    // Switch the interface to Latvian and read the expected localized warning.
+    await page.evaluate(() => PPP.app.setLanguage('lv'));
+    const lvWarn = await page.evaluate(() => PPP.i18n.t('rawTranscriptBody').split('\n')[0]);
+    expect(lvWarn).toContain('!!!');   // sanity: "BRĪDINĀJUMS!!!"
+
+    await page.evaluate((nr) => PPP.app.openHtmlTranscriptViewer(nr, 'en'), RAW_NR);
+    await page.waitForFunction(() => {
+      const b = document.getElementById('transcriptModalBody');
+      return b && b.textContent && b.textContent.length > 100;
+    }, { timeout: 15000 });
+
+    // The localized (LV) warning is present — proof the localized block was
+    // prepended, distinct from any baked-in English disclaimer.
+    await expect(page.locator('#transcriptModalBody')).toContainText(lvWarn, { timeout: 5000 });
+    // And the raw body itself still rendered underneath the warning.
+    await expect(page.locator('#transcriptModalBody')).toContainText('Seeded raw transcript sentence');
+  });
+
+  test('46. Missing HTML online: Raw-status keeps the raw modal, premium-status gets the "on Drive" modal', async ({ page }) => {
+    // FIX 3: a premium (solid) chip whose per-lecture HTML is missing on the
+    // server used to fall into the raw-txt modal (rawTranscriptTitle + Raw
+    // WARNING) — wrong, because driveUrl points at the premium docx. The modal
+    // is now chosen by the lecture's script status: 'Raw' keeps the raw modal;
+    // anything else gets the neutral "available on Google Drive" copy.
+    // This block's beforeEach disables auto-install, so IDB is empty and every
+    // lookup for these nrs falls straight through to the driveUrl branch.
+
+    // No per-lecture HTML exists on the server -> the viewer fetch misses (404,
+    // a RESOLVED response, so this is treated as ONLINE, not offline).
+    await page.route('**/transcripts/en/**', route => route.fulfill({ status: 404, body: '' }));
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Real nrs with known status in the meta DB: nr 1 is 'Raw', nr 455 is
+    // 'Script_EN' (premium). Neither is in IDB (no install), so the lookup
+    // reaches the driveUrl branch under test.
+    async function openMiss(nr) {
+      await page.evaluate((n) => PPP.app.openHtmlTranscriptViewer(n, 'en', null, null, 'https://drive.google.com/file/d/FAKE/view'), nr);
+    }
+
+    // (a) Premium status (Script_EN) -> new "Transcript available on Google Drive".
+    await openMiss('455');
+    await expect(page.locator('#transcriptModalTitle'))
+      .toContainText('Transcript available on Google Drive', { timeout: 15000 });
+    await expect(page.locator('#transcriptModalBody')).toContainText('not yet available inside the app');
+    await expect(page.locator('#transcriptModalBody a[href*="drive.google.com"]')).toHaveCount(1);
+    await page.keyboard.press('Escape');
+
+    // (b) Raw status -> keep today's raw-txt modal (rawTranscriptTitle + WARNING).
+    await openMiss('1');
+    await expect(page.locator('#transcriptModalTitle'))
+      .toContainText('Raw transcript (txt)', { timeout: 15000 });
+    const enWarn = await page.evaluate(() => PPP.i18n.t('rawTranscriptBody').split('\n')[0]);
+    await expect(page.locator('#transcriptModalBody')).toContainText(enWarn);
+  });
+
 });
