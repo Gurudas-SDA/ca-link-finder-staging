@@ -22,6 +22,21 @@ PPP.downloader = (function () {
         return new Promise(function (resolve) { setTimeout(resolve, ms); });
     }
 
+    /**
+     * Is this error the browser refusing a write because the origin's storage
+     * is full? WebKit (iPad/iPhone) hits this long before desktop Chrome —
+     * the storage preflight is advisory (estimate() may be missing or
+     * optimistic), so the QuotaExceededError surfaces at APPLY time, from the
+     * IndexedDB transaction (offline-store putFile/applyPack reject with
+     * tx.error). Matched by DOMException name and, defensively, by message.
+     */
+    function _isQuotaError(err) {
+        if (!err) return false;
+        if (err.quota) return true;
+        if (err.name === 'QuotaExceededError') return true;
+        return /quota/i.test(String(err.message || ''));
+    }
+
     function fetchManifest() {
         return fetch('data/manifest.json', { cache: 'no-store' }).then(function (r) {
             if (!r.ok) throw new Error('manifest HTTP ' + r.status);
@@ -288,11 +303,23 @@ PPP.downloader = (function () {
                     else if (item.type === 'shard') delete install.completedShards[entry.id];
                     else delete install.completedPacks[entry.id];
                     resetBytes();
-                    if (attempt < MAX_ATTEMPTS) {
+                    // A full store cannot be retried into having room: the
+                    // whole retry ladder would just re-download megabytes to
+                    // fail at the very same IndexedDB write (field bug
+                    // 2026-07-24, iPad: 69%→79%→69% forever). Fail fast and
+                    // tag the error so the UI can say "free up space" and stop
+                    // the automatic-resume loop.
+                    var quota = _isQuotaError(err);
+                    if (!quota && attempt < MAX_ATTEMPTS) {
                         return _delay(RETRY_DELAYS[attempt - 1] || RETRY_DELAYS[RETRY_DELAYS.length - 1])
                             .then(tryOnce);
                     }
-                    throw new Error('Download failed: ' + item.name + ' (' + err.message + ')');
+                    // IDB DOMExceptions can carry an empty .message — fall back
+                    // to .name so the surfaced diagnostic is never blank.
+                    var werr = new Error('Download failed: ' + item.name + ' (' +
+                        ((err && (err.message || err.name)) || err) + ')');
+                    if (quota) werr.quota = true;
+                    throw werr;
                 });
         }
         return tryOnce();
@@ -407,7 +434,11 @@ PPP.downloader = (function () {
                         // rest later. checkForUpdates/addLanguages keep their
                         // original abort-on-error behaviour.
                         delete itemBytes[item.name];
-                        failed.push({ name: item.name, error: String((err && err.message) || err) });
+                        failed.push({
+                            name: item.name,
+                            error: String((err && err.message) || err),
+                            quota: !!(err && err.quota)
+                        });
                         emit(true);
                     });
                 }, CONCURRENCY).then(function () {
@@ -425,6 +456,12 @@ PPP.downloader = (function () {
                         perr.failedItems = failed;
                         perr.doneBytes = baseBytes;
                         perr.totalBytes = totalBytes;
+                        // Any quota-failed item means the DEVICE is out of
+                        // room — automatic retries would loop on the same
+                        // write. The caller must tell the user the real cause.
+                        for (var fi = 0; fi < failed.length; fi++) {
+                            if (failed[fi].quota) { perr.quotaExceeded = true; break; }
+                        }
                         throw perr;
                     }
                     // Success tail, committed as ONE transaction. Written as

@@ -890,6 +890,21 @@ PPP.app = (function () {
         return bytes;
     }
 
+    /**
+     * Short human-readable diagnostic for a partial-install error: the first
+     * failing item's name + underlying error (and a "+N" for the rest).
+     * Appended to the interrupted copy so a field report can pinpoint WHICH
+     * item and WHICH stage (HTTP / size or sha256 mismatch / IndexedDB write)
+     * keeps failing — before this, the toast only said how many MB were left.
+     */
+    function _installFailDetail(err) {
+        var items = (err && err.failedItems) || [];
+        if (!items.length) return '';
+        var first = items[0];
+        var extra = items.length > 1 ? ' +' + (items.length - 1) : '';
+        return ' [' + first.name + ': ' + first.error + extra + ']';
+    }
+
     function beginInstall(manifest, langs, includeShards) {
         _installPct = 0;
         document.addEventListener('click', _installGuardHandler, true);
@@ -933,7 +948,19 @@ PPP.app = (function () {
                     (((err.totalBytes || 0) - (err.doneBytes || 0)) / 1048576)));
                 _offlinePartial = true;
                 ui.hideLoading();
-                ui.toast(i18n.t('offlineInterrupted').replace('{left}', String(leftMB)));
+                if (err.failedItems) console.error('Offline install failed items:', JSON.stringify(err.failedItems));
+                if (err.quotaExceeded) {
+                    // The device is out of storage — an automatic retry can
+                    // only repeat the exact same failing write (the iPad
+                    // 69%→79%→69% loop). Disarm the auto-resume listeners and
+                    // say the real cause; a manual retry / next boot still
+                    // resumes from the durable install state.
+                    _removeInstallListeners();
+                    ui.toast(i18n.t('offlineStorageFull').replace('{left}', String(leftMB)));
+                } else {
+                    ui.toast(i18n.t('offlineInterrupted').replace('{left}', String(leftMB)) +
+                        _installFailDetail(err));
+                }
                 return PPP.downloader.isCoreReady().then(function (ready) {
                     if (ready) return openFromIdb();
                     loadDataLegacy();
@@ -1322,11 +1349,22 @@ PPP.app = (function () {
                 if (err && err.partial) {
                     // Interrupted, not lost: say how much is left and that it
                     // continues automatically (the Retry button stays as a
-                    // manual shortcut).
+                    // manual shortcut). With the failing item + stage appended,
+                    // so the loop is never an anonymous "X MB left".
                     _offlinePartial = true;
+                    if (err.failedItems) console.error('Offline install failed items:', JSON.stringify(err.failedItems));
                     var leftMB = Math.max(1, Math.round(
                         (((err.totalBytes || 0) - (err.doneBytes || 0)) / 1048576)));
-                    errMsg.textContent = i18n.t('offlineInterrupted').replace('{left}', String(leftMB));
+                    if (err.quotaExceeded) {
+                        // Storage full: retrying automatically only repeats
+                        // the same failing IndexedDB write — stop the loop and
+                        // name the real cause. Manual Retry stays available.
+                        _removeInstallListeners();
+                        errMsg.textContent = i18n.t('offlineStorageFull').replace('{left}', String(leftMB));
+                    } else {
+                        errMsg.textContent = i18n.t('offlineInterrupted').replace('{left}', String(leftMB)) +
+                            _installFailDetail(err);
+                    }
                 } else {
                     errMsg.textContent = i18n.t('offlineOfferError');
                 }
@@ -3433,16 +3471,35 @@ PPP.app = (function () {
         firstFetch.then(function (rows) {
             if (rows.length === 0) {
                 if (!net.online) {
-                    // Nothing in IDB and no network. If the offline library is
-                    // installed, this language simply wasn't downloaded —
-                    // guide the user to reconnect or add it in offline settings;
-                    // otherwise the generic requires-internet message.
-                    var msg = _offlineInstalled
-                        ? i18n.t('offlineLangNotDownloaded')
-                        : i18n.t('requiresInternet');
-                    title.textContent = _offlineInstalled ? i18n.t('offlineLangNotDownloadedTitle') : i18n.t('requiresInternet');
-                    body.textContent = msg;
-                    return;
+                    // Nothing in IDB and no network.
+                    if (!_offlineInstalled) {
+                        title.textContent = i18n.t('requiresInternet');
+                        body.textContent = i18n.t('requiresInternet');
+                        return;
+                    }
+                    // The library IS installed, but this lookup missed. Two
+                    // distinct truths (field bug 2026-07-24, Android): when the
+                    // requested LANGUAGE was never selected, guide the user to
+                    // the offline settings; but when the language IS installed
+                    // (EN is always the mandatory base) the lecture itself is
+                    // simply newer than the installed pack set — the packs are
+                    // built from a snapshot, while the meta DB (which renders
+                    // the buttons) updates daily, so a freshly added lecture
+                    // shows a button yet has no IDB record. Saying "language
+                    // not downloaded" there is false and confusing.
+                    var langsP = (PPP.downloader && PPP.downloader.getInstalledLangs)
+                        ? PPP.downloader.getInstalledLangs().catch(function () { return []; })
+                        : Promise.resolve([]);
+                    return langsP.then(function (installedLangs) {
+                        var langInstalled = (lang === 'en') || installedLangs.indexOf(lang) !== -1;
+                        if (langInstalled) {
+                            title.textContent = i18n.t('offlineLectureNotInLibraryTitle');
+                            body.textContent = i18n.t('offlineLectureNotInLibrary');
+                        } else {
+                            title.textContent = i18n.t('offlineLangNotDownloadedTitle');
+                            body.textContent = i18n.t('offlineLangNotDownloaded');
+                        }
+                    });
                 }
                 if (driveUrl) {
                     // Raw transcript: HTML not in-app, but the txt exists on Drive.
@@ -4302,6 +4359,9 @@ PPP.app = (function () {
         // Internal — exposed only so Playwright can unit-test the two-tier
         // sentence/word ZIP-export highlighter without a full download round trip.
         _wrapMatchesInContainer: _wrapMatchesInContainer,
+        // Internal (test only) — drive the background install directly so the
+        // quota-exceeded UI path can be exercised deterministically (P12).
+        startBackgroundInstall: startBackgroundInstall,
         // Internal (test only) — unit-test the MP3 ZIP count cap in
         // _addOneToZip / toggleSelectPair without fetching real audio.
         _addOneToZip: _addOneToZip,

@@ -949,3 +949,114 @@ test.describe('PWA interrupted install (Phase B)', () => {
     });
   });
 });
+
+// ===========================================================================
+// Field bugs 2026-07-24 (production reports from real devices).
+//
+// P12 — iPad install loop: one item's IndexedDB write kept failing with
+// QuotaExceededError (WebKit runs out of origin storage long before desktop
+// Chrome; the storage preflight is advisory). The old code spent the whole
+// 4-attempt retry ladder RE-DOWNLOADING the item to fail at the same write,
+// raised err.partial, and the auto-resume restarted the identical round:
+// 69% → 79% → 69% forever, with no cause shown. New behaviour: quota errors
+// fail FAST (single attempt), firstInstall tags the rejection with
+// .quotaExceeded, the UI shows the storage-full copy (i18n offlineStorageFull)
+// instead of the generic interrupted copy, and the automatic-resume listeners
+// are DISARMED so the loop cannot restart by itself (manual Retry stays).
+//
+// P13 — Android "Valoda nav lejupielādēta" on an INSTALLED language: the
+// transcript packs are built from a snapshot while the meta DB (which renders
+// the EN/LV/RU/Raw buttons) is rebuilt daily, so a lecture added after the
+// pack build shows a button yet has no IndexedDB record. Offline, the old
+// code showed "language not downloaded" even for EN — the mandatory base that
+// IS installed. New behaviour: when the requested language is installed, the
+// copy says the LECTURE is newer than the offline library (i18n
+// offlineLectureNotInLibrary); the language-not-downloaded copy remains for
+// genuinely un-downloaded languages.
+// ===========================================================================
+
+test.describe('Field bugs 2026-07-24 (quota loop, missing-lecture copy)', () => {
+  test.setTimeout(300000);
+
+  // page.route / request tracking must deterministically see every request.
+  test.describe('deterministic network (SW blocked)', () => {
+    test.use({ serviceWorkers: 'block' });
+
+    test('P12. QuotaExceededError: fail-fast (no retry ladder), storage-full copy, auto-resume disarmed', async ({ page }) => {
+      await page.goto('./');
+      await page.waitForFunction(() =>
+        window.PPP && PPP.app && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported());
+
+      const packReqs = [];
+      page.on('request', req => { if (req.url().includes('/packs/')) packReqs.push(req.url()); });
+
+      // Every files-store write fails the way a full WebKit origin fails:
+      // an asynchronous QuotaExceededError out of the IndexedDB transaction.
+      await page.evaluate(() => {
+        const quotaReject = () =>
+          Promise.reject(new DOMException('The quota has been exceeded.', 'QuotaExceededError'));
+        PPP.offlineStore.putFile = quotaReject;
+        PPP.offlineStore.applyPack = quotaReject;
+      });
+
+      // Drive the real background-install path (EN base) and wait for it to
+      // run to completion — the catch branch renders into #offlineProgress.
+      await page.evaluate(() => PPP.app.startBackgroundInstall([], false));
+
+      // (a) The user is told the REAL cause — storage, not a vague interrupt.
+      await expect(page.locator('#offlineProgress'))
+        .toContainText('Not enough storage on the device', { timeout: 60000 });
+
+      // (b) Fail-fast: every item was fetched exactly ONCE — the old retry
+      // ladder re-downloaded each failing item up to 4 times.
+      const counts = {};
+      for (const u of packReqs) counts[u] = (counts[u] || 0) + 1;
+      expect(packReqs.length).toBeGreaterThan(0);
+      for (const u of Object.keys(counts)) expect(counts[u]).toBe(1);
+
+      // (c) The library never claims completeness, and the durable resume
+      // state survives for a later (post-cleanup) manual retry or boot resume.
+      const state = await page.evaluate(async () => ({
+        localManifest: await PPP.offlineStore.getState('localManifest'),
+        install: await PPP.offlineStore.getState('install'),
+      }));
+      expect(state.localManifest).toBeNull();
+      expect(state.install).not.toBeNull();
+
+      // (d) The automatic-resume loop is BROKEN: an 'online' burst plus a
+      // visibilitychange must no longer restart the install by itself.
+      const before = packReqs.length;
+      await page.evaluate(() => {
+        window.dispatchEvent(new Event('online'));
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      await page.waitForTimeout(2000);
+      expect(packReqs.length).toBe(before);
+    });
+
+    test('P13. Offline, installed EN: a lecture missing from the packs gets the "newer than the library" copy, not "language not downloaded"', async ({ page, context }) => {
+      await installEnOnly(page);
+
+      await context.setOffline(true);
+      try {
+        // (a) EN — the mandatory installed base. An nr with no IDB record
+        // (a lecture added after the pack build) must NOT claim the language
+        // is missing; it says the lecture is newer than the library.
+        await page.evaluate(() => PPP.app.openHtmlTranscriptViewer('999999', 'en'));
+        await expect(page.locator('#transcriptModalBody'))
+          .toContainText('newer than your offline library', { timeout: 15000 });
+        await expect(page.locator('#transcriptModalTitle'))
+          .toContainText('Not in the offline library yet');
+        await page.keyboard.press('Escape');
+
+        // (b) LV — genuinely NOT selected/downloaded: the language-not-
+        // downloaded guidance stays exactly as before (PL4 behaviour).
+        await page.evaluate((nr) => PPP.app.openHtmlTranscriptViewer(nr, 'lv'), LV_NR);
+        await expect(page.locator('#transcriptModalBody'))
+          .toContainText('not downloaded', { timeout: 15000 });
+      } finally {
+        await context.setOffline(false);
+      }
+    });
+  });
+});
