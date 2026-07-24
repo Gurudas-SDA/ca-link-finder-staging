@@ -388,21 +388,27 @@ PPP.search = (function () {
      *
      * Same matching rules as the lecture-name search:
      *   - `;`  = AND groups, `//` = OR alternatives (parsed.orGroups).
-     *   - Each alternative is diacritic-folded (removeDiacritics + lower), split into
-     *     words; every word must co-occur in the SAME sentence (word AND).
+     *   - Each alternative is diacritic-folded (removeDiacritics + lower) and matched
+     *     as ONE CONTIGUOUS PHRASE, exactly like the lecture-name search: `guru
+     *     tattva` finds "guru tattva" / "guru-tattva", NOT every sentence that
+     *     happens to contain both words apart. (Corrected 2026-07-24: this mode
+     *     had split terms into ANDed words, contradicting both the stated rule
+     *     above and the comment right here.)
      *   - Prefix filters (subject:/lang:/@source/has:) are IGNORED in this mode — the
      *     sentences DB carries no such metadata (documented v1 limitation).
      *
-     * PREFIX (word-start) matching: each word matches s.sentence_search LIKE
-     * '% word%'. sentence_search is diacritic-folded, lowercased, with every
+     * PREFIX (word-start) matching: the phrase matches s.sentence_search LIKE
+     * '% word[ word...]%'. sentence_search is diacritic-folded, lowercased, with every
      * run of non-alphanumeric chars collapsed to a single space and padded
      * with one leading/trailing space (built by scripts/build_sentences_db.py
      * to_search()). The leading space in the LIKE pattern anchors the match
      * to a word START, and the missing trailing space allows any suffix. So
      * `rice` matches `rice`/`rices` (word-start) but NOT `price`/`priceless`
      * (no space before "rice" there); `feather` matches `feather`/`feathers`.
-     * Words are sanitized to [a-z0-9] the same way the column is built; a term
-     * with internal punctuation (e.g. a hyphen) splits into multiple ANDed words.
+     * The same anchor+open-suffix applies to the phrase as a whole, so
+     * `guru tattva` also matches `guru tattvam`. Words are sanitized to
+     * [a-z0-9] the same way the column is built, so any internal punctuation
+     * in the term simply becomes a space inside the phrase.
      *
      * Returns { sql, countSql, params } — or null when there is no free-text term.
      * The main query takes a $limit param (default 500); callers may override it
@@ -425,13 +431,14 @@ PPP.search = (function () {
                 // punctuation (e.g. a hyphen) yields multiple ANDed words.
                 var words = normalized.split(/[^a-z0-9]+/).filter(Boolean);
                 if (words.length === 0) return null;
-                // Each word must appear at a WORD-START in the same sentence (AND).
-                var wordConds = words.map(function (word) {
-                    var key = '$tw' + (paramIdx++);
-                    params[key] = '% ' + word + '%';
-                    return "s.sentence_search LIKE " + key;
-                });
-                return "(" + wordConds.join(" AND ") + ")";
+                // ONE contiguous phrase — the words must appear next to each
+                // other, in this order, exactly as in the lecture-name search.
+                // sentence_search collapses every non-alphanumeric run to a
+                // single space, so joining with ' ' also matches punctuated
+                // forms: "guru tattva" hits "guru-tattva" and "Guru Tattva".
+                var key = '$tw' + (paramIdx++);
+                params[key] = '% ' + words.join(' ') + '%';
+                return "(s.sentence_search LIKE " + key + ")";
             }).filter(Boolean);
             if (groupConds.length > 0) {
                 conditions.push('(' + groupConds.join(' OR ') + ')');

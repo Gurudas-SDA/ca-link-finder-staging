@@ -828,6 +828,38 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     }
   });
 
+  test('31b2. buildTranscriptSQL matches a multi-word term as ONE phrase, like the lecture-name search', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    const out = await page.evaluate(() => {
+      const s = window.PPP.search;
+      const nonLimit = (q) => Object.keys(q.params)
+        .filter((k) => k !== '$limit').map((k) => q.params[k]);
+      return {
+        phrase: nonLimit(s.buildTranscriptSQL(s.parseSearchQuery('guru tattva'))),
+        hyphen: nonLimit(s.buildTranscriptSQL(s.parseSearchQuery('guru-tattva'))),
+        and: nonLimit(s.buildTranscriptSQL(s.parseSearchQuery('guru; tattva'))),
+        or: nonLimit(s.buildTranscriptSQL(s.parseSearchQuery('guru tattva // nama tattva'))),
+        // The lecture-name search has always treated a term as one substring;
+        // "In Text" must not disagree with it.
+        titles: Object.keys(s.buildMetaSQL(s.parseSearchQuery('guru tattva')).params)
+          .map((k) => s.buildMetaSQL(s.parseSearchQuery('guru tattva')).params[k]),
+      };
+    });
+
+    // ONE param, both words contiguous — not two ANDed word patterns.
+    expect(out.phrase).toEqual(['% guru tattva%']);
+    // Punctuation inside the term collapses to the same phrase (sentence_search
+    // stores "guru-tattva" as "guru tattva").
+    expect(out.hyphen).toEqual(['% guru tattva%']);
+    // `;` still means AND across separate terms, `//` still means OR.
+    expect(out.and).toEqual(['% guru%', '% tattva%']);
+    expect(out.or).toEqual(['% guru tattva%', '% nama tattva%']);
+    // Titles mode already phrase-matched; the two modes now agree.
+    expect(out.titles).toEqual(['%guru tattva%']);
+  });
+
   test('31f. Phase B chunked sentence search — 21 shards, premium+raw, sorted, progress fired', async ({ page }) => {
     // The chunked engine fetches 21 gz shards over the network (one resident
     // at a time) — allow generous time on a cold static server.
