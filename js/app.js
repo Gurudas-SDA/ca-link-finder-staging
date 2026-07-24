@@ -808,6 +808,16 @@ PPP.app = (function () {
     // the screen is (best-effort) kept awake while it runs.
     var _installInFlight = false;
     var _installListenersOn = false;
+    // Consecutive AUTOMATIC partial failures. A persistent per-item failure
+    // (bad device state, quota edge, corrupted response) plus the auto-resume
+    // listeners used to make a silent infinite loop: fail -> message rendered
+    // -> visibility/online tick restarts the pool -> the message is wiped
+    // before anyone can read it (field bug 2026-07-24, iPad 83%->79% cycle).
+    // After MAX consecutive automatic failures the listeners are disarmed so
+    // the message STAYS on screen; the manual Retry button (which resets the
+    // counter) remains the way to continue.
+    var _autoFailCount = 0;
+    var AUTO_FAIL_MAX = 2;
     var _retryLangs = null;         // selection to resume with (null = default)
     var _retryShards = false;
     var _wakeLock = null;
@@ -1315,6 +1325,7 @@ PPP.app = (function () {
             }, sel, incShards).then(function () {
                 _installInFlight = false;
                 _offlinePartial = false;
+                _autoFailCount = 0;
                 _removeInstallListeners();
                 _releaseWakeLock();
                 PPP.offlineStore.requestPersist();
@@ -1362,6 +1373,13 @@ PPP.app = (function () {
                         _removeInstallListeners();
                         errMsg.textContent = i18n.t('offlineStorageFull').replace('{left}', String(leftMB));
                     } else {
+                        _autoFailCount++;
+                        if (_autoFailCount >= AUTO_FAIL_MAX) {
+                            // Same failure keeps repeating — stop the automatic
+                            // loop so this message stays readable and the
+                            // failing item's name reaches the user.
+                            _removeInstallListeners();
+                        }
                         errMsg.textContent = i18n.t('offlineInterrupted').replace('{left}', String(leftMB)) +
                             _installFailDetail(err);
                     }
@@ -1374,7 +1392,13 @@ PPP.app = (function () {
                 retryBtn.className = 'search-button';
                 retryBtn.textContent = i18n.t('offlineOfferBtn');
                 // Retry the SAME selection that failed, not the EN-only default.
-                retryBtn.onclick = function () { startBackgroundInstall(_retryLangs, _retryShards); };
+                retryBtn.onclick = function () {
+                    // A human pressed Retry — reset the automatic-failure
+                    // budget and re-arm the resume listeners for this attempt.
+                    _autoFailCount = 0;
+                    _ensureInstallListeners(_retryLangs, _retryShards);
+                    startBackgroundInstall(_retryLangs, _retryShards);
+                };
                 b.appendChild(retryBtn);
             }
         });
