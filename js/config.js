@@ -104,7 +104,7 @@ PPP.config.countryName = function (code, lang) {
    RECORD-TYPE FILTER DATA
    The `lectures.type` column has 25+ raw variants (verified against the live
    meta DB), most of them one-off outliers. This block groups the handful of
-   meaningful ones into 8 canonical keys — applied in the APP layer only, so
+   meaningful ones into 5 canonical keys — applied in the APP layer only, so
    the Google Sheets source is never touched. Anything not listed here (n/a,
    empty, "Promo", and the long tail of rare one-off values) is never offered
    as a filter checkbox.
@@ -119,13 +119,10 @@ PPP.config.TYPE_GROUPS = {
     parikrama: ['parikrama', 'parikrama_radhakunda'],
     seminar: ['lecture (seminar)'],
     qa: ['istagosthi_q&a'],
-    kirtan: ['practice (kirtan)', 'practice_?_ (kirtan)', 'practice (bhajan)', 'practice (arati)', 'explanation (bhajan)'],
-    othervaishnava: ['lecture (by other vaishnava)'],
-    shorttalk: ['short talk', 'short talk (name giving)'],
-    drama: ['practice (drama)', 'commentary (drama)']
+    kirtan: ['practice (kirtan)', 'practice_?_ (kirtan)', 'practice (bhajan)', 'practice (arati)', 'explanation (bhajan)']
 };
 
-PPP.config.TYPE_ORDER = ['lecture', 'parikrama', 'seminar', 'qa', 'kirtan', 'othervaishnava', 'shorttalk', 'drama'];
+PPP.config.TYPE_ORDER = ['lecture', 'parikrama', 'seminar', 'qa', 'kirtan'];
 
 // i18n key for each canonical type's checkbox label.
 PPP.config.TYPE_I18N_KEY = {
@@ -133,10 +130,7 @@ PPP.config.TYPE_I18N_KEY = {
     parikrama: 'typeParikrama',
     seminar: 'typeSeminar',
     qa: 'typeQA',
-    kirtan: 'typeKirtan',
-    othervaishnava: 'typeOtherVaishnava',
-    shorttalk: 'typeShortTalk',
-    drama: 'typeDrama'
+    kirtan: 'typeKirtan'
 };
 
 /**

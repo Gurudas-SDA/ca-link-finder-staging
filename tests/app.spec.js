@@ -103,6 +103,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
     // Wait for results
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
     const info = await page.locator('#resultsInfo strong').textContent();
     const count = parseInt(info);
     expect(count).toBeGreaterThan(0);
@@ -155,6 +156,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
     // Wait for results
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
     const info = await page.locator('#resultsInfo strong').textContent();
     expect(parseInt(info)).toBe(20);
   });
@@ -168,6 +170,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
     // Wait for results
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
     const info = await page.locator('#resultsInfo strong').textContent();
     expect(parseInt(info)).toBe(20);
   });
@@ -217,14 +220,48 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     const stored = await page.evaluate(() => localStorage.getItem('preferredLanguage'));
     expect(stored).toBe('ru');
 
-    // Clicking a language button does not itself close the dropdown (the
-    // outside-click handler in js/app.js explicitly ignores clicks that
-    // land inside #langSwitcherFull) — it should still be open here.
-    await expect(page.locator('#langSwitcherFull')).toHaveClass(/open/);
-
-    // Clicking outside does close it.
-    await page.mouse.click(5, 5);
+    // Picking a language must close the dropdown itself — without this the
+    // panel stayed open with no closure signal, so it looked like nothing
+    // had happened and the user clicked again (Rājan report, 2026-07-25).
     await expect(page.locator('#langSwitcherFull')).not.toHaveClass(/open/);
+
+    // Clicking the language that is ALREADY active (the gold one) must also
+    // close the panel — Rājan's refinement: he was closing it via the small
+    // compact button, which isn't where his attention is after picking.
+    await page.click('#langCompactBtn');
+    await page.waitForSelector('#langSwitcherFull.open');
+    await page.click('.lang-btn[data-lang="ru"]'); // ru is already active
+    await expect(page.locator('#langSwitcherFull')).not.toHaveClass(/open/);
+    const storedAfterActiveClick = await page.evaluate(() => localStorage.getItem('preferredLanguage'));
+    expect(storedAfterActiveClick).toBe('ru'); // unchanged, just closed
+  });
+
+  test('7c. Language switch re-translates a combo display-label left in the search field', async ({ page }) => {
+    // Combo/nav buttons (By Topic, By Added, Favorites, ...) write a
+    // localized display label into #searchTerm's VALUE via setComboDisplay()
+    // (js/app.js). setLanguage() used to only handle [data-i18n] elements +
+    // the placeholder, so switching language left the OLD label sitting in
+    // the field while everything else relocalized (Rājan report, 2026-07-25).
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.evaluate(() => PPP.app.setLanguage('lv'));
+
+    await page.evaluate(() => PPP.app.showTopics());
+    const lvLabel = await page.evaluate(() => PPP.i18n.t('transcriptsByTopicDisplay'));
+    await expect(page.locator('#searchTerm')).toHaveValue(lvLabel);
+
+    await switchLanguage(page, 'ru');
+    const ruLabel = await page.evaluate(() => PPP.i18n.t('transcriptsByTopicDisplay'));
+    await expect(page.locator('#searchTerm')).toHaveValue(ruLabel);
+    expect(ruLabel).not.toBe(lvLabel);
+
+    // A value the user typed themselves must never be touched by a language
+    // switch, even if it happens to look like a display label from some
+    // other angle.
+    await page.evaluate(() => { document.getElementById('searchTerm').disabled = false; });
+    await page.fill('#searchTerm', 'mano paša teksts');
+    await switchLanguage(page, 'en');
+    await expect(page.locator('#searchTerm')).toHaveValue('mano paša teksts');
   });
 
   test('8. Transcript viewer opens', async ({ page }) => {
@@ -248,6 +285,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.fill('#searchTerm', 'guru; tattva');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
 
     const info = await page.locator('#resultsInfo strong').textContent();
     expect(parseInt(info)).toBeGreaterThan(0);
@@ -414,6 +452,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.fill('#searchTerm', 'goswami');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
     const singleCount = parseInt(await page.locator('#resultsInfo strong').textContent());
     expect(singleCount).toBeGreaterThan(10);
 
@@ -524,6 +563,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.keyboard.press('Enter');
 
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
     const info = await page.locator('#resultsInfo strong').textContent();
     expect(parseInt(info)).toBeGreaterThan(0);
 
@@ -630,6 +670,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.fill('#searchTerm', 'krishna');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
     // Wait for a REAL result row (13 cells), not the transient empty-state row
     await page.waitForFunction(() => {
       const tr = document.querySelector('#resultsTable.lecture-cards tbody tr');
@@ -812,6 +853,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.fill('#searchTerm', 'krishna');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
     const retryDone = await page.evaluate(() => PPP.ui.extrasReady());
     if (!retryDone) {
       await expect(page.locator('#extrasLoadingInfo')).toBeVisible();
@@ -1098,6 +1140,197 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(val).not.toContain('country:');
   });
 
+  test('50h. Lectures view: Apply combines word+year and runs immediately; unapplied ticks are inert; Clear keeps the typed word', async ({ page }) => {
+    // Rājan repro (2026-07-25) that turned out NOT to reproduce here after
+    // proper waits (see 50i for the "In Text" counterpart, where the same
+    // combination genuinely works once the shard search is given time to
+    // finish) — kept as permanent regression coverage for both views.
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // 1. typed word only -> Search
+    await page.fill('#searchTerm', 'krishna');
+    await page.click('.search-bar button.search-button');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
+    const n1 = parseInt((await page.locator('#resultsInfo').textContent()).match(/\d+/)[0], 10);
+    expect(n1).toBeGreaterThan(0);
+
+    // 2. filters only -> Apply (no typed word) — value holds just the token
+    await page.fill('#searchTerm', '');
+    await page.locator('.main-button-row .combo-btn-1').click();
+    let panel = page.locator('#filtersPanel');
+    await panel.locator('.flt-year[value="2026"]').check();
+    await panel.locator('.flt-apply').click();
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
+    expect(await page.locator('#searchTerm').inputValue()).toBe('year:2026');
+    expect(await page.locator('#filtersPanel').isHidden()).toBe(true); // Apply closes the panel
+
+    // 3. typed word + filters -> Apply: combines (not overwrites), narrows the count, and runs immediately
+    await page.fill('#searchTerm', 'krishna');
+    await page.locator('.main-button-row .combo-btn-1').click();
+    panel = page.locator('#filtersPanel');
+    await panel.locator('.flt-year[value="2025"]').check();
+    await panel.locator('.flt-apply').click();
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
+    const val3 = await page.locator('#searchTerm').inputValue();
+    expect(val3).toContain('krishna');
+    expect(val3).toContain('year:2025');
+    const n3 = parseInt((await page.locator('#resultsInfo').textContent()).match(/\d+/)[0], 10);
+    expect(n3).toBeGreaterThan(0);
+    expect(n3).toBeLessThan(n1); // narrowed by the year filter
+
+    // 4. typed word + a TICKED-but-not-applied filter -> pressing Search (not
+    // Apply) must ignore the tick entirely: same count as step 1.
+    await page.fill('#searchTerm', 'krishna');
+    await page.locator('.main-button-row .combo-btn-1').click();
+    panel = page.locator('#filtersPanel');
+    await panel.locator('.flt-year[value="2024"]').check();
+    await page.click('.search-bar button.search-button');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
+    expect(await page.locator('#searchTerm').inputValue()).toBe('krishna');
+    const n4 = parseInt((await page.locator('#resultsInfo').textContent()).match(/\d+/)[0], 10);
+    expect(n4).toBe(n1);
+
+    // 5. change the word after Apply -> Search: the new word is a fresh literal search
+    await page.fill('#searchTerm', 'guru');
+    await page.click('.search-bar button.search-button');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
+    expect(await page.locator('#searchTerm').inputValue()).toBe('guru');
+
+    // 6. Clear with a typed word present: strips the year: token, keeps the
+    // word, re-runs — count matches the word-alone search (step 1).
+    await page.fill('#searchTerm', 'krishna; year:2025');
+    await page.click('.search-bar button.search-button');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
+    await page.locator('.main-button-row .combo-btn-1').click();
+    await page.locator('#filtersPanel .flt-clear').click();
+    await page.waitForTimeout(1200);
+    expect(await page.locator('#searchTerm').inputValue()).toBe('krishna');
+    const n6 = parseInt((await page.locator('#resultsInfo').textContent()).match(/\d+/)[0], 10);
+    expect(n6).toBe(n1);
+  });
+
+  test('50i. In Text (quotes) view: Apply combines the typed word with the year filter and runs the sentence search immediately', async ({ page }) => {
+    // Sentence search over the shards is slow (~15-20s here) — this is the
+    // one end-to-end run through the real path per Rājan's request. A term
+    // with a modest hit count keeps it well under the suite's per-test budget.
+    await page.goto('./');
+    await waitForAppReady(page);
+    await useQuotesView(page);
+
+    await page.fill('#searchTerm', 'peacock');
+    await page.locator('.main-button-row .combo-btn-1').click();
+    const panel = page.locator('#filtersPanel');
+    expect(await panel.locator('.flt-country').count()).toBe(0); // no country column in the sentence DB
+    await panel.locator('.flt-year[value="2026"]').check();
+    await panel.locator('.flt-apply').click();
+
+    // Apply must have combined the tokens AND closed the panel already —
+    // there must never be a state where Search still needs pressing.
+    expect(await page.locator('#searchTerm').inputValue()).toBe('peacock; year:2026');
+    expect(await page.locator('#filtersPanel').isHidden()).toBe(true);
+
+    await page.waitForFunction(() => {
+      const info = document.getElementById('resultsInfo');
+      return info && /\d/.test(info.textContent || '');
+    }, { timeout: 30000 });
+    const summary = await page.locator('#resultsInfo').textContent();
+    expect(summary).toMatch(/\d+ sentences/);
+    // Genuinely filtered, not a silent no-op: some real rows rendered.
+    expect(await page.locator('#resultsTable tbody tr').count()).toBeGreaterThan(0);
+  });
+
+  test('50j. In Text (quotes) view: filters-only Apply (no typed word) is refused with a toast, not a silent no-op', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+    await useQuotesView(page);
+    await page.fill('#searchTerm', '');
+    await page.locator('.main-button-row .combo-btn-1').click();
+    const panel = page.locator('#filtersPanel');
+    await panel.locator('.flt-year[value="2026"]').check();
+    await panel.locator('.flt-apply').click();
+    // "In Text" needs a word to search on — Rājan's own design note in
+    // applyFilters(): a year alone would scan a whole year of sentences.
+    await expect(page.locator('#uiToast')).toHaveClass(/show/, { timeout: 3000 });
+    expect(await page.locator('#searchTerm').inputValue()).toBe('');
+  });
+
+  test('50k. switchView() drops a leftover combo-display label instead of resurrecting it as typed text', async ({ page }) => {
+    // Rājan report, 2026-07-25. Repro A: lectures -> By Topic -> switch view.
+    // Repro B: quotes -> By Verse -> switch view. Both directions share the
+    // same #viewSwitchBtn control (only its label swaps).
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Repro A
+    await page.evaluate(() => PPP.app.showTopics());
+    const labelA = await page.locator('#searchTerm').inputValue();
+    expect(labelA.length).toBeGreaterThan(0);
+    await expect(page.locator('#searchTerm')).toBeDisabled();
+    await page.click('#viewSwitchBtn'); // -> quotes view
+    expect(await page.locator('#searchTerm').inputValue()).toBe('');
+    await expect(page.locator('#searchTerm')).toBeEnabled();
+
+    // Repro B
+    await page.click('.combo-btn-4'); // "By Verses" (citations mode)
+    const labelB = await page.locator('#searchTerm').inputValue();
+    expect(labelB.length).toBeGreaterThan(0);
+    await page.click('#viewSwitchBtn'); // -> lectures view
+    expect(await page.locator('#searchTerm').inputValue()).toBe('');
+    await expect(page.locator('#searchTerm')).toBeEnabled();
+
+    // Control: real typed text must still survive the switch (Rājan's
+    // original requirement switchView() was built to satisfy).
+    await page.fill('#searchTerm', 'my own typed text');
+    await page.click('#viewSwitchBtn');
+    expect(await page.locator('#searchTerm').inputValue()).toBe('my own typed text');
+  });
+
+  test('50l. Top Searches (showRecommendations) refreshes #resultsInfo instead of leaving a stale count', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.fill('#searchTerm', 'krishna');
+    await page.click('.search-bar button.search-button');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    const before = await page.locator('#resultsInfo').textContent();
+    expect(before).toMatch(/\d+ files found/);
+
+    await page.evaluate(() => PPP.app.showRecommendations());
+    // The stale count must not still be sitting above the (now hidden) table.
+    expect((await page.locator('#resultsInfo').textContent()).trim()).toBe('');
+    await expect(page.locator('#resultsTable')).toBeHidden();
+
+    await page.evaluate(() => PPP.app.showRecommendations()); // toggle off
+    await expect(page.locator('#resultsTable')).toBeVisible();
+    await page.waitForTimeout(300);
+    expect(await page.locator('#resultsInfo').textContent()).toBe(before);
+  });
+
+  test('50m. By Topic (showTopics) refreshes #resultsInfo instead of leaving a stale count', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.fill('#searchTerm', 'krishna');
+    await page.click('.search-bar button.search-button');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    const before = await page.locator('#resultsInfo').textContent();
+    expect(before).toMatch(/\d+ files found/);
+
+    await page.evaluate(() => PPP.app.showTopics());
+    expect((await page.locator('#resultsInfo').textContent()).trim()).toBe('');
+    await expect(page.locator('#resultsTable')).toBeHidden();
+
+    await page.evaluate(() => PPP.app.showTopics()); // toggle off
+    await expect(page.locator('#resultsTable')).toBeVisible();
+    await page.waitForTimeout(300);
+    expect(await page.locator('#resultsInfo').textContent()).toBe(before);
+  });
+
   test('50d. Filters state does not survive a reload (panel opens empty every time)', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);
@@ -1110,6 +1343,66 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.locator('.main-button-row .combo-btn-1').click();
     const anyChecked = await page.locator('#filtersPanel input:checked').count();
     expect(anyChecked).toBe(0);
+    expect(await page.locator('#searchTerm').inputValue()).toBe('');
+  });
+
+  test('50f. Clear strips filter tokens from the field and resets the stale result view', async ({ page }) => {
+    // Rājan report, 2026-07-25: after Apply (country + year) then Clear, every
+    // checkbox was unticked but the field still read e.g. "year:2025;
+    // country:LVA" and the results still showed the old (often 0) count —
+    // a checkbox state that visibly contradicted the field/results.
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.locator('.main-button-row .combo-btn-1').click();
+    const panel = page.locator('#filtersPanel');
+    await panel.locator('.flt-year[value="2025"]').check();
+    await panel.locator('.flt-country[value="LVA"]').check();
+    await panel.locator('.flt-apply').click();
+
+    const before = await page.locator('#searchTerm').inputValue();
+    expect(before).toContain('year:2025');
+    expect(before).toContain('country:LVA');
+
+    // Reopen Filters (checkboxes come back unticked — test 50d) and Clear.
+    await page.locator('.main-button-row .combo-btn-1').click();
+    expect(await page.locator('#filtersPanel input:checked').count()).toBe(0);
+    await page.locator('#filtersPanel .flt-clear').click();
+
+    const after = await page.locator('#searchTerm').inputValue();
+    expect(after).not.toContain('year:');
+    expect(after).not.toContain('country:');
+    expect(after).not.toContain('type:');
+    expect(after).toBe(''); // no free text was ever typed — field goes fully empty, no dangling ';'
+
+    // The stale count is gone too — resultsInfo reflects the now-empty term,
+    // not a leftover contradictory number.
+    await expect(page.locator('#resultsInfo')).toContainText('0');
+  });
+
+  test('50g. Clear drops a leftover combo-display label instead of leaving it in the field', async ({ page }) => {
+    // Same report: a combo/nav button (By Added, By Topic, ...) writes a
+    // localized display label into the field via setComboDisplay(). That
+    // label is not a real search token, so Clear must not preserve it either.
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.locator('.main-button-row .combo-btn-2').click(); // "By Added"
+    await expect(page.locator('#searchTerm')).toHaveClass(/combo-display/);
+    const labelValue = await page.locator('#searchTerm').inputValue();
+    expect(labelValue.length).toBeGreaterThan(0);
+
+    await page.locator('.main-button-row .combo-btn-1').click();
+    await page.locator('#filtersPanel .flt-country').first().check();
+    await page.locator('#filtersPanel .flt-apply').click();
+
+    const beforeClear = await page.locator('#searchTerm').inputValue();
+    expect(beforeClear).toContain(labelValue);
+    expect(beforeClear).toContain('country:');
+
+    await page.locator('.main-button-row .combo-btn-1').click();
+    await page.locator('#filtersPanel .flt-clear').click();
+
     expect(await page.locator('#searchTerm').inputValue()).toBe('');
   });
 
@@ -1231,7 +1524,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     );
     expect(activeBg).toContain('rgb(91, 107, 63)');
     // Empty-state hint text, not the generic "enter search terms" message.
-    await expect(page.locator('#resultsTable tbody')).toContainText('Type a word and press Search');
+    await expect(page.locator('#resultsTable tbody')).toContainText('Type a word/ words and press Search');
 
     // Switching back to "In Titles" restores the normal lecture-table frame
     // (useQuotesView toggles switchView(), so calling it again flips back to
@@ -1945,6 +2238,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.fill('#searchTerm', 'krishna');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
 
     // No "Select" toggle any more — per-language checkboxes are ALWAYS visible.
     await expect(page.locator('#selectModeBtn')).toHaveCount(0);
@@ -2002,6 +2296,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.fill('#searchTerm', 'krishna');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
     const dlTitle = await page.locator('#downloadSelectedBtn').getAttribute('title');
     expect(dlTitle && dlTitle.trim().length).toBeGreaterThan(0);
 

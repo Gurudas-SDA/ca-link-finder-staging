@@ -1591,7 +1591,6 @@ PPP.app = (function () {
             currentPage = 1;
             matchHints = new Map();
             document.getElementById('searchTerm').value = 'Nr. ' + nr;
-            document.getElementById('timer').textContent = '';
             displayResults();
 
             // If highlight parameter present — open transcript and scroll to text
@@ -1805,8 +1804,6 @@ PPP.app = (function () {
             totalResults = uiRows.length;
             currentPage = 1;
 
-            var elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
-            document.getElementById('timer').textContent = i18n.t('elapsedTime') + ' ' + elapsed + ' ' + i18n.t('seconds');
 
             track('search', { query: lastSearchTerm, mode: searchMode, results: totalResults });
             displayResults();
@@ -1826,8 +1823,6 @@ PPP.app = (function () {
         totalResults = allResults.length;
         currentPage = 1;
 
-        var elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
-        document.getElementById('timer').textContent = i18n.t('elapsedTime') + ' ' + elapsed + ' ' + i18n.t('seconds');
 
         displayResults();
     }
@@ -2553,6 +2548,16 @@ PPP.app = (function () {
     }
     function _filtersEsc(e) { if (e.key === 'Escape' || e.key === 'Esc') closeFilters(); }
 
+    // Shared by applyFilters() and clearFilters(): split the search field on
+    // ';' and drop any segment that IS a year:/country:/type: filter token,
+    // keeping only free text the user typed (or other tokens like lang:/
+    // has:/subject: that these two functions don't own). One parser so both
+    // callers can never drift apart on what counts as "a filter token".
+    function _keepNonFilterTokens(value) {
+        return (value || '').split(';').map(function (s) { return s.trim(); }).filter(Boolean)
+            .filter(function (seg) { return !/^year:/i.test(seg) && !/^country:/i.test(seg) && !/^type:/i.test(seg); });
+    }
+
     function applyFilters() {
         var panel = document.getElementById('filtersPanel');
         if (!panel) return;
@@ -2564,8 +2569,7 @@ PPP.app = (function () {
 
         // Keep any free-text the user already typed; drop only the OLD filter
         // tokens so re-applying replaces (not stacks) year/country/type.
-        var kept = input.value.split(';').map(function (s) { return s.trim(); }).filter(Boolean)
-            .filter(function (seg) { return !/^year:/i.test(seg) && !/^country:/i.test(seg) && !/^type:/i.test(seg); });
+        var kept = _keepNonFilterTokens(input.value);
 
         var tokens = kept.slice();
         if (years.length) tokens.push('year:' + years.join(','));
@@ -2593,6 +2597,38 @@ PPP.app = (function () {
         var panel = document.getElementById('filtersPanel');
         if (!panel) return;
         Array.prototype.forEach.call(panel.querySelectorAll('input[type="checkbox"]'), function (c) { c.checked = false; });
+
+        var input = document.getElementById('searchTerm');
+        if (!input) return;
+
+        if (input.classList.contains('combo-display')) {
+            // A combo-display label (By Added Date, By Topic, ...) sitting in
+            // the field is not a real search term — don't token-parse it,
+            // just drop it the same way switching search mode away from a
+            // combo view already does (clearComboDisplay(), defined above).
+            clearComboDisplay();
+        } else {
+            input.value = _keepNonFilterTokens(input.value).join('; ');
+        }
+
+        if (input.value.trim()) {
+            doSearch();
+            return;
+        }
+        // Nothing left to search — reset the result view instead of leaving
+        // a stale count/table contradicting the now-empty filter state
+        // (Rājan report, 2026-07-25: unticked every checkbox, but the field
+        // still showed a leftover filter token and the results still read
+        // "0 files found").
+        lastSearchTerm = '';
+        allResults = [];
+        totalResults = 0;
+        currentPage = 1;
+        matchHints = new Map();
+        navView = null;
+        transcriptView = null;
+        _refreshButtonGroups();
+        displayResults();
     }
 
     function setSearchMode(mode) {
@@ -2635,7 +2671,6 @@ PPP.app = (function () {
         if (prevMode !== mode) {
             document.getElementById('searchTerm').value = '';
             document.getElementById('resultsInfo').innerHTML = '';
-            document.getElementById('timer').textContent = '';
             document.getElementById('pagination').innerHTML = '';
             // The results area must switch FRAME immediately on the mode
             // button press — localized sentence-mode headers + distinct
@@ -2699,7 +2734,6 @@ PPP.app = (function () {
                 currentPage = 1;
                 matchHints = new Map();
                 document.getElementById('searchTerm').value = i18n.t('latest20Files');
-                document.getElementById('timer').textContent = '';
                 displayResults();
                 setComboDisplay(i18n.t('addedDateDisplay'));
             }).catch(function (e) {
@@ -2729,7 +2763,6 @@ PPP.app = (function () {
         currentPage = 1;
         matchHints = new Map();
         document.getElementById('searchTerm').value = i18n.t('latest20Files');
-        document.getElementById('timer').textContent = '';
         displayResults();
         setComboDisplay(i18n.t('addedDateDisplay'));
     }
@@ -2753,7 +2786,6 @@ PPP.app = (function () {
                 currentPage = 1;
                 matchHints = new Map();
                 document.getElementById('searchTerm').value = '2026';
-                document.getElementById('timer').textContent = '';
                 displayResults();
                 setComboDisplay(i18n.t('entries2026Display'));
             }).catch(function (e) {
@@ -2779,7 +2811,6 @@ PPP.app = (function () {
         currentPage = 1;
         matchHints = new Map();
         document.getElementById('searchTerm').value = '2026';
-        document.getElementById('timer').textContent = '';
         displayResults();
         setComboDisplay(i18n.t('entries2026Display'));
     }
@@ -2803,7 +2834,6 @@ PPP.app = (function () {
                 currentPage = 1;
                 matchHints = new Map();
                 document.getElementById('searchTerm').value = i18n.t('latest20Transcripts');
-                document.getElementById('timer').textContent = '';
                 displayResults();
                 setComboDisplay(i18n.t('newestTranscriptsDisplay'));
             }).catch(function (e) {
@@ -2834,7 +2864,6 @@ PPP.app = (function () {
         currentPage = 1;
         matchHints = new Map();
         document.getElementById('searchTerm').value = i18n.t('latest20Transcripts');
-        document.getElementById('timer').textContent = '';
         displayResults();
         setComboDisplay(i18n.t('newestTranscriptsDisplay'));
     }
@@ -2863,7 +2892,6 @@ PPP.app = (function () {
                 currentPage = 1;
                 matchHints = new Map();
                 document.getElementById('searchTerm').value = i18n.t('allTranscriptsByDate');
-                document.getElementById('timer').textContent = '';
                 displayResults();
                 setComboDisplay(i18n.t('transcriptsByDateDisplay'));
             }).catch(function (e) {
@@ -2901,7 +2929,6 @@ PPP.app = (function () {
         currentPage = 1;
         matchHints = new Map();
         document.getElementById('searchTerm').value = i18n.t('allTranscriptsByDate');
-        document.getElementById('timer').textContent = '';
         displayResults();
         setComboDisplay(i18n.t('transcriptsByDateDisplay'));
     }
@@ -2926,7 +2953,6 @@ PPP.app = (function () {
             currentPage = 1;
             matchHints = new Map();
             document.getElementById('searchTerm').value = i18n.t('favorites');
-            document.getElementById('timer').textContent = '';
             displayResults();
             var tbody = document.querySelector('#resultsTable tbody');
             if (tbody) {
@@ -3020,7 +3046,6 @@ PPP.app = (function () {
             currentPage = 1;
             matchHints = new Map();
             document.getElementById('searchTerm').value = label;
-            document.getElementById('timer').textContent = '';
             displayResults();
             setComboDisplay(i18n.t('favoritesBtn') || '\u2605 Favorites');
             var tbody = document.querySelector('#resultsTable tbody');
@@ -3044,7 +3069,6 @@ PPP.app = (function () {
                 currentPage = 1;
                 matchHints = new Map();
                 document.getElementById('searchTerm').value = label;
-                document.getElementById('timer').textContent = '';
                 displayResults();
                 setComboDisplay(i18n.t('favoritesBtn') || '\u2605 Favorites');
             });
@@ -3061,7 +3085,6 @@ PPP.app = (function () {
         currentPage = 1;
         matchHints = new Map();
         document.getElementById('searchTerm').value = label;
-        document.getElementById('timer').textContent = '';
         displayResults();
         setComboDisplay(i18n.t('favoritesBtn') || '\u2605 Favorites');
     }
@@ -3114,6 +3137,12 @@ PPP.app = (function () {
             if (resultsTable) resultsTable.style.display = '';
             navView = null;
             _refreshButtonGroups();
+            // Repaint the table + its count line (displayResults(), same as
+            // showLatestFiles()/showAllTranscriptsByDate()/
+            // showLatestTranscripts() already do) — #resultsInfo was cleared
+            // below when this panel opened, and without this it stayed
+            // cleared even though the table is visible again.
+            displayResults();
             return;
         }
         closeAllPanels();
@@ -3121,6 +3150,12 @@ PPP.app = (function () {
         navView = 'topSearches'; transcriptView = null;
         _refreshButtonGroups();
         if (resultsTable) resultsTable.style.display = 'none';
+        // The count line describes the (now hidden) table, not this
+        // recommendations panel — clear it instead of leaving a stale
+        // "N files found" floating above unrelated content (Rājan report,
+        // 2026-07-25: it kept the previous search's count).
+        var recResultsInfo = document.getElementById('resultsInfo');
+        if (recResultsInfo) recResultsInfo.innerHTML = '';
         setComboDisplay(i18n.t('recommendations'));
 
         if (usingSqlite) {
@@ -3199,6 +3234,9 @@ PPP.app = (function () {
             if (resultsTable) resultsTable.style.display = '';
             transcriptView = null;
             _refreshButtonGroups();
+            // Repaint table + count line — see showRecommendations() above
+            // for why (same stale-count report, 2026-07-25).
+            displayResults();
             return;
         }
         closeAllPanels();
@@ -3207,6 +3245,9 @@ PPP.app = (function () {
         navView = null; transcriptView = 'byTopic';
         _refreshButtonGroups();
         if (resultsTable) resultsTable.style.display = 'none';
+        // Clear the stale count line — see showRecommendations() above.
+        var topicsResultsInfo = document.getElementById('resultsInfo');
+        if (topicsResultsInfo) topicsResultsInfo.innerHTML = '';
 
         if (usingSqlite) {
             // Count only ORIGINAL transcripts (any of script_en/lv/ru with non-duplicate label)
@@ -3471,7 +3512,6 @@ PPP.app = (function () {
 
                 document.getElementById('searchTerm').value = reference;
                 lastSearchTerm = reference;
-                document.getElementById('timer').textContent = '';
 
                 displayResults();
             });
@@ -4231,8 +4271,6 @@ PPP.app = (function () {
         var q = search.buildCitationSQL(parsed);
 
         db.queryMetaAsync(q.sql, q.params).then(function (results) {
-            var elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
-            document.getElementById('timer').textContent = i18n.t('elapsedTime') + ' ' + elapsed + ' ' + i18n.t('seconds');
 
             if (q.mode === 'stats') {
                 showVerseSources();
@@ -4308,7 +4346,6 @@ PPP.app = (function () {
             // No free-text term — nothing to search on. Synchronous path, no
             // async hop, so the busy lock is never engaged here.
             document.getElementById('resultsInfo').innerHTML = '';
-            document.getElementById('timer').textContent = '';
             _sentenceMatchesByNr = {};
             _sentenceWords = [];
             _sentenceLastRender = null;
@@ -4340,8 +4377,6 @@ PPP.app = (function () {
             var rows = (res && res.rows) || [];
             var n = (res && res.count) || 0;
             var lectures = (res && res.lectures) || 0;
-            var elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
-            document.getElementById('timer').textContent = i18n.t('elapsedTime') + ' ' + elapsed + ' ' + i18n.t('seconds');
             track('search', { query: myTerm, mode: 'sentences', results: n });
             // Build the nr -> matched-sentence-texts map + word list for the
             // ZIP export highlighter (downloadSelectedZip / _addOneToZip).
@@ -4452,7 +4487,6 @@ PPP.app = (function () {
         ).then(function (rows) {
             var resultsInfo = document.getElementById('resultsInfo');
             resultsInfo.innerHTML = '';
-            document.getElementById('timer').textContent = '';
 
             var esc = utils.escapeHtml;
             var enc = utils.encodeForAttr;
@@ -4595,9 +4629,15 @@ PPP.app = (function () {
         track('view-switch', { to: next });
         var input = document.getElementById('searchTerm');
         var term = input ? input.value : '';
+        // A combo-display label (By Topic, By Verse, ...) left in the field
+        // is not something the user typed — restoring it after setSearchMode
+        // clears it would leave it sitting there as if typed, but ENABLED
+        // (Rājan report, 2026-07-25). Same display-label lookup used by the
+        // language-switch fix (setLanguage, below).
+        var isDisplayLabel = !!term && SEARCH_VALUE_DISPLAY_KEYS.some(function (k) { return i18n.t(k) === term; });
         _applyPurposeView(next);
         setSearchMode(next === 'quotes' ? 'sentences' : 'metadata');
-        if (input) input.value = term;
+        if (input && !isDisplayLabel) input.value = term;
         _updateTipStrip();
     }
 
@@ -4621,11 +4661,25 @@ PPP.app = (function () {
         var br = btn.getBoundingClientRect();
         // Measure first (panel is display:flex via .open already applied above).
         var pw = full.offsetWidth;
+        var ph = full.offsetHeight;
         var left = br.right - pw;
         var maxLeft = window.innerWidth - pw - 8;
         if (left > maxLeft) left = maxLeft;
         if (left < 8) left = 8;
-        full.style.top = (br.bottom + 6) + 'px';
+
+        // Prefer opening below the button, but flip ABOVE it when there isn't
+        // enough room before the results table starts — at narrow (mobile)
+        // widths the utility row sits close above the results header, so the
+        // dropdown used to paint straight over it (Rājan report, 2026-07-25).
+        var resultsEl = document.getElementById('resultsTable');
+        var lowerBound = window.innerHeight - 8;
+        if (resultsEl) lowerBound = Math.min(lowerBound, resultsEl.getBoundingClientRect().top - 8);
+        var top = br.bottom + 6;
+        if (top + ph > lowerBound) {
+            var aboveTop = br.top - 6 - ph;
+            top = aboveTop >= 8 ? aboveTop : Math.max(8, lowerBound - ph);
+        }
+        full.style.top = top + 'px';
         full.style.left = left + 'px';
     }
 
@@ -4707,10 +4761,44 @@ PPP.app = (function () {
     }
 
     // ===== LANGUAGE =====
+    // Keys whose translated value gets written directly into #searchTerm's
+    // VALUE (not just the placeholder) by combo/nav buttons — see
+    // setComboDisplay() and the handful of direct assignments above (By
+    // Topic, By Added, Verses, 2026, Favorites, ...). setLanguage() below
+    // must re-translate the field's value if it still holds one of these
+    // display labels in the outgoing language (Rājan report, 2026-07-25:
+    // switching LV -> RU after "By Topic" left the field showing the old
+    // Latvian label while everything else relocalized).
+    var SEARCH_VALUE_DISPLAY_KEYS = [
+        'byCitedVersesDisplay', 'mostCitedVersesDisplay', 'latest20Files',
+        'addedDateDisplay', 'entries2026Display', 'latest20Transcripts',
+        'newestTranscriptsDisplay', 'allTranscriptsByDate', 'transcriptsByDateDisplay',
+        'favorites', 'favoritesBtn', 'recommendations', 'transcriptsByTopicDisplay'
+    ];
     function setLanguage(lang) {
         if (_sentenceSearchBusy) { ui.toast(i18n.t('searchInProgress')); return; }
         track('language', { lang: lang });
+        // Snapshot BEFORE switching: if the search field's current value is
+        // exactly one of the known display labels in the OLD language, we'll
+        // re-translate it below. Anything the user typed themselves won't
+        // match any of these and is left untouched.
+        var searchInputEl = document.getElementById('searchTerm');
+        var _pendingDisplayKey = null;
+        if (searchInputEl) {
+            var oldLang = i18n.getLanguage();
+            var oldDict = (i18n.getTranslations() || {})[oldLang] || {};
+            var curVal = searchInputEl.value;
+            for (var _dk = 0; _dk < SEARCH_VALUE_DISPLAY_KEYS.length; _dk++) {
+                if (oldDict[SEARCH_VALUE_DISPLAY_KEYS[_dk]] === curVal) {
+                    _pendingDisplayKey = SEARCH_VALUE_DISPLAY_KEYS[_dk];
+                    break;
+                }
+            }
+        }
         i18n.setLanguage(lang);
+        if (_pendingDisplayKey && searchInputEl) {
+            searchInputEl.value = i18n.t(_pendingDisplayKey);
+        }
         // A11Y: keep the document language in sync (screen readers, hyphenation).
         // Also covers initial load — init() calls setLanguage(savedLang).
         document.documentElement.lang = lang;
@@ -4737,6 +4825,11 @@ PPP.app = (function () {
         });
         var langCompact = document.getElementById('langCompactBtn');
         if (langCompact) langCompact.textContent = lang.toUpperCase();
+        // Close the compact dropdown as soon as a language is picked — without
+        // this the panel stayed open (Rājan report, 2026-07-25) and gave no
+        // closure signal, so the switch looked like it hadn't worked.
+        var langSwitcher = document.getElementById('langSwitcherFull');
+        if (langSwitcher) langSwitcher.classList.remove('open');
         // The generic data-i18n loop above just wrote the RAW "{count}" template
         // into #onbIntroText (onbIntro has a placeholder) — fix it up now.
         updateOnbIntro();

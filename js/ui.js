@@ -153,7 +153,20 @@ PPP.ui = (function () {
         starSpacer.style.border = 'none';
         starSpacer.style.backgroundColor = 'transparent';
         row0.appendChild(starSpacer);
-        for (var i = 0; i < 11; i++) {
+        // Spacer-cell count must mirror the REAL column count the loop below
+        // builds (Script_LV/Script_RU are skipped, not real columns; Script_EN
+        // becomes a 3-wide block): a hardcoded 11 matched metadata mode's 11
+        // real columns by coincidence, but sentence mode has no Length column
+        // (10 real columns) — the mismatch left this invisible row one column
+        // WIDER than the visible header rows, so the colored header band fell
+        // a column short of the table's actual (rounded) right edge, exposing
+        // a cream notch at the corner (Rājan report, 2026-07-25).
+        var extraCols = 0;
+        for (var ci = 0; ci < cols.length; ci++) {
+            if (cols[ci] === 'Script_LV' || cols[ci] === 'Script_RU') continue;
+            extraCols += (cols[ci] === 'Script_EN') ? 3 : 1;
+        }
+        for (var i = 0; i < extraCols; i++) {
             var c = document.createElement('th');
             c.style.border = 'none';
             c.style.backgroundColor = 'transparent';

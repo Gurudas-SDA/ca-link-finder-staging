@@ -345,7 +345,6 @@ button, input, select, textarea, table {
     letter-spacing: 0.5px;
     transition: all 0.2s ease;
     border-radius: 20px;
-    text-transform: uppercase;
     box-shadow: 0 2px 8px rgba(208,52,44,0.4);
 }
 .features-btn:hover {
@@ -689,6 +688,23 @@ h1 {
     color: #8b1a1a !important;
     box-shadow: none !important;
     border: 1px solid rgba(139,105,20,0.2) !important;
+}
+/* View-switch chip ("↔ Search quotes" / "↔ Search lectures", #viewSwitchBtn):
+   the ONLY control in this utility row that changes the whole view rather
+   than opening a helper panel, so it needs to stand out from its pale
+   .help-search-btn-small neighbours (Rājan report, 2026-07-25). Solid blue
+   (an existing token, unused elsewhere in this row) + white text — same
+   override pattern .keywords-search-btn already uses below. Targets the
+   button's own class, so both directions (the label just swaps via
+   _applyPurposeView()) pick it up identically. */
+.view-switch-btn {
+    background: linear-gradient(135deg, var(--btn-blue), var(--btn-blue-light)) !important;
+    color: #fff !important;
+    border: none !important;
+    font-weight: 700 !important;
+}
+.view-switch-btn:hover {
+    background: linear-gradient(135deg, var(--btn-blue-dark), var(--btn-blue)) !important;
 }
 .keywords-search-btn {
     background: linear-gradient(135deg, var(--btn-gold), var(--btn-gold-light)) !important;
@@ -1089,11 +1105,6 @@ body.dark .text-search-btn.active {
     color: var(--text-muted);
     margin-top: 8px;
     text-align: center;
-}
-.timer {
-    font-size: 11px;
-    color: var(--saffron);
-    font-weight: 600;
 }
 #resultsInfo {
     margin-top: 6px;
@@ -2368,9 +2379,6 @@ body.dark .transcript-deep-highlight {
     .search-time .help-search-btn-small {
         margin: 0 !important;
     }
-    .search-time .timer {
-        display: none !important;
-    }
     .results-header-row {
         grid-area: info;
     }
@@ -2788,6 +2796,27 @@ body.purpose-set .language-switcher.open {
 }
 .hero { position: relative; }
 .lang-compact-btn { min-width: 34px; text-align: center; }
+/* .lang-btn's base colours (translucent white) were designed for the dark
+   hero background where this row lives before a purpose is chosen. Once
+   collapsed into the compact dropdown it sits on the light --bg-warm panel
+   above, where that same white-on-white read as disabled (Rājan report,
+   2026-07-25) — override to dark-on-light here, gold marks the active pick. */
+body.purpose-set .language-switcher.open .lang-btn {
+    background: transparent;
+    color: var(--text);
+    border-color: var(--border);
+}
+body.purpose-set .language-switcher.open .lang-btn:hover {
+    background: var(--surface);
+    color: var(--text);
+    border-color: var(--primary);
+}
+body.purpose-set .language-switcher.open .lang-btn.active {
+    background: linear-gradient(135deg, var(--btn-gold), var(--btn-gold-light));
+    color: #fff;
+    border-color: var(--btn-gold);
+    box-shadow: 0 2px 8px rgba(143,106,9,0.4);
+}
 
 /* ----- "Did you know?" tip strip ----- */
 .teach-strip {
