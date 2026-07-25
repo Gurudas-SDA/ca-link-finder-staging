@@ -2028,6 +2028,25 @@ body.dark .match-hint.sentence-hit {
     border-radius: 2px;
     animation: highlight-pulse 2s ease-in-out 1;
 }
+/* In-Text deep-open two-tier highlight inside the transcript modal — the SAME
+   principle as the results row: matched SENTENCE on yellow, searched WORDS on
+   green. Dark text keeps green-on-yellow readable in both themes; the sentence
+   pulses once to draw the eye after the jump-scroll. */
+#transcriptModalBody mark.tr-sentence {
+    background-color: #fff3a0;
+    color: #222;
+    border-radius: 3px;
+    padding: 1px 2px;
+    animation: highlight-pulse 2s ease-in-out 1;
+}
+#transcriptModalBody mark.tr-word {
+    background-color: #b6f5c0;
+    color: #14310f;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+body.dark #transcriptModalBody mark.tr-sentence { background-color: #fff3a0; color: #222; }
+body.dark #transcriptModalBody mark.tr-word { background-color: #b6f5c0; color: #14310f; }
 body.dark .transcript-deep-highlight {
     background: linear-gradient(135deg, #5a4a1a, #6b5520);
     color: #f0e0a0;

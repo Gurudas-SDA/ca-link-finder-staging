@@ -3578,8 +3578,11 @@ PPP.app = (function () {
         // punctuation drift, or opening a different-language transcript that
         // lacks the EN sentence) degrades silently to opening at the top.
         if (highlightText) {
-            var _hlStart = String(highlightText).trim().slice(0, 60);
-            if (_hlStart) _pendingHighlight = { start: _hlStart, len: String(highlightText).trim().length };
+            var _hlSent = String(highlightText).trim();
+            // Two-tier in the transcript, same as the results row: the matched
+            // sentence gets the yellow band, the searched words inside it turn
+            // green. _sentenceWords holds the current In-Text search words.
+            if (_hlSent) _pendingHighlight = { sentence: _hlSent, words: (_sentenceWords || []).slice() };
         }
         var overlay = document.getElementById('transcriptModalOverlay');
         var body = document.getElementById('transcriptModalBody');
@@ -3824,8 +3827,16 @@ PPP.app = (function () {
                 var deepHl = _pendingHighlight;
                 _pendingHighlight = null;
 
-                if (deepHl) {
-                    // Deep link highlight — find text, highlight, scroll
+                if (deepHl && deepHl.sentence) {
+                    // In-Text deep-open: two-tier highlight (yellow sentence +
+                    // green words) with the same drift-tolerant matcher as the
+                    // ZIP export, then scroll the matched sentence into view.
+                    setTimeout(function () {
+                        _wrapMatchesInContainer(body, [deepHl.sentence], deepHl.words || []);
+                        _scrollModalToMark(body.querySelector('mark.tr-sentence'));
+                    }, 150);
+                } else if (deepHl) {
+                    // Shared deep link (start/len) — find text, highlight, scroll.
                     setTimeout(function () {
                         _highlightAndScroll(body, deepHl);
                     }, 150);
@@ -3850,6 +3861,22 @@ PPP.app = (function () {
     }
 
     // ===== TRANSCRIPT TEXT HIGHLIGHT SHARING =====
+
+    // Scroll the modal so `mark` sits ~60px below the top (or center it if the
+    // modal is not the scroll container). Shared by the In-Text two-tier open.
+    function _scrollModalToMark(mark) {
+        if (!mark) return;
+        setTimeout(function () {
+            var modalBody = document.getElementById('transcriptModalBody');
+            if (modalBody && modalBody.contains(mark)) {
+                var mr = mark.getBoundingClientRect();
+                var br = modalBody.getBoundingClientRect();
+                modalBody.scrollTop = Math.max(0, mr.top - br.top + modalBody.scrollTop - 60);
+            } else {
+                mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }, 300);
+    }
 
     function _highlightAndScroll(container, hlObj) {
         // hlObj = { start: "first 50 chars", len: total_char_count }
@@ -4025,8 +4052,14 @@ PPP.app = (function () {
         // is already diacritic-folded + lowercased (see _sentenceWords). We
         // walk every word-run in the original (unfolded) text and highlight
         // only the folded-prefix portion, so "mahaprabh" highlights the
-        // "Mahāprabh" inside "Mahāprabhu" without the trailing "u". May nest
-        // inside a tr-sentence <mark> from pass 1 — that is intentional.
+        // "Mahāprabh" inside "Mahāprabhu" without the trailing "u".
+        //
+        // ONLY inside a matched sentence: a searched word that appears elsewhere
+        // in the transcript (outside the matched sentences) is NOT highlighted —
+        // green words scattered across the whole lecture were confusing (Rājan,
+        // 2026-07-25). Pass 1 wraps text in <mark> without changing any text
+        // content, so the char offsets from `sentRanges` (built on map1) stay
+        // valid in map2's identical fullText.
         var wordRanges = [];
         var map2 = buildTextMap();
         var wordRe = /[\p{L}\p{M}\p{N}]+/gu;
@@ -4040,7 +4073,11 @@ PPP.app = (function () {
             });
             if (best) {
                 var plen = _foldedPrefixLen(run, best.length);
-                wordRanges.push({ start: wm.index, end: wm.index + plen });
+                var ws = wm.index, we = wm.index + plen;
+                var insideSentence = sentRanges.some(function (sr) {
+                    return ws >= sr.start && we <= sr.end;
+                });
+                if (insideSentence) wordRanges.push({ start: ws, end: we });
             }
             if (wordRe.lastIndex === wm.index) wordRe.lastIndex++; // guard zero-length matches
         }
@@ -4610,6 +4647,10 @@ PPP.app = (function () {
         // Internal (test only) — drive the background install directly so the
         // quota-exceeded UI path can be exercised deterministically (P12).
         startBackgroundInstall: startBackgroundInstall,
+        // Internal (test only) — seed the current In-Text search words so the
+        // transcript deep-open two-tier (green tr-word) can be exercised without
+        // running a full 21-shard sentence search.
+        _setSentenceWordsForTest: function (w) { _sentenceWords = (w || []).slice(); },
         // Internal (test only) — drive the delta-update refresh directly so the
         // per-core-key reload branches can be exercised with a stubbed
         // checkForUpdates instead of a real remote manifest change (P14c).

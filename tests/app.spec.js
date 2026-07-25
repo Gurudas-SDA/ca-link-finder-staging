@@ -1693,6 +1693,33 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     });
 
     expect(prefixResult).toEqual(['feather']);
+
+    // A searched word that ALSO appears OUTSIDE any matched sentence must NOT be
+    // green — only occurrences inside a matched sentence are marked (Rājan,
+    // 2026-07-25: scattered green words across the lecture were confusing).
+    const scopedResult = await page.evaluate(() => {
+      var container = document.createElement('div');
+      container.innerHTML =
+        '<p>The guru spoke first.</p>' +                    // "guru" OUTSIDE any match
+        '<p>We heard the glories of guru tattva today.</p>' + // the matched sentence
+        '<p>Later the guru left.</p>';                        // "guru" OUTSIDE again
+      PPP.app._wrapMatchesInContainer(
+        container,
+        ['We heard the glories of guru tattva today.'],
+        ['guru', 'tattva']
+      );
+      var sentenceMark = container.querySelector('mark.tr-sentence');
+      var wordMarks = Array.prototype.map.call(container.querySelectorAll('mark.tr-word'), m => m.textContent);
+      // Every green word must live inside the single yellow sentence.
+      var allInside = Array.prototype.every.call(
+        container.querySelectorAll('mark.tr-word'), m => sentenceMark && sentenceMark.contains(m));
+      return { wordMarks: wordMarks, allInside: allInside };
+    });
+
+    // Exactly the two words inside the matched sentence — the two stray "guru"
+    // occurrences outside it stay unmarked.
+    expect(scopedResult.wordMarks.map(w => w.toLowerCase()).sort()).toEqual(['guru', 'tattva']);
+    expect(scopedResult.allInside).toBe(true);
   });
 
   test('39. Sentence-search highlighter is diacritic- and case-insensitive (word-start prefix)', async ({ page }) => {
@@ -2207,8 +2234,10 @@ test.describe('Online-first UX (no forced install)', () => {
     await page.evaluate(() => { if (window.PPP && PPP.net) PPP.net.online = false; });
     await page.evaluate((s) => PPP.app.openHtmlTranscriptViewer('9990047', 'en', null, null, null, s), SENTENCE);
 
-    // The matched sentence is wrapped in the deep-highlight mark.
-    const mark = page.locator('#transcriptModalBody mark.transcript-deep-highlight').first();
+    // The matched sentence is wrapped in the yellow two-tier band (tr-sentence);
+    // the green per-word marking inside it is the same _wrapMatchesInContainer
+    // path unit-tested by test 38.
+    const mark = page.locator('#transcriptModalBody mark.tr-sentence').first();
     await expect(mark).toBeVisible({ timeout: 15000 });
     await expect(mark).toContainText('By hearing from a nama');
 
@@ -2218,11 +2247,42 @@ test.describe('Online-first UX (no forced install)', () => {
     await page.waitForTimeout(500);
     const inView = await page.evaluate(() => {
       const body = document.getElementById('transcriptModalBody');
-      const m = body.querySelector('mark.transcript-deep-highlight');
+      const m = body.querySelector('mark.tr-sentence');
       const br = body.getBoundingClientRect(), mr = m.getBoundingClientRect();
       return mr.top >= br.top - 2 && mr.top <= br.bottom;   // inside the visible strip
     });
     expect(inView).toBe(true);
+  });
+
+  test('47b. In Text transcript: searched words inside the matched sentence are green (tr-word)', async ({ page }) => {
+    const SENTENCE = 'By hearing from a nama-tattva-vit-guru one is purified.';
+    await page.route('**/transcripts/en/**', route => route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      body: '<p>' + 'filler '.repeat(30) + '</p><p>' + SENTENCE + '</p>',
+    }));
+
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Seed the current In-Text search words (what a real search would set), then
+    // deep-open the transcript at the sentence.
+    await page.evaluate(() => PPP.app._setSentenceWordsForTest(['hearing', 'guru']));
+    await page.evaluate(() => { if (window.PPP && PPP.net) PPP.net.online = false; });
+    await page.evaluate((s) => PPP.app.openHtmlTranscriptViewer('9990048', 'en', null, null, null, s), SENTENCE);
+
+    // Two-tier inside the transcript: yellow sentence band + green word marks.
+    const sentence = page.locator('#transcriptModalBody mark.tr-sentence').first();
+    await expect(sentence).toBeVisible({ timeout: 15000 });
+    const words = page.locator('#transcriptModalBody mark.tr-sentence mark.tr-word');
+    expect(await words.count()).toBeGreaterThanOrEqual(2);   // "hearing" + "guru"
+
+    // Green computed colour on the word marks; the words sit inside the sentence.
+    const wordBg = await page.evaluate(() => {
+      const w = document.querySelector('#transcriptModalBody mark.tr-sentence mark.tr-word');
+      return getComputedStyle(w).backgroundColor;
+    });
+    expect(wordBg).toBe('rgb(182, 245, 192)');   // #b6f5c0
   });
 
   test('45. Inline raw transcript carries the LOCALIZED Raw warning (not only the baked-in English one)', async ({ page }) => {
