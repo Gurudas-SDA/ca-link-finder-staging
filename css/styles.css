@@ -2642,10 +2642,13 @@ body.onboarding-active #installBanner {
 
 .onb-langgrid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+    grid-template-columns: repeat(3, 1fr);
     gap: 11px;
     max-width: 560px;
     margin: 0 auto;
+}
+@media (max-width: 480px) {
+    .onb-langgrid { grid-template-columns: repeat(2, 1fr); }
 }
 .onb-lang {
     font: inherit;
@@ -2769,11 +2772,14 @@ body.view-lectures .quotes-only { display: none !important; }
 body.purpose-set .language-switcher { display: none; }
 body.purpose-set .language-switcher.open {
     display: flex;
-    position: absolute;
-    right: 16px;
-    top: 100%;
-    margin-top: 6px;
-    z-index: 50;
+    /* position:fixed (not absolute) so this panel is never clipped by an
+       ancestor's overflow:hidden (e.g. .hero, whose overflow:hidden is load-
+       bearing for its decorative ::before gradient). Its exact top/left are
+       set inline by toggleLangChooser() (js/app.js), anchored to
+       #langCompactBtn's live bounding rect and clamped to the viewport —
+       fixed positioning can't be pre-computed in CSS alone. */
+    position: fixed;
+    z-index: 200;
     background: var(--bg-warm);
     border: 1px solid var(--border);
     border-radius: var(--radius);

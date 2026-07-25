@@ -206,12 +206,10 @@ PPP.app = (function () {
 
     // ===== INIT =====
     function initTheme() {
-        var saved = localStorage.getItem('ppp_theme');
-        var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        var isDark = saved === 'dark' || (!saved && prefersDark);
-        if (isDark) document.body.classList.add('dark');
-        var btn = document.getElementById('themeToggle');
-        if (btn) btn.textContent = isDark ? '☀️' : '🌙';
+        // Dark mode toggle removed from the UI (Rājan decision, 2026-07-25).
+        // Body always renders light; the .dark CSS rules are left dormant
+        // (not deleted) so this stays reversible. No stored preference is
+        // read or applied here anymore.
     }
 
     function toggleTheme() {
@@ -2627,10 +2625,7 @@ PPP.app = (function () {
             verseList.style.display = 'none';
         }
         // "Last update" label is metadata-specific (DB refresh timestamp for
-        // the lecture list) — hide it in sentence ("In Text") mode. "List Of
-        // Sources" (utilSourcesList's button) is NOT mode-specific — it must
-        // stay reachable in both views/modes (Rājan decision: the source
-        // list moved into onboarding but needs a permanent home too).
+        // the lecture list) — hide it in sentence ("In Text") mode.
         var dbLastUpdate = document.getElementById('dbLastUpdate');
         if (dbLastUpdate) {
             if (mode === 'sentences') dbLastUpdate.style.display = 'none';
@@ -3261,10 +3256,11 @@ PPP.app = (function () {
         setComboDisplay(i18n.t('transcriptsByTopicDisplay'));
     }
 
-    // targetId: 'sourcesList' (onboarding intro, default — kept reachable only
-    // while the gate is open) or 'utilSourcesList' (the .top-left-buttons copy,
-    // reachable in both the lectures and quotes views after onboarding closes —
-    // see CLAUDE.md note on the button needing to survive the onboarding move).
+    // targetId: 'sourcesList' (onboarding intro screen — the only place this
+    // button is reachable, per Rājan decision 2026-07-25; the former
+    // .top-left-buttons 'utilSourcesList' copy in the results view was
+    // removed because it visually collided with #tipStrip). Defaults to
+    // 'sourcesList' when called with no argument.
     function showSources(targetId) {
         var div = document.getElementById(targetId || 'sourcesList');
         if (!div) return;
@@ -4610,7 +4606,27 @@ PPP.app = (function () {
     function toggleLangChooser(evt) {
         if (evt) evt.stopPropagation();
         var full = document.getElementById('langSwitcherFull');
-        if (full) full.classList.toggle('open');
+        if (!full) return;
+        var willOpen = !full.classList.contains('open');
+        full.classList.toggle('open', willOpen);
+        if (!willOpen) return;
+        // #langSwitcherFull lives inside .hero, which needs overflow:hidden
+        // for its decorative background — that clipped this dropdown when it
+        // was position:absolute (Rājan report, 2026-07-25). It is now
+        // position:fixed (css/styles.css), so anchor it here to the compact
+        // button's live viewport position, clamped so it never runs off
+        // either edge.
+        var btn = document.getElementById('langCompactBtn');
+        if (!btn) return;
+        var br = btn.getBoundingClientRect();
+        // Measure first (panel is display:flex via .open already applied above).
+        var pw = full.offsetWidth;
+        var left = br.right - pw;
+        var maxLeft = window.innerWidth - pw - 8;
+        if (left > maxLeft) left = maxLeft;
+        if (left < 8) left = 8;
+        full.style.top = (br.bottom + 6) + 'px';
+        full.style.left = left + 'px';
     }
 
     // ===== "DID YOU KNOW?" TIP STRIPS =====

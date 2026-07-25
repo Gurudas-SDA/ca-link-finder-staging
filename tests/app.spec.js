@@ -184,6 +184,49 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(placeholder).toMatch(/[а-яА-Я]/);  // Contains Cyrillic
   });
 
+  test('7b. Language chooser dropdown is actually clickable (not clipped)', async ({ page }) => {
+    // Regression test: #langSwitcherFull lives inside .hero, which has
+    // overflow:hidden (load-bearing for its decorative ::before gradient).
+    // When the dropdown was position:absolute, it painted outside .hero's
+    // clipped box — visible in the accessibility tree but not hit-testable,
+    // so clicking a language button silently did nothing (Rājan report,
+    // 2026-07-25). Fixed by making it position:fixed, anchored in JS
+    // (toggleLangChooser, js/app.js) to #langCompactBtn's live rect.
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.click('#langCompactBtn');
+    await page.waitForSelector('#langSwitcherFull.open');
+
+    const hit = await page.evaluate(() => {
+      const full = document.getElementById('langSwitcherFull');
+      const r = full.getBoundingClientRect();
+      const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return {
+        insideDropdown: !!(el && el.closest && el.closest('#langSwitcherFull')),
+        withinViewport: r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight,
+      };
+    });
+    expect(hit.insideDropdown).toBe(true);
+    expect(hit.withinViewport).toBe(true);
+
+    // A real click must actually change the language (not just toggle .open).
+    await page.click('.lang-btn[data-lang="ru"]');
+    const placeholder = await page.locator('#searchTerm').getAttribute('placeholder');
+    expect(placeholder).toMatch(/[а-яА-Я]/);
+    const stored = await page.evaluate(() => localStorage.getItem('preferredLanguage'));
+    expect(stored).toBe('ru');
+
+    // Clicking a language button does not itself close the dropdown (the
+    // outside-click handler in js/app.js explicitly ignores clicks that
+    // land inside #langSwitcherFull) — it should still be open here.
+    await expect(page.locator('#langSwitcherFull')).toHaveClass(/open/);
+
+    // Clicking outside does close it.
+    await page.mouse.click(5, 5);
+    await expect(page.locator('#langSwitcherFull')).not.toHaveClass(/open/);
+  });
+
   test('8. Transcript viewer opens', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);
@@ -208,26 +251,6 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
     const info = await page.locator('#resultsInfo strong').textContent();
     expect(parseInt(info)).toBeGreaterThan(0);
-  });
-
-  test('10. Dark mode toggle works', async ({ page }) => {
-    await page.goto('./');
-    await waitForAppReady(page);
-
-    // Initially body should not have 'dark' class (or have it from prefers-color-scheme)
-    const initialDark = await page.evaluate(() => document.body.classList.contains('dark'));
-
-    // Click theme toggle button
-    await page.click('#themeToggle');
-
-    // Class should have toggled
-    const afterToggle = await page.evaluate(() => document.body.classList.contains('dark'));
-    expect(afterToggle).toBe(!initialDark);
-
-    // Toggle back
-    await page.click('#themeToggle');
-    const afterSecondToggle = await page.evaluate(() => document.body.classList.contains('dark'));
-    expect(afterSecondToggle).toBe(initialDark);
   });
 
   test('11. Favorites — save and show', async ({ page }) => {

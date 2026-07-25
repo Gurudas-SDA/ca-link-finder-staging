@@ -111,10 +111,9 @@
                     <li><b data-i18n="onbInc1Label">Links</b><span data-i18n="onbInc1Text">YouTube, Facebook, SoundCloud</span></li>
                     <li><b data-i18n="onbInc2Label">Mp3 and transcripts</b><span data-i18n="onbInc2Text">separately or the whole selection in one ZIP</span></li>
                     <li><b data-i18n="onbInc3Label">Translations</b><span data-i18n="onbInc3Text">in Latvian and Russian</span></li>
-                    <li><b data-i18n="onbInc4Label">Diacritics and spelling variants</b><span data-i18n-html="onbInc4Text"><code>babaji</code> finds Bābājī</span></li>
-                    <li><b data-i18n="onbInc5Label">Offline work</b><span data-i18n="onbInc5Text">the whole library on your device, even without internet</span></li>
-                    <li><b data-i18n="onbInc6Label">Favorites and collections</b><span data-i18n="onbInc6Text">your own list for next time</span></li>
-                    <li><b data-i18n="onbInc7Label">Quote sharing</b><span data-i18n="onbInc7Text">a link to the recording or a highlighted quote</span></li>
+                    <li><b data-i18n="onbInc4Label">Offline work</b><span data-i18n="onbInc4Text">the whole library on your device, even without internet</span></li>
+                    <li><b data-i18n="onbInc5Label">Favorites and collections</b><span data-i18n="onbInc5Text">your own list for next time</span></li>
+                    <li><b data-i18n="onbInc6Label">Quote sharing</b><span data-i18n="onbInc6Text">a link to the recording or a highlighted quote</span></li>
                 </ul>
             </section>
         </div>
@@ -122,7 +121,6 @@
 
     <!-- ===== HERO SECTION ===== -->
     <div class="hero">
-        <button class="theme-toggle" id="themeToggle" onclick="PPP.app.toggleTheme()" title="Dark / Light mode" aria-label="Toggle dark mode">☀️</button>
         <!-- Chaitanya Academy Logo (SVG mandala + text) -->
         <div class="logo-wrap">
             <svg class="logo-mandala" viewBox="44 50 96 95" xmlns="http://www.w3.org/2000/svg">
@@ -254,9 +252,12 @@
             <div id="verseSourcesList" style="display: none;"></div>
             <div id="verseList" style="display: none;"></div>
             <div id="topCitationsList" style="display: none;"></div>
+            <!-- "List Of Sources" button removed from this view (Rājan decision,
+                 2026-07-25): it visually collided with the #tipStrip "Zināji?"
+                 strip. It stays reachable on the onboarding intro screen only
+                 (button + #sourcesList above). showSources() itself is
+                 untouched — just no longer called from here. -->
             <div class="top-left-buttons">
-                <button type="button" onclick="PPP.app.showSources('utilSourcesList')" data-i18n="listOfSources">List Of Sources</button>
-                <div id="utilSourcesList"></div>
                 <div id="dbLastUpdate" style="display:none;"></div>
             </div>
             <div id="tipStrip" class="teach-strip" hidden></div>
