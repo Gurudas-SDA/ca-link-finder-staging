@@ -3570,8 +3570,17 @@ PPP.app = (function () {
         }
     }
 
-    function openHtmlTranscriptViewer(lectureNr, lang, blockIndex, reference, driveUrl) {
+    function openHtmlTranscriptViewer(lectureNr, lang, blockIndex, reference, driveUrl, highlightText) {
         track('transcript-open', { nr: String(lectureNr), lang: lang, block: blockIndex || 0 });
+        // "In Text" deep-open: jump to (and highlight) the matched sentence.
+        // Uses the same _pendingHighlight → _highlightAndScroll path as shared
+        // deep links. First ~60 chars are enough to locate it; a miss (e.g.
+        // punctuation drift, or opening a different-language transcript that
+        // lacks the EN sentence) degrades silently to opening at the top.
+        if (highlightText) {
+            var _hlStart = String(highlightText).trim().slice(0, 60);
+            if (_hlStart) _pendingHighlight = { start: _hlStart, len: String(highlightText).trim().length };
+        }
         var overlay = document.getElementById('transcriptModalOverlay');
         var body = document.getElementById('transcriptModalBody');
         var title = document.getElementById('transcriptModalTitle');

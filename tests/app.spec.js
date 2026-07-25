@@ -2184,6 +2184,47 @@ test.describe('Online-first UX (no forced install)', () => {
     await expect(page.locator('#transcriptModalTitle')).not.toContainText('Not in the offline library');
   });
 
+  test('47. In Text: opening the transcript jumps to and highlights the matched sentence', async ({ page }) => {
+    // The matched sentence is passed as the 6th arg of openHtmlTranscriptViewer;
+    // it reuses the deep-link _highlightAndScroll path (mark.transcript-deep-
+    // highlight). Serve a transcript body that contains the sentence so the
+    // locate-and-scroll can find it deterministically.
+    const SENTENCE = 'By hearing from a nama-tattva-vit-guru, one is purified.';
+    // Lots of filler ABOVE the sentence so the target is genuinely below the
+    // fold — proves the viewer scrolled, not merely that the mark exists.
+    const fillerP = '<p>' + 'padding text that fills the modal viewport '.repeat(12) + '</p>';
+    await page.route('**/transcripts/en/**', route => route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      body: fillerP.repeat(60) + '<p>' + SENTENCE + '</p>' + fillerP.repeat(10),
+    }));
+
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // net flag forced offline to prove the fetch still happens (as in test 44);
+    // 9990047 is not in IDB so the network body is the only source.
+    await page.evaluate(() => { if (window.PPP && PPP.net) PPP.net.online = false; });
+    await page.evaluate((s) => PPP.app.openHtmlTranscriptViewer('9990047', 'en', null, null, null, s), SENTENCE);
+
+    // The matched sentence is wrapped in the deep-highlight mark.
+    const mark = page.locator('#transcriptModalBody mark.transcript-deep-highlight').first();
+    await expect(mark).toBeVisible({ timeout: 15000 });
+    await expect(mark).toContainText('By hearing from a nama');
+
+    // It was actually scrolled into the modal's visible area (target sits far
+    // below the fold in a 70-paragraph transcript). Give the +300ms scroll a
+    // beat, then check the mark's box lies within the modal body's viewport.
+    await page.waitForTimeout(500);
+    const inView = await page.evaluate(() => {
+      const body = document.getElementById('transcriptModalBody');
+      const m = body.querySelector('mark.transcript-deep-highlight');
+      const br = body.getBoundingClientRect(), mr = m.getBoundingClientRect();
+      return mr.top >= br.top - 2 && mr.top <= br.bottom;   // inside the visible strip
+    });
+    expect(inView).toBe(true);
+  });
+
   test('45. Inline raw transcript carries the LOCALIZED Raw warning (not only the baked-in English one)', async ({ page }) => {
     // FIX 2: raw content ships an English-only baked-in disclaimer; an
     // LV-interface user saw "no raw lecture shows a disclaimer". Every raw

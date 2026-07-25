@@ -80,7 +80,7 @@ PPP.ui = (function () {
      * langLabel precedence: duplicate label > 'Raw' > defaultLangLabel.
      * Duplicates are never selectable (no checkbox).
      */
-    function _renderScriptChip(td, nr, langCode, defaultLangLabel, isRaw, isDuplicate, dupLabel, driveUrl) {
+    function _renderScriptChip(td, nr, langCode, defaultLangLabel, isRaw, isDuplicate, dupLabel, driveUrl, highlightSentence) {
         var langLabel = isDuplicate ? dupLabel : (isRaw ? 'Raw' : defaultLangLabel);
         var viewBtn = document.createElement('a');
         viewBtn.href = '#';
@@ -100,14 +100,21 @@ PPP.ui = (function () {
         viewBtn.setAttribute('data-nr', nr);
         viewBtn.setAttribute('data-lang', langCode);
         viewBtn.setAttribute('data-drive-url', driveUrl || '');
+        // "In Text" mode: carry the matched sentence so the viewer opens right
+        // at it. Only on the EN chip — the sentence DB (and thus the match) is
+        // English; an LV/RU transcript would not contain it.
+        if (highlightSentence && langCode === 'en') {
+            viewBtn.setAttribute('data-sentence', highlightSentence);
+        }
         viewBtn.onclick = function (e) {
             e.preventDefault();
             var el = e.currentTarget;
             var elNr = el.getAttribute('data-nr');
             var elLang = el.getAttribute('data-lang');
             var dUrl = el.getAttribute('data-drive-url') || undefined;
+            var hlText = el.getAttribute('data-sentence') || undefined;
             if (elNr) {
-                PPP.app.openHtmlTranscriptViewer(elNr, elLang, null, null, dUrl);
+                PPP.app.openHtmlTranscriptViewer(elNr, elLang, null, null, dUrl, hlText);
             } else if (dUrl) {
                 window.open(dUrl, '_blank');
             }
@@ -464,7 +471,10 @@ PPP.ui = (function () {
                             var isDuplicate = !!DUP_LABELS[cellTrim];
                             var isRaw = (cellTrim === 'Raw');
                             var lectNr = (row['Nr.'] || '').toString().trim();
-                            _renderScriptChip(td, lectNr, langCode, defaultLangLabel, isRaw, isDuplicate, cellTrim, scriptDriveUrl);
+                            // In sentence ("In Text") mode the row carries the
+                            // matched sentence — pass it so the EN chip opens the
+                            // transcript scrolled to that sentence.
+                            _renderScriptChip(td, lectNr, langCode, defaultLangLabel, isRaw, isDuplicate, cellTrim, scriptDriveUrl, (sentCtx && sentCtx.sentence) || null);
                             } // end else (not-relevant check)
                         }
                     } else {
@@ -660,6 +670,7 @@ PPP.ui = (function () {
                 var sentCtx = {
                     ts: row.ts || '',
                     ts_end: row.ts_end || '',
+                    sentence: row.sentence || '',   // raw text → deep-open scroll target
                     sentenceHtml: highlightSentencePrefix(row.sentence || '', foldedWords)
                 };
                 // searchTerms deliberately [] — highlighting belongs to the
