@@ -44,6 +44,82 @@
 </head>
 <body>
 
+    <!-- ===== ONBOARDING GATE (first run: language, then purpose) ===== -->
+    <div id="onboardingOverlay" class="onb-overlay" hidden>
+        <div class="onb-stage" data-onb-stage="lang">
+            <h2 class="onb-title" data-i18n="onbLangTitle">Choose your language</h2>
+            <div class="onb-langgrid">
+                <button type="button" class="onb-lang" onclick="PPP.app.onbPickLanguage('en')"><span class="onb-lang-code">EN</span><span class="onb-lang-name">English</span></button>
+                <button type="button" class="onb-lang" onclick="PPP.app.onbPickLanguage('ru')"><span class="onb-lang-code">RU</span><span class="onb-lang-name">Русский</span></button>
+                <button type="button" class="onb-lang" onclick="PPP.app.onbPickLanguage('lv')"><span class="onb-lang-code">LV</span><span class="onb-lang-name">Latviešu</span></button>
+                <button type="button" class="onb-lang" onclick="PPP.app.onbPickLanguage('it')"><span class="onb-lang-code">IT</span><span class="onb-lang-name">Italiano</span></button>
+                <button type="button" class="onb-lang" onclick="PPP.app.onbPickLanguage('fr')"><span class="onb-lang-code">FR</span><span class="onb-lang-name">Français</span></button>
+                <button type="button" class="onb-lang" onclick="PPP.app.onbPickLanguage('es')"><span class="onb-lang-code">ES</span><span class="onb-lang-name">Español</span></button>
+            </div>
+        </div>
+
+        <div class="onb-stage" data-onb-stage="intro" hidden>
+            <div class="onb-intro">
+                <p id="onbIntroText" data-i18n="onbIntro">This app brings together {count} recordings by Śrī Prem Prayojan Prabhu from public and private sources.</p>
+                <div class="onb-intro-after">
+                    <button type="button" onclick="PPP.app.showSources()" data-i18n="listOfSources">List Of Sources</button>
+                    <div id="sourcesList"></div>
+                </div>
+            </div>
+
+            <h3 class="onb-question" data-i18n="onbQuestion">What are you looking for?</h3>
+
+            <div class="onb-cols">
+                <article class="onb-col onb-col-a">
+                    <p class="onb-eyebrow" data-i18n="onbAEyebrow">Looking for lectures</p>
+                    <h3 class="onb-col-title" data-i18n="onbATitle">Find lectures on a topic or event</h3>
+                    <p class="onb-lead" data-i18n="onbALead">For example, all lectures about Janmāṣṭamī or the seminar on Sanātana Śikṣā.</p>
+                    <p class="onb-listlead" data-i18n="onbAListLead">I want to search among recordings:</p>
+                    <ul>
+                        <li data-i18n="onbAItem1">by holiday, event, place or year</li>
+                        <li data-i18n="onbAItem2">added to the archive since my last visit</li>
+                        <li data-i18n="onbAItem3">filter by recording type: lecture, seminar, interview, kīrtana</li>
+                        <li data-i18n="onbAItem4">by seminar name</li>
+                        <li data-i18n="onbAItem5">by words in the recording title</li>
+                        <li data-i18n="onbAItem6">browse already gathered topics and what others search for most</li>
+                        <li data-i18n="onbAItem7">read the lecture's summary and essence before opening or downloading it</li>
+                        <li data-i18n="onbAItem8">the option to download selected mp3 recordings, transcripts and translations</li>
+                        <li data-i18n="onbAItem9">the option to build a favorites collection</li>
+                    </ul>
+                    <button type="button" class="onb-go" onclick="PPP.app.setPurpose('lectures')" data-i18n="onbAButton">Browse lectures</button>
+                </article>
+
+                <article class="onb-col onb-col-b">
+                    <p class="onb-eyebrow" data-i18n="onbBEyebrow">Looking for quotes</p>
+                    <h3 class="onb-col-title" data-i18n="onbBTitle">I need quotes from lectures</h3>
+                    <p class="onb-lead" data-i18n="onbBLead">They'll help you find passages in transcripts where certain concepts or topics are explained.</p>
+                    <p class="onb-listlead" data-i18n="onbBListLead">I'm looking for:</p>
+                    <ul>
+                        <li data-i18n-html="onbBItem1">for example: all sentences that mention a certain word — <code>peacock</code></li>
+                        <li data-i18n="onbBItem2">transcripts where the found quote is highlighted</li>
+                        <li data-i18n="onbBItem3">the option to send others a link to the quote found in the transcript</li>
+                        <li data-i18n="onbBItem4">the option to download an Excel file with all selected quotes, transcripts and mp3 files</li>
+                        <li data-i18n="onbBItem5">lectures that cite a specific verse</li>
+                    </ul>
+                    <button type="button" class="onb-go onb-go-b" onclick="PPP.app.setPurpose('quotes')" data-i18n="onbBButton">Search quotes</button>
+                </article>
+            </div>
+
+            <section class="onb-included">
+                <h4 data-i18n="onbIncludedTitle">Whatever you choose, the archive also gives you</h4>
+                <ul>
+                    <li><b data-i18n="onbInc1Label">Links</b><span data-i18n="onbInc1Text">YouTube, Facebook, SoundCloud</span></li>
+                    <li><b data-i18n="onbInc2Label">Mp3 and transcripts</b><span data-i18n="onbInc2Text">separately or the whole selection in one ZIP</span></li>
+                    <li><b data-i18n="onbInc3Label">Translations</b><span data-i18n="onbInc3Text">in Latvian and Russian</span></li>
+                    <li><b data-i18n="onbInc4Label">Diacritics and spelling variants</b><span data-i18n-html="onbInc4Text"><code>babaji</code> finds Bābājī</span></li>
+                    <li><b data-i18n="onbInc5Label">Offline work</b><span data-i18n="onbInc5Text">the whole library on your device, even without internet</span></li>
+                    <li><b data-i18n="onbInc6Label">Favorites and collections</b><span data-i18n="onbInc6Text">your own list for next time</span></li>
+                    <li><b data-i18n="onbInc7Label">Quote sharing</b><span data-i18n="onbInc7Text">a link to the recording or a highlighted quote</span></li>
+                </ul>
+            </section>
+        </div>
+    </div>
+
     <!-- ===== HERO SECTION ===== -->
     <div class="hero">
         <button class="theme-toggle" id="themeToggle" onclick="PPP.app.toggleTheme()" title="Dark / Light mode" aria-label="Toggle dark mode">☀️</button>
@@ -81,9 +157,7 @@
             </div>
         </div>
 
-        <div class="language-switcher">
-            <button class="features-btn" onclick="PPP.app.toggleFeaturesMenu(event)" data-i18n="featuresBtn">Features</button>
-            <div id="featuresMenu" class="features-menu" hidden></div>
+        <div class="language-switcher" id="langSwitcherFull">
             <button class="lang-btn active" onclick="PPP.app.setLanguage('en')" data-lang="en">EN</button>
             <button class="lang-btn" onclick="PPP.app.setLanguage('ru')" data-lang="ru">RU</button>
             <button class="lang-btn" onclick="PPP.app.setLanguage('lv')" data-lang="lv">LV</button>
@@ -110,26 +184,34 @@
         <div class="search-card">
             <!-- Unified button row: Key words | 20 latest by date | Top Searches | Verses (all) | Verses (Top) -->
             <div class="search-quick-buttons main-button-row">
+                <!-- NOT lectures-only: _renderFiltersPanel (js/app.js) already adapts
+                     to sentence-search mode (hides Countries/Types, keeps only Years —
+                     the sentence DB carries no country/type column), so Filters must
+                     stay reachable in the quotes view too, not just lectures. -->
                 <button class="combo-btn combo-btn-1" data-navview="filters" onclick="PPP.app.toggleFilters(event)" data-i18n="filtersBtn">Filters</button>
-                <button class="combo-btn combo-btn-2" data-navview="byAdded" onclick="PPP.app.showLatestFiles()" data-i18n="latest20Files">By Added</button>
-                <button class="combo-btn combo-btn-3" data-navview="topSearches" onclick="PPP.app.showRecommendations()" data-i18n="recommendations">Top Searches</button>
-                <button class="combo-btn combo-btn-4 search-mode-btn" data-navview="citations" data-mode="citations" data-i18n="searchModeCitations">By Verses</button>
-                <button class="combo-btn combo-btn-5 search-mode-btn" data-navview="citationsTop" data-mode="citationsTop" data-i18n="searchModeCitationsTop">Verses (Top)</button>
+                <button class="combo-btn combo-btn-2 lectures-only" data-navview="byAdded" onclick="PPP.app.showLatestFiles()" data-i18n="latest20Files">By Added</button>
+                <button class="combo-btn combo-btn-3 lectures-only" data-navview="topSearches" onclick="PPP.app.showRecommendations()" data-i18n="recommendations">Top Searches</button>
+                <button class="combo-btn combo-btn-4 search-mode-btn quotes-only" data-navview="citations" data-mode="citations" data-i18n="searchModeCitations">By Verses</button>
+                <button class="combo-btn combo-btn-5 search-mode-btn quotes-only" data-navview="citationsTop" data-mode="citationsTop" data-i18n="searchModeCitationsTop">Verses (Top)</button>
                 <button class="combo-btn combo-btn-6" data-navview="favorites" id="favoritesBtn" onclick="PPP.app.showFavorites()">&#9733; Favorites <span id="favCount" class="fav-count-badge" style="display:none"></span></button>
             </div>
             <!-- Filters panel (toggled by the Filters button; empty on every load) -->
             <div id="filtersPanel" class="filters-panel" hidden></div>
             <div class="search-row">
-                <button class="search-mode-btn active keywords-search-btn" data-mode="metadata" data-i18n="searchModeMetadata">Key words</button>
-                <button class="search-mode-btn text-search-btn" data-mode="sentences" data-i18n="searchModeSentences">Text</button>
+                <button class="search-mode-btn active keywords-search-btn lectures-only" data-mode="metadata" data-i18n="searchModeMetadata">Key words</button>
+                <button class="search-mode-btn text-search-btn quotes-only" data-mode="sentences" data-i18n="searchModeSentences">Text</button>
                 <div class="search-bar" style="flex:1;">
                     <input type="text" id="searchTerm" placeholder="Loading..." aria-label="Search lectures" disabled>
                     <button class="search-button" onclick="PPP.app.search()" data-i18n="searchButton">Search</button>
                 </div>
             </div>
             <div class="search-time">
+                <button type="button" class="help-search-btn help-search-btn-small view-switch-btn" id="viewSwitchBtn" onclick="PPP.app.switchView()" data-i18n="switchToQuotes">&#8596; Search quotes</button>
                 <button class="help-search-btn help-search-btn-small" onclick="PPP.app.openHelpModal()" data-i18n="helpButton">How to use search?</button>
                 <button type="button" class="help-search-btn help-search-btn-small" id="offlineWorkBtn" style="display:none;" onclick="PPP.app.toggleOfflineInfoPanel()" data-i18n="offlineWorkBtn">Work offline</button>
+                <button class="help-search-btn help-search-btn-small features-btn" onclick="PPP.app.toggleFeaturesMenu(event)" data-i18n="featuresBtn">Features</button>
+                <div id="featuresMenu" class="features-menu" hidden></div>
+                <button type="button" id="langCompactBtn" class="help-search-btn help-search-btn-small lang-compact-btn" onclick="PPP.app.toggleLangChooser(event)">EN</button>
                 <span id="timer" class="timer"></span>
             </div>
             <!-- Offline install info + Download (shown on #offlineWorkBtn click) -->
@@ -173,10 +255,11 @@
             <div id="verseList" style="display: none;"></div>
             <div id="topCitationsList" style="display: none;"></div>
             <div class="top-left-buttons">
+                <button type="button" onclick="PPP.app.showSources('utilSourcesList')" data-i18n="listOfSources">List Of Sources</button>
+                <div id="utilSourcesList"></div>
                 <div id="dbLastUpdate" style="display:none;"></div>
-                <button onclick="PPP.app.showSources()" data-i18n="listOfSources">List Of Sources</button>
-                <div id="sourcesList"></div>
             </div>
+            <div id="tipStrip" class="teach-strip" hidden></div>
             <table id="resultsTable" class="lecture-cards">
                 <tbody>
                     <tr>

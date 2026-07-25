@@ -99,3 +99,52 @@ PPP.config.countryName = function (code, lang) {
     if (!row) return code;
     return row[lang] || row.en || code;
 };
+
+/* ---------------------------------------------------------------------------
+   RECORD-TYPE FILTER DATA
+   The `lectures.type` column has 25+ raw variants (verified against the live
+   meta DB), most of them one-off outliers. This block groups the handful of
+   meaningful ones into 8 canonical keys — applied in the APP layer only, so
+   the Google Sheets source is never touched. Anything not listed here (n/a,
+   empty, "Promo", and the long tail of rare one-off values) is never offered
+   as a filter checkbox.
+
+   TYPE_GROUPS:  canonical key -> raw `type_norm` values that fold into it
+                 (type_norm is already lower-cased in the DB, same convention
+                 as country_norm).
+   TYPE_ORDER:   fixed display order for the Filters panel checkboxes.
+--------------------------------------------------------------------------- */
+PPP.config.TYPE_GROUPS = {
+    lecture: ['lecture', 'lecture (event)', 'lecture (public)'],
+    parikrama: ['parikrama', 'parikrama_radhakunda'],
+    seminar: ['lecture (seminar)'],
+    qa: ['istagosthi_q&a'],
+    kirtan: ['practice (kirtan)', 'practice_?_ (kirtan)', 'practice (bhajan)', 'practice (arati)', 'explanation (bhajan)'],
+    othervaishnava: ['lecture (by other vaishnava)'],
+    shorttalk: ['short talk', 'short talk (name giving)'],
+    drama: ['practice (drama)', 'commentary (drama)']
+};
+
+PPP.config.TYPE_ORDER = ['lecture', 'parikrama', 'seminar', 'qa', 'kirtan', 'othervaishnava', 'shorttalk', 'drama'];
+
+// i18n key for each canonical type's checkbox label.
+PPP.config.TYPE_I18N_KEY = {
+    lecture: 'typeLecture',
+    parikrama: 'typeParikrama',
+    seminar: 'typeSeminar',
+    qa: 'typeQA',
+    kirtan: 'typeKirtan',
+    othervaishnava: 'typeOtherVaishnava',
+    shorttalk: 'typeShortTalk',
+    drama: 'typeDrama'
+};
+
+/**
+ * Every raw `type_norm` value that must match a canonical type key.
+ * Returns lower-cased values (type_norm is lower-cased), same shape as
+ * countryMatchCodes.
+ */
+PPP.config.typeMatchValues = function (canonical) {
+    var raws = PPP.config.TYPE_GROUPS[canonical];
+    return raws ? raws.slice() : [];
+};

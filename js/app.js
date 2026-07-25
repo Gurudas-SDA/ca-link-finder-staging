@@ -225,18 +225,41 @@ PPP.app = (function () {
         initTheme();
         _renderConnectionState();
 
+        // Keep the Favorites button's visibility (gated on count() > 0 — see
+        // updateFavoritesCount) in sync with EVERY favorites mutation, not
+        // just the ones made through the star-button UI's own call sites
+        // (ui.js already calls updateFavoritesCount after its popup actions).
+        // Without this, code that saves a favorite through any other path
+        // (e.g. the backward-compat PPP.favorites.toggle()) leaves the button
+        // hidden even though the save itself succeeded.
+        if (PPP.favorites && PPP.favorites.subscribe) {
+            PPP.favorites.subscribe(updateFavoritesCount);
+        }
+
         var savedLang = localStorage.getItem('preferredLanguage') || 'en';
         setLanguage(savedLang);
+        initOnboarding();
 
-        // Close List of Sources dropdown on any other button click
+        // Close List of Sources dropdown(s) on any other button click
         document.addEventListener('click', function (e) {
-            var sourcesList = document.getElementById('sourcesList');
-            if (!sourcesList || sourcesList.style.display === 'none' || sourcesList.style.display === '') return;
-            var btn = e.target.closest('button');
-            if (!btn) return;
-            if (btn.closest('.top-left-buttons')) return;
-            if (sourcesList.contains(btn)) return;
-            sourcesList.style.display = 'none';
+            ['sourcesList', 'utilSourcesList'].forEach(function (id) {
+                var sourcesList = document.getElementById(id);
+                if (!sourcesList || sourcesList.style.display === 'none' || sourcesList.style.display === '') return;
+                var btn = e.target.closest('button');
+                if (!btn) return;
+                if (btn.closest('.top-left-buttons')) return;
+                if (btn.closest('.onb-intro-after')) return;
+                if (sourcesList.contains(btn)) return;
+                sourcesList.style.display = 'none';
+            });
+        }, true);
+
+        // Close the language chooser (compact button dropdown) on outside click
+        document.addEventListener('click', function (e) {
+            var full = document.getElementById('langSwitcherFull');
+            if (!full || !full.classList.contains('open')) return;
+            if (e.target.closest('#langSwitcherFull') || e.target.closest('#langCompactBtn')) return;
+            full.classList.remove('open');
         }, true);
 
         // Wire search input
@@ -259,8 +282,9 @@ PPP.app = (function () {
             }
         });
 
-        // Ensure metadata mode is active on start
-        setSearchMode('metadata');
+        // Ensure the mode matching the chosen purpose is active on start
+        // (quotes purpose starts in "In Text"; lectures/unset starts in "In Titles").
+        setSearchMode(_currentPurpose() === 'quotes' ? 'sentences' : 'metadata');
 
         // Wire search mode toggle
         var modeButtons = document.querySelectorAll('.search-mode-btn');
@@ -508,6 +532,7 @@ PPP.app = (function () {
         return db.getStatsAsync().then(function (stats) {
             totalLectures = parseInt(stats.total_lectures || '0', 10);
             try { if (totalLectures > 0) localStorage.setItem('ppp_total_lectures', String(totalLectures)); } catch (e) {}
+            updateOnbIntro();
 
             // Also populate DB[] array for backward-compatible features
             return db.queryMetaAsync('SELECT * FROM lectures');
@@ -1910,6 +1935,7 @@ PPP.app = (function () {
 
         _showSelectToggle(totalResults > 0);
         _updateSelectBar();
+        _updateTipStrip();
     }
 
     function changePage(p) {
@@ -2461,6 +2487,7 @@ PPP.app = (function () {
             return '<label class="flt-item"><input type="checkbox" class="flt-year" value="' + y + '"><span>' + y + '</span></label>';
         }).join('');
         var countrySec = '';
+        var typeSec = '';
         if (!sentenceMode) {
             var countries = opts.countries.map(function (code) {
                 var name = PPP.config.countryName(code, lang);
@@ -2470,12 +2497,23 @@ PPP.app = (function () {
             countrySec =
                 '<div class="flt-sec"><div class="flt-title">' + esc(i18n.t('filtersCountries')) + '</div>' +
                     '<div class="flt-grid flt-countries">' + countries + '</div></div>';
+            // Record-type filter (Filters panel). Same metadata-only scope as
+            // Countries — the sentence DB has no type column either.
+            var types = PPP.config.TYPE_ORDER.map(function (key) {
+                var labelKey = PPP.config.TYPE_I18N_KEY[key];
+                return '<label class="flt-item"><input type="checkbox" class="flt-type" value="' + esc(key) +
+                    '"><span>' + esc(i18n.t(labelKey)) + '</span></label>';
+            }).join('');
+            typeSec =
+                '<div class="flt-sec"><div class="flt-title">' + esc(i18n.t('filtersTypes')) + '</div>' +
+                    '<div class="flt-grid flt-types">' + types + '</div></div>';
         }
         panel.innerHTML =
             '<div class="flt-cols">' +
                 '<div class="flt-sec"><div class="flt-title">' + esc(i18n.t('filtersYears')) + '</div>' +
                     '<div class="flt-grid flt-years">' + years + '</div></div>' +
                 countrySec +
+                typeSec +
             '</div>' +
             '<div class="flt-actions">' +
                 '<button type="button" class="flt-apply" onclick="PPP.app.applyFilters()">' + esc(i18n.t('filtersApply')) + '</button>' +
@@ -2522,19 +2560,21 @@ PPP.app = (function () {
         if (!panel) return;
         var years = Array.prototype.map.call(panel.querySelectorAll('.flt-year:checked'), function (c) { return c.value; });
         var countries = Array.prototype.map.call(panel.querySelectorAll('.flt-country:checked'), function (c) { return c.value; });
+        var types = Array.prototype.map.call(panel.querySelectorAll('.flt-type:checked'), function (c) { return c.value; });
         var input = document.getElementById('searchTerm');
         var sentenceMode = (searchMode === 'sentences');
 
         // Keep any free-text the user already typed; drop only the OLD filter
-        // tokens so re-applying replaces (not stacks) year/country.
+        // tokens so re-applying replaces (not stacks) year/country/type.
         var kept = input.value.split(';').map(function (s) { return s.trim(); }).filter(Boolean)
-            .filter(function (seg) { return !/^year:/i.test(seg) && !/^country:/i.test(seg); });
+            .filter(function (seg) { return !/^year:/i.test(seg) && !/^country:/i.test(seg) && !/^type:/i.test(seg); });
 
         var tokens = kept.slice();
         if (years.length) tokens.push('year:' + years.join(','));
-        // Country applies to lecture metadata only (the sentence DB has no
-        // country column), so it is never emitted in "In Text" mode.
+        // Country and type apply to lecture metadata only (the sentence DB has
+        // neither column), so neither is ever emitted in "In Text" mode.
         if (countries.length && !sentenceMode) tokens.push('country:' + countries.join(','));
+        if (types.length && !sentenceMode) tokens.push('type:' + types.join(','));
         closeFilters();
 
         if (sentenceMode) {
@@ -2586,10 +2626,16 @@ PPP.app = (function () {
         if (verseList && mode !== 'citations') {
             verseList.style.display = 'none';
         }
-        // "List Of Sources" button + "Last update" label belong to the lecture
-        // (metadata) results view — hide them in sentence ("In Text") mode.
-        var topLeftBtns = document.querySelector('.top-left-buttons');
-        if (topLeftBtns) topLeftBtns.style.display = (mode === 'sentences') ? 'none' : '';
+        // "Last update" label is metadata-specific (DB refresh timestamp for
+        // the lecture list) — hide it in sentence ("In Text") mode. "List Of
+        // Sources" (utilSourcesList's button) is NOT mode-specific — it must
+        // stay reachable in both views/modes (Rājan decision: the source
+        // list moved into onboarding but needs a permanent home too).
+        var dbLastUpdate = document.getElementById('dbLastUpdate');
+        if (dbLastUpdate) {
+            if (mode === 'sentences') dbLastUpdate.style.display = 'none';
+            else if (dbLastUpdate.getAttribute('data-last-update')) dbLastUpdate.style.display = '';
+        }
         // Clear results and search field when switching modes
         if (prevMode !== mode) {
             document.getElementById('searchTerm').value = '';
@@ -3040,6 +3086,9 @@ PPP.app = (function () {
         badge.textContent = c > 0 ? c : '';
         badge.style.display = c > 0 ? 'inline-block' : 'none';
         if (btn) {
+            // Favorites is only offered once the user has actually saved one \u2014
+            // an empty star button on a first visit is just noise (onboarding spec).
+            btn.classList.toggle('has-fav', c > 0);
             var label = '\u2605 ' + i18n.t('favorites') + ' ';
             btn.firstChild.textContent = label;
             // Show active collection subtitle
@@ -3212,8 +3261,13 @@ PPP.app = (function () {
         setComboDisplay(i18n.t('transcriptsByTopicDisplay'));
     }
 
-    function showSources() {
-        var div = document.getElementById('sourcesList');
+    // targetId: 'sourcesList' (onboarding intro, default — kept reachable only
+    // while the gate is open) or 'utilSourcesList' (the .top-left-buttons copy,
+    // reachable in both the lectures and quotes views after onboarding closes —
+    // see CLAUDE.md note on the button needing to survive the onboarding move).
+    function showSources(targetId) {
+        var div = document.getElementById(targetId || 'sourcesList');
+        if (!div) return;
         if (div.style.display !== 'none' && div.style.display !== '') { div.style.display = 'none'; return; }
         if (!dataLoaded) return;
 
@@ -4304,6 +4358,7 @@ PPP.app = (function () {
             _sentenceWords = _extractSentenceSearchWords(parsed);
             _sentenceLastRender = { rows: rows, term: myTerm, totals: { total: n, lectures: lectures, shown: rows.length } };
             ui.renderSentenceResults(rows, myTerm, _sentenceLastRender.totals, _sentenceWords);
+            _updateTipStrip();
         }).catch(function (err) {
             // Only surface an error for the still-current search — a superseded
             // run rejecting must not overwrite the live view.
@@ -4456,6 +4511,168 @@ PPP.app = (function () {
         performSearch();
     }
 
+    // ===== ONBOARDING GATE (purpose picker) =====
+    // localStorage.ppp_purpose is either unset (first run — gate active) or
+    // 'lectures' | 'quotes' (chosen — gate stays closed forever, until the
+    // user clears storage). See CLAUDE.md "Onboarding gate" for the full spec.
+    function _currentPurpose() {
+        try {
+            var p = localStorage.getItem('ppp_purpose');
+            return (p === 'lectures' || p === 'quotes') ? p : null;
+        } catch (e) { return null; }
+    }
+
+    function _onbShowStage(stage) {
+        document.querySelectorAll('.onb-stage').forEach(function (s) {
+            s.hidden = s.getAttribute('data-onb-stage') !== stage;
+        });
+    }
+
+    function _hideOnboarding() {
+        var overlay = document.getElementById('onboardingOverlay');
+        if (overlay) overlay.hidden = true;
+        document.body.classList.remove('onboarding-active');
+    }
+
+    /** Called once from init(): shows the gate on first run, or applies the
+     *  already-chosen view immediately (no flash of the wrong UI). */
+    function initOnboarding() {
+        var purpose = _currentPurpose();
+        if (!purpose) {
+            document.body.classList.add('onboarding-active');
+            var overlay = document.getElementById('onboardingOverlay');
+            if (overlay) overlay.hidden = false;
+            _onbShowStage('lang');
+        } else {
+            _hideOnboarding();
+            _applyPurposeView(purpose);
+        }
+        updateOnbIntro();
+    }
+
+    /** Onboarding stage (a): pick a language, reuse setLanguage(), advance. */
+    function onbPickLanguage(lang) {
+        setLanguage(lang);
+        _onbShowStage('intro');
+        updateOnbIntro();
+    }
+
+    /** Live "{count} recordings" text in the onboarding intro sentence — kept
+     *  in sync with totalLectures (cached value first, real value once the
+     *  meta DB resolves — see _loadMetaIntoApp). */
+    function updateOnbIntro() {
+        var el = document.getElementById('onbIntroText');
+        if (!el) return;
+        el.textContent = i18n.t('onbIntro').replace('{count}', (totalLectures || 0).toLocaleString());
+    }
+
+    /** Onboarding stage (b): purpose chosen — close the gate, enter that view. */
+    function setPurpose(purpose) {
+        try { localStorage.setItem('ppp_purpose', purpose); } catch (e) {}
+        track('onboarding-purpose', { purpose: purpose });
+        _hideOnboarding();
+        _applyPurposeView(purpose);
+        setSearchMode(purpose === 'quotes' ? 'sentences' : 'metadata');
+        _updateTipStrip();
+    }
+
+    /** Show/hide the .lectures-only / .quotes-only controls (CSS-driven) and
+     *  flip the switch-view button label to the OTHER view. */
+    function _applyPurposeView(purpose) {
+        document.body.classList.remove('view-lectures', 'view-quotes');
+        document.body.classList.add(purpose === 'quotes' ? 'view-quotes' : 'view-lectures');
+        document.body.classList.add('purpose-set');
+        var switchBtn = document.getElementById('viewSwitchBtn');
+        if (switchBtn) {
+            var key = purpose === 'quotes' ? 'switchToLectures' : 'switchToQuotes';
+            switchBtn.setAttribute('data-i18n', key);
+            switchBtn.textContent = i18n.t(key);
+        }
+    }
+
+    /** Utility-row toggle between the two views. Rājan decision: keep whatever
+     *  the user typed, but clear the results (setSearchMode below does both —
+     *  clears the field too — so the typed term is saved and restored after). */
+    function switchView() {
+        var next = _currentPurpose() === 'quotes' ? 'lectures' : 'quotes';
+        try { localStorage.setItem('ppp_purpose', next); } catch (e) {}
+        track('view-switch', { to: next });
+        var input = document.getElementById('searchTerm');
+        var term = input ? input.value : '';
+        _applyPurposeView(next);
+        setSearchMode(next === 'quotes' ? 'sentences' : 'metadata');
+        if (input) input.value = term;
+        _updateTipStrip();
+    }
+
+    /** Compact language button (utility row) — opens/closes the existing
+     *  6-button language switcher (hidden by default once a purpose is set). */
+    function toggleLangChooser(evt) {
+        if (evt) evt.stopPropagation();
+        var full = document.getElementById('langSwitcherFull');
+        if (full) full.classList.toggle('open');
+    }
+
+    // ===== "DID YOU KNOW?" TIP STRIPS =====
+    // Each entry is shown at most once ever (localStorage.ppp_seen_tips), one
+    // at a time, only in its matching view, only once its trigger condition
+    // holds. Add more tips later by appending to this array — no special
+    // casing elsewhere.
+    var TIP_DEFS = [
+        {
+            id: 'zip', purpose: 'lectures', textKey: 'tipZip', btnKey: 'tipZipBtn',
+            applies: function () { return searchMode === 'metadata' && totalResults > 0; },
+            action: function () {
+                var cb = document.querySelector('#resultsTable input.select-checkbox:not(:checked)');
+                if (cb) cb.click();
+                openDownloadPanel();
+            }
+        },
+        {
+            id: 'jump', purpose: 'quotes', textKey: 'tipJump', btnKey: 'tipJumpBtn',
+            applies: function () { return searchMode === 'sentences' && !!_sentenceLastRender && _sentenceLastRender.totals.total > 0; },
+            action: function () {
+                var a = document.querySelector('#resultsTable a.script-chip[data-sentence]');
+                if (a) a.click();
+            }
+        }
+    ];
+
+    function _seenTips() {
+        try { return JSON.parse(localStorage.getItem('ppp_seen_tips') || '[]'); } catch (e) { return []; }
+    }
+    function _markTipSeen(id) {
+        var seen = _seenTips();
+        if (seen.indexOf(id) === -1) {
+            seen.push(id);
+            try { localStorage.setItem('ppp_seen_tips', JSON.stringify(seen)); } catch (e) {}
+        }
+    }
+
+    function _updateTipStrip() {
+        var strip = document.getElementById('tipStrip');
+        if (!strip) return;
+        var purpose = _currentPurpose();
+        var seen = _seenTips();
+        var tip = null;
+        for (var i = 0; i < TIP_DEFS.length; i++) {
+            var t = TIP_DEFS[i];
+            if (t.purpose === purpose && seen.indexOf(t.id) === -1 && t.applies()) { tip = t; break; }
+        }
+        if (!tip) { strip.hidden = true; strip.innerHTML = ''; return; }
+        var esc = utils.escapeHtml;
+        strip.innerHTML =
+            '<span class="teach-tag">' + esc(i18n.t('tipTag')) + '</span>' +
+            '<p>' + esc(i18n.t(tip.textKey)) + '</p>' +
+            '<button type="button" class="teach-btn">' + esc(i18n.t(tip.btnKey)) + '</button>' +
+            '<button type="button" class="teach-x" aria-label="Close">&times;</button>';
+        strip.hidden = false;
+        var actionBtn = strip.querySelector('.teach-btn');
+        if (actionBtn) actionBtn.onclick = function () { _markTipSeen(tip.id); tip.action(); _updateTipStrip(); };
+        var xBtn = strip.querySelector('.teach-x');
+        if (xBtn) xBtn.onclick = function () { _markTipSeen(tip.id); _updateTipStrip(); };
+    }
+
     function applyLangFilter(lang) {
         document.getElementById('searchTerm').value = 'lang:' + lang;
         lastSearchTerm = 'lang:' + lang;
@@ -4494,6 +4711,19 @@ PPP.app = (function () {
             var pval = i18n.t(pkey);
             if (pval !== pkey) el.placeholder = pval;
         });
+        // A handful of onboarding strings carry inline <code> markup (search
+        // examples) — those use innerHTML via a separate attribute so the
+        // generic textContent loop above never HTML-escapes them.
+        document.querySelectorAll('[data-i18n-html]').forEach(function (el) {
+            var hkey = el.getAttribute('data-i18n-html');
+            var hval = i18n.t(hkey);
+            if (hval !== hkey) el.innerHTML = hval;
+        });
+        var langCompact = document.getElementById('langCompactBtn');
+        if (langCompact) langCompact.textContent = lang.toUpperCase();
+        // The generic data-i18n loop above just wrote the RAW "{count}" template
+        // into #onbIntroText (onbIntro has a placeholder) — fix it up now.
+        updateOnbIntro();
         var luEl = document.getElementById('dbLastUpdate');
         if (luEl && luEl.getAttribute('data-last-update')) {
             luEl.textContent = (i18n.t('lastUpdate') || 'Last update') + ': ' + luEl.getAttribute('data-last-update');
@@ -4630,6 +4860,13 @@ PPP.app = (function () {
         downloadTranscript: downloadTranscript,
         showFavorites: showFavorites,
         updateFavoritesCount: updateFavoritesCount,
+        // Onboarding gate (purpose picker) + the two-view toggle + tip strips
+        onbPickLanguage: onbPickLanguage,
+        setPurpose: setPurpose,
+        switchView: switchView,
+        toggleLangChooser: toggleLangChooser,
+        // Internal (test only) — read/reset gate state without clicking through it.
+        _currentPurposeForTest: _currentPurpose,
         // Multi-select transcripts -> ZIP
         isSelectedPair: isSelectedPair,
         toggleSelectPair: toggleSelectPair,

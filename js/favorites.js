@@ -12,6 +12,24 @@ PPP.favorites = (function () {
     var OLD_KEY = 'ppp_favorites';
     var _collections = []; // [{id, name, created, lectures: [nr,...]}]
     var _nextId = 1;
+    var _listeners = [];
+
+    // ===== Change notification =====
+    // The star-button UI (ui.js) keeps itself in sync by calling
+    // PPP.app.updateFavoritesCount() after every mutation it makes — but that
+    // only covers mutations made THROUGH that UI. Any other caller (the
+    // legacy toggle() API, tests, future code) also changes what should be
+    // visible (e.g. the utility-row Favorites button, gated on count() > 0 —
+    // see app.js _applyPurposeView/updateFavoritesCount), so notify on every
+    // save rather than relying on each call site to remember.
+    function _notify() {
+        _listeners.forEach(function (fn) {
+            try { fn(); } catch (e) { /* one bad listener must not break the rest */ }
+        });
+    }
+    function subscribe(fn) {
+        if (typeof fn === 'function') _listeners.push(fn);
+    }
 
     // ===== Persistence =====
     function _load() {
@@ -50,6 +68,7 @@ PPP.favorites = (function () {
             collections: _collections,
             nextId: _nextId
         }));
+        _notify();
     }
 
     // ===== Collection CRUD =====
@@ -183,6 +202,7 @@ PPP.favorites = (function () {
         removeFromCollection: removeFromCollection,
         isInCollection: isInCollection,
         getCollectionLectures: getCollectionLectures,
-        getCollectionsForLecture: getCollectionsForLecture
+        getCollectionsForLecture: getCollectionsForLecture,
+        subscribe: subscribe
     };
 })();

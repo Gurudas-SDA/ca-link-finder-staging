@@ -20,6 +20,38 @@ function trackConsoleErrors(page) {
   return errors;
 }
 
+// Helper: switch into the "quotes" view (In Text sentence search / By Verse /
+// Verses (Top) — these controls only exist there, hidden via CSS in the
+// "lectures" view the outer beforeEach starts every test in). MUST be called
+// AFTER waitForAppReady(): the onboarding gate's "quotes" purpose defaults the
+// search mode to "sentences", whose placeholder never contains a digit, so
+// presetting ppp_purpose='quotes' before goto (via addInitScript) makes
+// waitForAppReady's own readiness check hang forever. Clicking the utility
+// row's view-switch button (the app's own real toggle — see
+// PPP.app.switchView in js/app.js) after the app is ready sidesteps that.
+async function useQuotesView(page) {
+  await page.click('#viewSwitchBtn');
+}
+
+// Helper: open the compact language chooser (utility row "EN"/"RU"/... button)
+// and pick a language. The full 6-button switcher (.lang-btn) is hidden by
+// CSS once a purpose is chosen (body.purpose-set .language-switcher {
+// display: none }) — it now only reveals itself as a dropdown under the
+// compact button (see PPP.app.toggleLangChooser, js/app.js). Tests that used
+// to click .lang-btn directly must open the dropdown first.
+async function switchLanguage(page, lang) {
+  // #langCompactBtn TOGGLES the dropdown — only click it if the dropdown is
+  // currently closed, so two switchLanguage() calls in the same test (e.g.
+  // ru then back to en) don't have the second call's click close what the
+  // first call left open.
+  const isOpen = await page.evaluate(() => {
+    const el = document.getElementById('langSwitcherFull');
+    return !!el && el.classList.contains('open');
+  });
+  if (!isOpen) await page.click('#langCompactBtn');
+  await page.click(`.lang-btn[data-lang="${lang}"]`);
+}
+
 // Offline PWA startup: on a fresh profile the app shows a download-confirmation
 // button before installing the full offline library into IndexedDB. The
 // ppp_auto_install=1 localStorage hook (see app.js startFirstInstallFlow) skips
@@ -28,7 +60,13 @@ function trackConsoleErrors(page) {
 // static server before the app becomes ready.
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
-    try { localStorage.setItem('ppp_auto_install', '1'); } catch (e) {}
+    try {
+      localStorage.setItem('ppp_auto_install', '1');
+      // Skip the onboarding gate (language + purpose picker) — land straight
+      // in the "lectures" view, the UI surface this whole suite targets.
+      localStorage.setItem('preferredLanguage', 'en');
+      localStorage.setItem('ppp_purpose', 'lectures');
+    } catch (e) {}
   });
 });
 
@@ -78,7 +116,8 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.goto('./');
     await waitForAppReady(page);
 
-    // Click Quotes (all) button
+    // Click Quotes (all) button (By Verse — quotes-view only)
+    await useQuotesView(page);
     await page.click('.search-mode-btn[data-mode="citations"]');
 
     // Verse sources panel should appear
@@ -93,7 +132,8 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.goto('./');
     await waitForAppReady(page);
 
-    // Click Top 108 button
+    // Click Top 108 button (Verses (Top) — quotes-view only)
+    await useQuotesView(page);
     await page.click('.search-mode-btn[data-mode="citationsTop"]');
 
     // Wait for topCitationsList to populate
@@ -137,7 +177,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await waitForAppReady(page);
 
     // Switch to Russian
-    await page.click('.lang-btn[data-lang="ru"]');
+    await switchLanguage(page, 'ru');
 
     // Search placeholder should now be in Russian
     const placeholder = await page.locator('#searchTerm').getAttribute('placeholder');
@@ -271,13 +311,18 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.keyboard.press('Enter');
     await page.waitForTimeout(2000);
 
-    await page.locator('.search-mode-btn[data-mode="citations"]').click({ force: true });
+    // Verses (all)/(Top) live in the quotes view — switch there first.
+    await useQuotesView(page);
+    await page.locator('.search-mode-btn[data-mode="citations"]').click();
     await page.waitForTimeout(2000);
 
-    await page.locator('.search-mode-btn[data-mode="citationsTop"]').click({ force: true });
+    await page.locator('.search-mode-btn[data-mode="citationsTop"]').click();
     await page.waitForTimeout(2000);
 
-    await page.locator('.search-mode-btn[data-mode="metadata"]').click({ force: true });
+    // Back to the lectures view for "In Titles" (metadata) — useQuotesView
+    // toggles switchView(), so calling it again from quotes flips back.
+    await useQuotesView(page);
+    await page.locator('.search-mode-btn[data-mode="metadata"]').click();
     await page.waitForTimeout(1000);
 
     // Filter out non-critical errors
@@ -494,10 +539,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(ariaLabel).toBe('Search lectures');
 
     // html[lang] must follow the UI language
-    await page.click('.lang-btn[data-lang="ru"]');
+    await switchLanguage(page, 'ru');
     expect(await page.evaluate(() => document.documentElement.lang)).toBe('ru');
 
-    await page.click('.lang-btn[data-lang="en"]');
+    await switchLanguage(page, 'en');
     expect(await page.evaluate(() => document.documentElement.lang)).toBe('en');
   });
 
@@ -772,8 +817,8 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       if (b) b.style.display = 'none';
     });
 
-    // Switch to the sentence-search mode.
-    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    // Switch to the sentence-search mode ("In Text" — quotes-view only).
+    await useQuotesView(page);
 
     // Search for a word that has a near substring twin ("price"/"priceless")
     // where the term sits in the MIDDLE/END of the twin, not at its start.
@@ -1012,7 +1057,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.goto('./');
     await waitForAppReady(page);
 
-    await page.locator('.text-search-btn').click();
+    await useQuotesView(page);
     await page.fill('#searchTerm', 'krishna');
 
     await page.locator('.main-button-row .combo-btn-1').click();
@@ -1130,7 +1175,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       if (b) b.style.display = 'none';
     });
 
-    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await useQuotesView(page);
 
     const placeholder = await page.locator('#searchTerm').getAttribute('placeholder');
     expect(placeholder).toContain('Search in transcript sentences');
@@ -1149,7 +1194,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     // Pressing the mode button — with NO search run yet — must immediately
     // swap the results table into the sentence-mode frame: distinct class
     // (drives the different header tone in CSS) + localized column headers.
-    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await useQuotesView(page);
 
     const table = page.locator('#resultsTable');
     await expect(table).toHaveClass(/sentence-mode/);
@@ -1165,8 +1210,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     // Empty-state hint text, not the generic "enter search terms" message.
     await expect(page.locator('#resultsTable tbody')).toContainText('Type a word and press Search');
 
-    // Switching back to "In Titles" restores the normal lecture-table frame.
-    await page.locator('.search-mode-btn[data-mode="metadata"]').click({ force: true });
+    // Switching back to "In Titles" restores the normal lecture-table frame
+    // (useQuotesView toggles switchView(), so calling it again flips back to
+    // lectures, where "In Titles"/metadata mode is the default).
+    await useQuotesView(page);
     await expect(table).not.toHaveClass(/sentence-mode/);
     await expect(table).toHaveClass(/lecture-cards/);
   });
@@ -1180,7 +1227,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       if (b) b.style.display = 'none';
     });
 
-    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await useQuotesView(page);
     await expect(page.locator('#searchTerm')).toHaveAttribute('placeholder', /Search in transcript sentences/);
 
     // Re-run the language-switch code path (same code path that used to
@@ -1208,7 +1255,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       if (b) b.style.display = 'none';
     });
 
-    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await useQuotesView(page);
     await page.fill('#searchTerm', 'rice');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
@@ -1241,7 +1288,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       if (b) b.style.display = 'none';
     });
 
-    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await useQuotesView(page);
     await page.fill('#searchTerm', 'rice');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
@@ -1282,7 +1329,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       if (b) b.style.display = 'none';
     });
 
-    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await useQuotesView(page);
 
     // Main header row (2nd thead row — the 1st is the transparent spacer):
     // star, share, Date, Type, File title / Sentence, Country, Lang.,
@@ -1365,7 +1412,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       if (b) b.style.display = 'none';
     });
 
-    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await useQuotesView(page);
     await page.fill('#searchTerm', 'rice');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
@@ -1412,7 +1459,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       if (b) b.style.display = 'none';
     });
 
-    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await useQuotesView(page);
     await page.fill('#searchTerm', 'rice');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
@@ -1423,7 +1470,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     // Switch UI language to Russian — results must SURVIVE (bug: they used
     // to be wiped by the generic metadata empty-table render in setLanguage),
     // and headers/summary must re-render in the new language.
-    await page.click('.lang-btn[data-lang="ru"]');
+    await switchLanguage(page, 'ru');
 
     const rowsAfter = await page.locator('#resultsTable tbody tr').count();
     expect(rowsAfter).toBe(rowsBefore);
@@ -1433,7 +1480,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await expect(page.locator('#resultsInfo strong')).toContainText('Найдено');
 
     // Switch back to EN: results still present, header English again.
-    await page.click('.lang-btn[data-lang="en"]');
+    await switchLanguage(page, 'en');
     expect(await page.locator('#resultsTable tbody tr').count()).toBe(rowsBefore);
     await expect(page.locator('#resultsTable thead')).toContainText('File title / Sentence');
   });
@@ -1489,7 +1536,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       if (b) b.style.display = 'none';
     });
 
-    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await useQuotesView(page);
     await page.fill('#searchTerm', 'rice');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
@@ -1531,7 +1578,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     // Warm the sentences DB with a first real search so the DB load is not the
     // variable here — the race we exercise is the query continuation, not the
     // one-time DB download.
-    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await useQuotesView(page);
     await page.fill('#searchTerm', 'rice');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
@@ -1590,7 +1637,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       if (b) b.style.display = 'none';
     });
 
-    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await useQuotesView(page);
     await page.fill('#searchTerm', 'rice');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 90000 });
@@ -1786,7 +1833,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
     // Rendered colours: run a real In Text search and read computed styles of
     // the on-screen sentence line + the highlighted word inside it.
-    await page.locator('.text-search-btn').click();
+    await useQuotesView(page);
     await page.fill('#searchTerm', 'krishna');
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsTable tbody .match-hint.sentence-hit', { timeout: 20000 });
@@ -1869,7 +1916,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.goto('./');
     await waitForAppReady(page);
     // Ensure English (premium path used above targets transcripts/en/).
-    await page.click('.lang-btn[data-lang="en"]');
+    await switchLanguage(page, 'en');
 
     // Search to get lecture rows.
     await page.fill('#searchTerm', 'krishna');
@@ -2113,13 +2160,13 @@ test.describe('Online-first UX (no forced install)', () => {
   test('42. Checkbox-sync: toggling one row syncs every row of the same lecture (sentence search)', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);
-    await page.click('.lang-btn[data-lang="en"]');
+    await switchLanguage(page, 'en');
 
     // "In Text" (sentence) search returns MANY rows for the same lecture — one
     // per matching sentence. Each row renders its own per-language checkbox for
     // the SAME "<nr>|<lang>" selection pair, so every sibling checkbox must stay
     // visually in sync with the shared selection Set (ui.js _syncSelCheckboxes).
-    await page.click('[data-mode="sentences"]');
+    await useQuotesView(page);
     await page.fill('#searchTerm', 'krishna');
     await page.keyboard.press('Enter');
     await page.waitForSelector('.select-checkbox[data-lang="en"]', { timeout: 20000 });
@@ -2163,7 +2210,7 @@ test.describe('Online-first UX (no forced install)', () => {
     await waitForAppReady(page);
 
     // Switch to sentence-search ("In Text") mode while still online.
-    await page.locator('.search-mode-btn[data-mode="sentences"]').click({ force: true });
+    await useQuotesView(page);
 
     // Go offline — the sentence shards are opt-in and not installed on this
     // profile, so the shard fetch has no network path and must reject.

@@ -28,6 +28,20 @@ const realManifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
 // Full install over localhost takes ~7-10 s; give every test generous room.
 test.setTimeout(120000);
 
+// Skip the onboarding gate (language + purpose picker, added for the
+// menu-search feature) on every test in this file, whether or not it also
+// calls addAutoInstallHook() below — several PWA tests (e.g. P1) navigate
+// with no init script of their own and would otherwise be stuck on the
+// onboarding overlay instead of the search UI these tests exercise.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    try {
+      localStorage.setItem('preferredLanguage', 'en');
+      localStorage.setItem('ppp_purpose', 'lectures');
+    } catch (e) {}
+  });
+});
+
 // ===== helpers =====
 
 /** Auto-start the REAL install flow without the confirmation click. */

@@ -24,7 +24,7 @@ PPP.search = (function () {
      * Supports: AND (;), OR (//), has:, subject:, lang:, source: (@), latest_files:, latest_transcripts:
      */
     function parseSearchQuery(input) {
-        if (!input) return { terms: [], filters: { source: [], has: [], subject: [], lang: [], year: [], country: [], latestTranscripts: [], latestFiles: [] }, isLatestFiles: false, isLatestTranscripts: false, otherTerms: [], orGroups: [] };
+        if (!input) return { terms: [], filters: { source: [], has: [], subject: [], lang: [], year: [], country: [], type: [], latestTranscripts: [], latestFiles: [] }, isLatestFiles: false, isLatestTranscripts: false, otherTerms: [], orGroups: [] };
 
         var searchTerms = input.split(';').map(function (s) { return s.trim(); }).filter(Boolean);
 
@@ -34,6 +34,7 @@ PPP.search = (function () {
         var langTerms = [];
         var yearTerms = [];
         var countryTerms = [];
+        var typeTerms = [];
         var latestTranscriptsTerms = [];
         var latestFilesTerms = [];
         var otherTerms = [];
@@ -60,6 +61,12 @@ PPP.search = (function () {
                     cc = cc.trim();
                     if (cc) countryTerms.push(cc);
                 });
+            } else if (tl.startsWith('type:')) {
+                // type:lecture,seminar — comma-separated canonical keys (Filters panel).
+                t.slice(5).split(',').forEach(function (tc) {
+                    tc = tc.trim();
+                    if (tc) typeTerms.push(tc);
+                });
             } else if (tl.startsWith('latest_transcripts:')) {
                 latestTranscriptsTerms.push(t);
             } else if (tl.startsWith('latest_files:')) {
@@ -83,6 +90,7 @@ PPP.search = (function () {
                 lang: langTerms,
                 year: yearTerms,
                 country: countryTerms,
+                type: typeTerms,
                 latestTranscripts: latestTranscriptsTerms,
                 latestFiles: latestFilesTerms
             },
@@ -174,6 +182,24 @@ PPP.search = (function () {
                 });
             });
             if (ctryConds.length > 0) conditions.push('(' + ctryConds.join(' OR ') + ')');
+        }
+
+        // type: filter (Filters panel). OR within the group (any selected
+        // canonical type), ANDed against the rest. Each canonical key expands
+        // to its raw type_norm variants (exact match — type_norm has no city
+        // suffix like country_norm does).
+        if (parsed.filters.type && parsed.filters.type.length > 0) {
+            var cfg2 = (window.PPP && PPP.config) || {};
+            var typeConds = [];
+            parsed.filters.type.forEach(function (tc) {
+                var raws = cfg2.typeMatchValues ? cfg2.typeMatchValues(tc) : [];
+                raws.forEach(function (rv) {
+                    var key = '$type' + (paramIdx++);
+                    params[key] = rv;
+                    typeConds.push("l.type_norm = " + key);
+                });
+            });
+            if (typeConds.length > 0) conditions.push('(' + typeConds.join(' OR ') + ')');
         }
 
         // has: filter (AND, check non-empty columns; includes duplicate-labeled transcripts)
