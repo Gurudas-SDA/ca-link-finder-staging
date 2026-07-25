@@ -1746,6 +1746,35 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(noMatchResult.hasSpan).toBe(false);
   });
 
+  test('39b. In Text on-screen: matched word carries .sent-word-hit; the sentence line is yellow, the word green', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // The highlighter now tags the matched word with a class (not an inline
+    // amber colour) so the two-tier CSS can paint green-on-yellow.
+    const markup = await page.evaluate(() =>
+      PPP.ui.highlightSentencePrefix('glories of Guru Tattva', ['guru', 'tattva']));
+    expect(markup).toContain('class="sent-word-hit"');
+    expect(markup).not.toContain('#fce9b8');   // old single-tier amber is gone
+
+    // Rendered colours: run a real In Text search and read computed styles of
+    // the on-screen sentence line + the highlighted word inside it.
+    await page.locator('.text-search-btn').click();
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsTable tbody .match-hint.sentence-hit', { timeout: 20000 });
+
+    const colours = await page.evaluate(() => {
+      const line = document.querySelector('#resultsTable tbody .match-hint.sentence-hit');
+      const word = line && line.querySelector('.sent-word-hit');
+      const bg = (el) => el && getComputedStyle(el).backgroundColor;
+      return { sentenceBg: bg(line), wordBg: word ? bg(word) : null };
+    });
+    // #fff3a0 => rgb(255,243,160); #b6f5c0 => rgb(182,245,192)
+    expect(colours.sentenceBg).toBe('rgb(255, 243, 160)');
+    expect(colours.wordBg).toBe('rgb(182, 245, 192)');
+  });
+
   test('40. ZIP export word-highlighter (_wrapMatchesInContainer) is diacritic-insensitive', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);

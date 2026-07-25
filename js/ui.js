@@ -852,7 +852,10 @@ PPP.ui = (function () {
             });
             if (!best) return utils.escapeHtml(tok);
             var prefixLen = _foldedPrefixLen(tok, best.length);
-            return '<span style="background-color: #fce9b8; border-radius: 2px; padding: 0 2px;">' +
+            // Two-tier highlight (matches the ZIP-export mark.tr-word): the
+            // matched WORD sits on light green inside the yellow sentence line
+            // (.sentence-hit). Dark text keeps green-on-yellow readable.
+            return '<span class="sent-word-hit">' +
                 utils.escapeHtml(tok.slice(0, prefixLen)) + '</span>' + utils.escapeHtml(tok.slice(prefixLen));
         });
     }

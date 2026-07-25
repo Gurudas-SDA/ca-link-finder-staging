@@ -1497,16 +1497,28 @@ th.transcripts-block {
     font-style: normal;
     font-size: 12px;
 }
-/* "In Text" mode: matched sentence shown under the file title (same
-   match-hint mechanism as essence/translated-title, but body-text tone so
-   the highlighted words stand out inside a readable sentence). */
+/* "In Text" mode: matched sentence shown under the file title. Two-tier
+   highlight matching the ZIP-export download (Rājan's original spec): the
+   whole matched SENTENCE sits on yellow (#fff3a0); the searched WORDS inside
+   it sit on light green (#b6f5c0). Dark text in both themes keeps the
+   green-on-yellow readable. */
 .match-hint.sentence-hit {
-    color: var(--text, #222);
+    color: #222;
     font-style: normal;
     font-size: 12px;
+    background-color: #fff3a0;
+    padding: 3px 6px;
+    border-radius: 4px;
+}
+.match-hint.sentence-hit .sent-word-hit {
+    background-color: #b6f5c0;
+    color: #14310f;
+    border-radius: 2px;
+    padding: 0 2px;
 }
 body.dark .match-hint.sentence-hit {
-    color: #ddd;
+    color: #222;                 /* dark text stays — bg is light yellow */
+    background-color: #fff3a0;
 }
 
 /* ===== PAGINATION ===== */
