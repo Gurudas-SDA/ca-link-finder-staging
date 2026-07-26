@@ -222,6 +222,72 @@ test.describe('PWA offline library', () => {
     await expect(workBtn).toBeVisible();
   });
 
+  test('P15. Onboarding purpose choice triggers the mandatory first-use install (core+EN premium+EN raw+shards); "In Text" is gated until it lands, works after', async ({ page }) => {
+    // Rājan decision 2026-07-26: online text search is no longer offered at
+    // all, so every user installs the full EN dataset (incl. the sentence
+    // shards) right after the onboarding purpose choice, before the app is
+    // usable. This test does NOT use the file's ppp_purpose bypass — it
+    // drives the REAL onboarding gate.
+    test.setTimeout(150000);
+    await page.addInitScript(() => {
+      try {
+        localStorage.removeItem('ppp_purpose');
+        localStorage.setItem('preferredLanguage', 'en');
+        // ppp_auto_install skips the confirmation click and runs the REAL
+        // install (same convention as startFirstInstallFlow/beginInstall
+        // elsewhere in this file); EN-only base for speed over localhost.
+        localStorage.setItem('ppp_auto_install', '1');
+        localStorage.setItem('ppp_install_langs', '[]');
+      } catch (e) {}
+    });
+    await page.goto('./');
+
+    // Onboarding gate shows (language stage first) — no data load has
+    // started yet: loadData() defers its online fallback while no purpose
+    // is chosen (see loadData()/_startMandatoryInstallGate in app.js).
+    await expect(page.locator('#onboardingOverlay')).toBeVisible();
+    // No data load has started yet — placeholder still says "Loading the
+    // database…", never the lecture-count text loadDataLegacy() would set.
+    await expect(page.locator('#searchTerm')).toHaveAttribute('placeholder', /Loading/i);
+
+    await page.locator('button.onb-lang').first().click(); // English
+    await expect(page.locator('.onb-stage[data-onb-stage="intro"]')).toBeVisible();
+
+    // Choose "quotes" — fires _startMandatoryInstallGate() -> the real
+    // install (ppp_auto_install skips the click).
+    await page.click('.onb-col-b .onb-go');
+    await expect(page.locator('#onboardingOverlay')).toBeHidden();
+
+    // The mandatory install actually runs (progress bar visible) and lands
+    // the shards flag downloader.js persists.
+    await page.waitForFunction(() => {
+      const bar = document.getElementById('progressBar');
+      return !!bar && bar.style.display !== 'none';
+    }, { timeout: 20000 });
+
+    const deadline = Date.now() + 120000;
+    let shardsInstalled = false;
+    while (Date.now() < deadline && !shardsInstalled) {
+      shardsInstalled = await page.evaluate(async () => {
+        if (!(window.PPP && PPP.offlineStore)) return false;
+        return !!(await PPP.offlineStore.getState('shards'));
+      });
+      if (!shardsInstalled) await page.waitForTimeout(500);
+    }
+    expect(shardsInstalled).toBe(true);
+
+    // App opens (openFromIdb, post-install) usable in "In Text" mode
+    // (setPurpose('quotes') already set searchMode to 'sentences') and a
+    // real sentence search runs — no install-required notice, no shard
+    // fetch over the network.
+    await waitForDataReady(page);
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 30000 });
+    const info = await page.locator('#resultsInfo strong').textContent();
+    expect(info).toMatch(/Found \d+ sentences/);
+  });
+
   test('P3. Full offline with SW: shell from cache, data from IDB, requiresInternet guard', async ({ page, context }) => {
     await addAutoInstallHook(page);
     await page.goto('./');
@@ -558,7 +624,13 @@ async function installEnOnly(page) {
 test.describe('PWA offline language selection (Phase A)', () => {
   test.setTimeout(180000);
 
-  test('PL1. Install prompt shows 3 language checkboxes; EN checked+disabled; size grows with selection', async ({ page }) => {
+  test('PL1. Install prompt shows 2 opt-in language checkboxes (EN+shards mandatory, no shard checkbox); size grows with LV/RU selection', async ({ page }) => {
+    // Rājan decision 2026-07-26: the sentence shards (offline "In Text"
+    // search) are no longer opt-in — they join the mandatory EN base, since
+    // online text search is no longer offered at all. This supersedes the
+    // opt-in shard-checkbox behaviour PL1 used to assert (base ≈151 MB,
+    // +~200 MB only after ticking a checkbox); the checkbox is gone and the
+    // mandatory base size already includes the shards from the start.
     await page.goto('./');
     await page.waitForFunction(() => window.PPP && PPP.app && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported());
 
@@ -575,38 +647,24 @@ test.describe('PWA offline language selection (Phase A)', () => {
     expect(boxes.find(b => b.lang === 'lv').checked).toBe(false);
     expect(boxes.find(b => b.lang === 'ru').checked).toBe(false);
 
-    // Option B default: the sentence shards (offline text search) are OPT-IN,
-    // so the DEFAULT base (EN, shards unchecked) is ≈ 151 MB (meta+extras+EN
-    // packs; the shards and the old single core:sentences DB add nothing).
+    // No opt-in shard checkbox anymore — the shards are mandatory.
+    await expect(page.locator('#installLangSelect input[data-shard]')).toHaveCount(0);
+
+    // The mandatory base (EN + core + sentence shards) is ≈ 330-360 MB —
+    // the old ~151 MB EN-only figure plus the ~200 MB of sentence shards,
+    // present from the very first render (no checkbox to tick).
     const baseTxt = await page.textContent('#installLangSelect .offline-lang-size');
     const baseMB = parseInt(String(baseTxt).replace(/[^0-9]/g, ''), 10);
-    expect(baseMB).toBeGreaterThan(130);
-    expect(baseMB).toBeLessThan(160);
+    expect(baseMB).toBeGreaterThan(320);
+    expect(baseMB).toBeLessThan(360);
 
-    // The opt-in "Offline text search" shard checkbox exists and is UNCHECKED
-    // by default. Ticking it makes the estimate jump by ~200 MB to ≈ 342 MB
-    // (EN base + 21 sentence shards).
-    const shardBox = page.locator('#installLangSelect input[data-shard]');
-    await expect(shardBox).toHaveCount(1);
-    expect(await shardBox.isChecked()).toBe(false);
-    await shardBox.check();
-    const shardTxt = await page.textContent('#installLangSelect .offline-lang-size');
-    const shardMB = parseInt(String(shardTxt).replace(/[^0-9]/g, ''), 10);
-    expect(shardMB).toBeGreaterThan(320);
-    expect(shardMB).toBeLessThan(360);
-    await shardBox.uncheck();   // isolate the language-only growth below
-
-    // Tick LV + RU (shards still off) → displayed size grows to ≈ 177 MB
-    // (EN base + prem-lv + prem-ru packs; EXCLUDES the dead core:sentences,
-    // so this no longer equals manifest.totals.bytes, which still includes
-    // that dead core and reports ≈ 195 MB).
+    // Tick LV + RU → displayed size grows further (prem-lv + prem-ru packs
+    // on top of the already-mandatory shard-inclusive base).
     await page.check('#installLangSelect input[data-lang="lv"]');
     await page.check('#installLangSelect input[data-lang="ru"]');
     const fullTxt = await page.textContent('#installLangSelect .offline-lang-size');
     const fullMB = parseInt(String(fullTxt).replace(/[^0-9]/g, ''), 10);
     expect(fullMB).toBeGreaterThan(baseMB);
-    expect(fullMB).toBeGreaterThan(170);
-    expect(fullMB).toBeLessThan(210);
   });
 
   test.describe('deterministic network (SW blocked)', () => {

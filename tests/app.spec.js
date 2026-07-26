@@ -52,6 +52,41 @@ async function switchLanguage(page, lang) {
   await page.click(`.lang-btn[data-lang="${lang}"]`);
 }
 
+// Rājan decision 2026-07-26: "In Text" (sentence) search no longer runs
+// online at all — it requires the offline sentence shards installed on the
+// device (see PPP.app._requireTextSearchLibrary in js/app.js). Real "In
+// Text" searches in this suite therefore need the shards on the profile
+// FIRST. The outer beforeEach's ppp_auto_install hook already drives a full
+// background install via loadData() -> startBackgroundInstall(); adding
+// ppp_install_shards='1' makes that SAME install include the shards
+// (downloader.js _autoInstallShards), and ppp_install_langs='[]' keeps it to
+// the EN base only (faster over the local static server — these tests don't
+// need LV/RU packs). Must be registered BEFORE page.goto().
+function withShardsAutoInstall(page) {
+  return page.addInitScript(() => {
+    try {
+      localStorage.setItem('ppp_install_shards', '1');
+      localStorage.setItem('ppp_install_langs', '[]');
+    } catch (e) {}
+  });
+}
+
+// Poll (from Node, not an async waitForFunction predicate — see the same
+// caution in pwa.spec.js) until the offline sentence shards have landed.
+async function waitForShardsInstalled(page, timeout = 120000) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const has = await page.evaluate(async () => {
+      if (!(window.PPP && PPP.offlineStore)) return false;
+      const v = await PPP.offlineStore.getState('shards');
+      return !!v;
+    });
+    if (has) return;
+    if (Date.now() > deadline) throw new Error('Timed out waiting for the offline sentence shards to install');
+    await page.waitForTimeout(500);
+  }
+}
+
 // Offline PWA startup: on a fresh profile the app shows a download-confirmation
 // button before installing the full offline library into IndexedDB. The
 // ppp_auto_install=1 localStorage hook (see app.js startFirstInstallFlow) skips
@@ -873,8 +908,12 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     // Lazy-loads the ~60 MB sentences DB on first search; allow extra time.
     test.setTimeout(120000);
 
+    // "In Text" now requires the offline shards installed — see
+    // withShardsAutoInstall/waitForShardsInstalled above.
+    await withShardsAutoInstall(page);
     await page.goto('./');
     await waitForAppReady(page);
+    await waitForShardsInstalled(page);
 
     // The install banner (if it ever appears) overlaps the mode buttons — hide it.
     await page.evaluate(() => {
@@ -1220,8 +1259,17 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     // Sentence search over the shards is slow (~15-20s here) — this is the
     // one end-to-end run through the real path per Rājan's request. A term
     // with a modest hit count keeps it well under the suite's per-test budget.
+    // "In Text" now requires the offline shards installed (Rājan decision
+    // 2026-07-26) — see withShardsAutoInstall/waitForShardsInstalled above.
+    test.setTimeout(120000);
+    await withShardsAutoInstall(page);
     await page.goto('./');
     await waitForAppReady(page);
+    await waitForShardsInstalled(page);
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
     await useQuotesView(page);
 
     await page.fill('#searchTerm', 'peacock');
@@ -1564,8 +1612,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
   test('35. Sentence search checkboxes drive the shared "Download selected" button', async ({ page }) => {
     test.setTimeout(120000);
+    await withShardsAutoInstall(page);
     await page.goto('./');
     await waitForAppReady(page);
+    await waitForShardsInstalled(page);
     await page.evaluate(() => {
       const b = document.getElementById('installBanner');
       if (b) b.style.display = 'none';
@@ -1597,8 +1647,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
   test('36. Two sentence matches from the SAME lecture dedupe to one ZIP pair', async ({ page }) => {
     test.setTimeout(120000);
+    await withShardsAutoInstall(page);
     await page.goto('./');
     await waitForAppReady(page);
+    await waitForShardsInstalled(page);
     await page.evaluate(() => {
       const b = document.getElementById('installBanner');
       if (b) b.style.display = 'none';
@@ -1638,8 +1690,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
   test('36b. Sentence table: no standalone Time column; matched sentence shows inline start-only "(ts)"; no Length/Quality; LV/RU chips in rows', async ({ page }) => {
     test.setTimeout(120000);
+    await withShardsAutoInstall(page);
     await page.goto('./');
     await waitForAppReady(page);
+    await waitForShardsInstalled(page);
     await page.evaluate(() => {
       const b = document.getElementById('installBanner');
       if (b) b.style.display = 'none';
@@ -1721,8 +1775,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
   test('36c. Checking an MP3 checkbox (sentence table Dwnld. column) increases the "Download selected" count', async ({ page }) => {
     test.setTimeout(120000);
+    await withShardsAutoInstall(page);
     await page.goto('./');
     await waitForAppReady(page);
+    await waitForShardsInstalled(page);
     await page.evaluate(() => {
       const b = document.getElementById('installBanner');
       if (b) b.style.display = 'none';
@@ -1768,8 +1824,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
   test('36d. Language switch in "In Text" mode keeps the sentence results, localizes the headers', async ({ page }) => {
     test.setTimeout(120000);
+    await withShardsAutoInstall(page);
     await page.goto('./');
     await waitForAppReady(page);
+    await waitForShardsInstalled(page);
     await page.evaluate(() => {
       const b = document.getElementById('installBanner');
       if (b) b.style.display = 'none';
@@ -1845,8 +1903,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
   test('36e2. Checking a real MP3 checkbox in the results table beyond the cap is also refused (checkbox snaps back unchecked)', async ({ page }) => {
     test.setTimeout(120000);
+    await withShardsAutoInstall(page);
     await page.goto('./');
     await waitForAppReady(page);
+    await waitForShardsInstalled(page);
     await page.evaluate(() => {
       const b = document.getElementById('installBanner');
       if (b) b.style.display = 'none';
@@ -1884,8 +1944,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
   test('36f. Sentence-search busy lock: mode switch / new search / language change are refused while a search is in flight, and work again after it finishes', async ({ page }) => {
     test.setTimeout(120000);
+    await withShardsAutoInstall(page);
     await page.goto('./');
     await waitForAppReady(page);
+    await waitForShardsInstalled(page);
     await page.evaluate(() => {
       const b = document.getElementById('installBanner');
       if (b) b.style.display = 'none';
@@ -1946,8 +2008,12 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
   test('37. Excel export — Script_EN URL cell is a clickable hyperlink', async ({ page }) => {
     test.setTimeout(120000);
+    // "In Text" now requires the offline shards installed (Rājan decision
+    // 2026-07-26) — see withShardsAutoInstall/waitForShardsInstalled above.
+    await withShardsAutoInstall(page);
     await page.goto('./');
     await waitForAppReady(page);
+    await waitForShardsInstalled(page);
     await page.evaluate(() => {
       const b = document.getElementById('installBanner');
       if (b) b.style.display = 'none';
@@ -2138,8 +2204,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
   test('39b. In Text on-screen: matched word carries .sent-word-hit; the sentence line is yellow, the word green', async ({ page }) => {
     test.setTimeout(120000);
+    await withShardsAutoInstall(page);
     await page.goto('./');
     await waitForAppReady(page);
+    await waitForShardsInstalled(page);
 
     // The highlighter now tags the matched word with a class (not an inline
     // amber colour) so the two-tier CSS can paint green-on-yellow.
@@ -2401,6 +2469,113 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(result.lv.body).toContain('garāks par 20 minūtēm');
   });
 
+  // 42 / 42b moved here from the "Online-first UX (no forced install)" block
+  // (2026-07-26): that block's own beforeEach deliberately strips
+  // ppp_auto_install so it can exercise the real not-installed startup path
+  // (see its comment below) — which meant these two sentence-search tests'
+  // withShardsAutoInstall() (setting ppp_install_shards/ppp_install_langs
+  // only) never actually triggered an install at all, since the outer
+  // ppp_auto_install=1 hook that DRIVES the background install was being
+  // removed a tick later by that describe's own addInitScript. Root cause
+  // was a wrong describe placement, not the app gate — these two need the
+  // ordinary auto-install (this block's default), same as every other
+  // shard-backed sentence-search test above (35, 36, 36f, 37, 50i, ...).
+  test('42. Checkbox-sync: toggling one row syncs every row of the same lecture (sentence search)', async ({ page }) => {
+    test.setTimeout(120000);
+    await withShardsAutoInstall(page);
+    await page.goto('./');
+    await waitForAppReady(page);
+    await waitForShardsInstalled(page);
+    await switchLanguage(page, 'en');
+
+    // "In Text" (sentence) search returns MANY rows for the same lecture — one
+    // per matching sentence. Each row renders its own per-language checkbox for
+    // the SAME "<nr>|<lang>" selection pair, so every sibling checkbox must stay
+    // visually in sync with the shared selection Set (ui.js _syncSelCheckboxes).
+    await useQuotesView(page);
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    // Same 21-shard "In Text" stream as test 39b — 20s was too tight (flaky
+    // under load: passed alone, failed in the full run); align with the
+    // suite's own 90s convention for this operation.
+    await page.waitForSelector('.select-checkbox[data-lang="en"]', { timeout: 90000 });
+
+    // Find a lecture nr that appears in at least two EN sibling checkboxes.
+    const nr = await page.evaluate(() => {
+      const cnt = {};
+      document.querySelectorAll('.select-checkbox[data-lang="en"]').forEach(b => {
+        const n = b.getAttribute('data-nr'); cnt[n] = (cnt[n] || 0) + 1;
+      });
+      const best = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+      return (best && cnt[best] > 1) ? best : null;
+    });
+    expect(nr).not.toBeNull(); // sentence search must produce sibling rows
+
+    const sib = (lang) => `.select-checkbox[data-nr="${nr}"][data-lang="${lang}"]`;
+    const enCount = await page.locator(sib('en')).count();
+    expect(enCount).toBeGreaterThan(1);
+
+    // Tick ONE sibling → every EN sibling of that lecture becomes checked.
+    await page.locator(sib('en')).first().check();
+    expect(await page.locator(sib('en') + ':checked').count()).toBe(enCount);
+
+    // Independence: the SAME lecture's LV checkboxes must NOT be affected.
+    expect(await page.locator(sib('lv') + ':checked').count()).toBe(0);
+
+    // The selection is ONE lecture-language pair, not enCount of them — the
+    // "Download selected" button shows (1), and the MP3 cap is unaffected.
+    await expect(page.locator('#downloadSelectedBtn')).toContainText('(1)');
+
+    // Unticking a DIFFERENT sibling clears every EN sibling of that lecture.
+    await page.locator(sib('en')).last().uncheck();
+    expect(await page.locator(sib('en') + ':checked').count()).toBe(0);
+    await expect(page.locator('#downloadSelectedBtn')).toBeDisabled();
+  });
+
+  test('42b. Cancel: stopping an in-flight "In Text" search leaves a clean, reusable UI', async ({ page }) => {
+    test.setTimeout(120000);
+    await withShardsAutoInstall(page);
+    await page.goto('./');
+    await waitForAppReady(page);
+    await waitForShardsInstalled(page);
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    await useQuotesView(page);
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+
+    // The button flips to Cancel synchronously the instant the shard loop
+    // starts (well before the first shard's fetch resolves) — wait for that,
+    // then cancel immediately to keep this deterministic (not a race against
+    // the search finishing first).
+    const cancelBtn = page.locator('.search-row .search-button');
+    await expect(cancelBtn).toHaveClass(/is-cancel/, { timeout: 10000 });
+    await expect(cancelBtn).toContainText(/Cancel/i);
+    await expect(page.locator('#progressBar')).toBeVisible();
+    await cancelBtn.click();
+
+    // Busy lock releases promptly (no stuck "Searching… n/21").
+    await page.waitForFunction(() => (
+      window.PPP && PPP.app._isSentenceSearchBusyForTest && PPP.app._isSentenceSearchBusyForTest() === false
+    ), { timeout: 10000 });
+    await expect(page.locator('#progressBar')).toBeHidden();
+
+    // Button is back to plain "Search", no residue on the results area.
+    await expect(cancelBtn).not.toHaveClass(/is-cancel/);
+    await expect(cancelBtn).toContainText(/^Search$/i);
+    expect(await page.locator('#resultsTable tbody .match-hint.sentence-hit').count()).toBe(0);
+
+    // A new search can start immediately and completes normally.
+    await page.fill('#searchTerm', 'rice');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsTable tbody .match-hint.sentence-hit', { timeout: 90000 });
+    expect(await page.locator('#resultsTable tbody .match-hint.sentence-hit').count()).toBeGreaterThan(0);
+    await expect(cancelBtn).not.toHaveClass(/is-cancel/);
+  });
+
 });
 
 // ONLINE-FIRST UX: online must be the base experience — usable immediately,
@@ -2483,99 +2658,14 @@ test.describe('Online-first UX (no forced install)', () => {
     await expect(progress).toBeVisible();
   });
 
-  test('42. Checkbox-sync: toggling one row syncs every row of the same lecture (sentence search)', async ({ page }) => {
-    test.setTimeout(120000);
-    await page.goto('./');
-    await waitForAppReady(page);
-    await switchLanguage(page, 'en');
-
-    // "In Text" (sentence) search returns MANY rows for the same lecture — one
-    // per matching sentence. Each row renders its own per-language checkbox for
-    // the SAME "<nr>|<lang>" selection pair, so every sibling checkbox must stay
-    // visually in sync with the shared selection Set (ui.js _syncSelCheckboxes).
-    await useQuotesView(page);
-    await page.fill('#searchTerm', 'krishna');
-    await page.keyboard.press('Enter');
-    // Same 21-shard "In Text" stream as test 39b — 20s was too tight (flaky
-    // under load: passed alone, failed in the full run); align with the
-    // suite's own 90s convention for this operation.
-    await page.waitForSelector('.select-checkbox[data-lang="en"]', { timeout: 90000 });
-
-    // Find a lecture nr that appears in at least two EN sibling checkboxes.
-    const nr = await page.evaluate(() => {
-      const cnt = {};
-      document.querySelectorAll('.select-checkbox[data-lang="en"]').forEach(b => {
-        const n = b.getAttribute('data-nr'); cnt[n] = (cnt[n] || 0) + 1;
-      });
-      const best = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
-      return (best && cnt[best] > 1) ? best : null;
-    });
-    expect(nr).not.toBeNull(); // sentence search must produce sibling rows
-
-    const sib = (lang) => `.select-checkbox[data-nr="${nr}"][data-lang="${lang}"]`;
-    const enCount = await page.locator(sib('en')).count();
-    expect(enCount).toBeGreaterThan(1);
-
-    // Tick ONE sibling → every EN sibling of that lecture becomes checked.
-    await page.locator(sib('en')).first().check();
-    expect(await page.locator(sib('en') + ':checked').count()).toBe(enCount);
-
-    // Independence: the SAME lecture's LV checkboxes must NOT be affected.
-    expect(await page.locator(sib('lv') + ':checked').count()).toBe(0);
-
-    // The selection is ONE lecture-language pair, not enCount of them — the
-    // "Download selected" button shows (1), and the MP3 cap is unaffected.
-    await expect(page.locator('#downloadSelectedBtn')).toContainText('(1)');
-
-    // Unticking a DIFFERENT sibling clears every EN sibling of that lecture.
-    await page.locator(sib('en')).last().uncheck();
-    expect(await page.locator(sib('en') + ':checked').count()).toBe(0);
-    await expect(page.locator('#downloadSelectedBtn')).toBeDisabled();
-  });
-
-  test('42b. Cancel: stopping an in-flight "In Text" search leaves a clean, reusable UI', async ({ page }) => {
-    test.setTimeout(120000);
-    await page.goto('./');
-    await waitForAppReady(page);
-    await page.evaluate(() => {
-      const b = document.getElementById('installBanner');
-      if (b) b.style.display = 'none';
-    });
-
-    await useQuotesView(page);
-    await page.fill('#searchTerm', 'krishna');
-    await page.keyboard.press('Enter');
-
-    // The button flips to Cancel synchronously the instant the shard loop
-    // starts (well before the first shard's fetch resolves) — wait for that,
-    // then cancel immediately to keep this deterministic (not a race against
-    // the search finishing first).
-    const cancelBtn = page.locator('.search-row .search-button');
-    await expect(cancelBtn).toHaveClass(/is-cancel/, { timeout: 10000 });
-    await expect(cancelBtn).toContainText(/Cancel/i);
-    await expect(page.locator('#progressBar')).toBeVisible();
-    await cancelBtn.click();
-
-    // Busy lock releases promptly (no stuck "Searching… n/21").
-    await page.waitForFunction(() => (
-      window.PPP && PPP.app._isSentenceSearchBusyForTest && PPP.app._isSentenceSearchBusyForTest() === false
-    ), { timeout: 10000 });
-    await expect(page.locator('#progressBar')).toBeHidden();
-
-    // Button is back to plain "Search", no residue on the results area.
-    await expect(cancelBtn).not.toHaveClass(/is-cancel/);
-    await expect(cancelBtn).toContainText(/^Search$/i);
-    expect(await page.locator('#resultsTable tbody .match-hint.sentence-hit').count()).toBe(0);
-
-    // A new search can start immediately and completes normally.
-    await page.fill('#searchTerm', 'rice');
-    await page.keyboard.press('Enter');
-    await page.waitForSelector('#resultsTable tbody .match-hint.sentence-hit', { timeout: 90000 });
-    expect(await page.locator('#resultsTable tbody .match-hint.sentence-hit').count()).toBeGreaterThan(0);
-    await expect(cancelBtn).not.toHaveClass(/is-cancel/);
-  });
-
-  test('43. "In Text" search offline (shards not installed) shows a clean message, not a raw error', async ({ page }) => {
+  test('43. "In Text" search with shards not installed shows a clean install notice, never a raw error, online OR offline', async ({ page }) => {
+    // Premise changed 2026-07-26: this used to test the performSentenceSearch
+    // catch handler reached AFTER a real (failing) network fetch while
+    // offline. Online text search no longer runs at all — doSearch() now
+    // gates on the shards being installed BEFORE any fetch is attempted (see
+    // _requireTextSearchLibrary in js/app.js), so the graceful message shows
+    // regardless of connectivity. Kept the offline toggle to also prove the
+    // gate does not depend on a network round-trip.
     test.setTimeout(60000);
 
     await page.goto('./');
@@ -2584,66 +2674,35 @@ test.describe('Online-first UX (no forced install)', () => {
     // Switch to sentence-search ("In Text") mode while still online.
     await useQuotesView(page);
 
-    // Go offline — the sentence shards are opt-in and not installed on this
-    // profile, so the shard fetch has no network path and must reject.
     const context = page.context();
     await context.setOffline(true);
 
     await page.fill('#searchTerm', 'krishna');
     await page.keyboard.press('Enter');
 
-    // The catch handler must render the graceful offline message, never the
-    // raw "Error: ..." string surfaced for a real (online) failure.
+    // The proactive gate must render the graceful "install the offline
+    // library" notice, never the raw "Error: ..." string a real search
+    // failure would surface.
     await expect(page.locator('#resultsInfo')).not.toContainText('Error:', { timeout: 20000 });
     await expect(page.locator('#resultsInfo')).toContainText(/offline|bezsaist|[оО]флайн/i, { timeout: 20000 });
 
     await context.setOffline(false);
   });
 
-  // ---- Mobile "In Text" size warning (2026-07-26) --------------------------
-  // A full "In Text" search transfers ~200 MB of sentence shards (measured);
-  // on a phone/slow connection with the offline library not installed this
-  // can take many minutes. The warning below must appear BEFORE the shard
-  // search starts, only on a mobile viewport or a browser-reported slow
-  // connection, and only when the shards are not already installed.
+  // ---- "In Text" requires the installed library (2026-07-26) ---------------
+  // Superseded the mobile-only warning dialog above (tests 51-53, REMOVED):
+  // Rājan decided online text search is not offered at all anymore, on ANY
+  // viewport/connection — so the dismissable "Search anyway" warning no
+  // longer makes sense (there is no "anyway" to search online). Removed:
+  // the #mobileSearchWarnOverlay markup (index.html), its i18n keys
+  // (mobileSearchWarnTitle/Body/InstallBtn/AnywayBtn, all 6 languages), and
+  // the app.js functions/exports (_maybeWarnMobileTextSearch,
+  // _showMobileSearchWarn, closeMobileSearchWarn, mobileSearchWarnProceed,
+  // mobileSearchWarnInstall, _mobileSearchWarnAllowedForTest). Replaced by
+  // _requireTextSearchLibrary (js/app.js), which never lets the search run
+  // without the shards, on any device.
 
-  test('51. Mobile "In Text" warning appears before the first shard search, and "Search anyway" proceeds without repeating it this session', async ({ page }) => {
-    test.setTimeout(60000);
-    await page.setViewportSize({ width: 390, height: 800 });
-    await page.goto('./');
-    await waitForAppReady(page);
-    await useQuotesView(page);
-
-    const overlay = page.locator('#mobileSearchWarnOverlay');
-    await expect(overlay).not.toHaveClass(/active/);
-
-    await page.fill('#searchTerm', 'krishna');
-    await page.keyboard.press('Enter');
-
-    // The warning appears BEFORE any shard fetch starts — the sentence
-    // search busy lock (Cancel button) must still be off while it's up.
-    await expect(overlay).toHaveClass(/active/, { timeout: 5000 });
-    expect(await page.evaluate(() => PPP.app._isSentenceSearchBusyForTest())).toBe(false);
-    await expect(page.locator('#mobileSearchWarnBody')).toContainText(/MB/);
-
-    // "Search anyway" closes the warning and runs the real (deferred) search.
-    const cancelBtn = page.locator('.search-row .search-button');
-    await page.click('#mobileSearchWarnAnywayBtn');
-    await expect(overlay).not.toHaveClass(/active/);
-    await expect(cancelBtn).toHaveClass(/is-cancel/, { timeout: 10000 });
-    await cancelBtn.click(); // only proving the search started — no need to wait it out
-    await page.waitForFunction(() => PPP.app._isSentenceSearchBusyForTest() === false, { timeout: 10000 });
-
-    // A SECOND "In Text" search in the SAME session must NOT show the
-    // warning again — it should run straight away, same as any other search.
-    await page.fill('#searchTerm', 'rice');
-    await page.keyboard.press('Enter');
-    await expect(overlay).not.toHaveClass(/active/);
-    await expect(cancelBtn).toHaveClass(/is-cancel/, { timeout: 10000 });
-    await cancelBtn.click();
-  });
-
-  test('52. Mobile "In Text" warning does not appear at a desktop viewport on a normal connection', async ({ page }) => {
+  test('43b. "In Text" search notice appears at ANY viewport (no longer mobile-only) and its install button opens the EXISTING offline-install panel', async ({ page }) => {
     test.setTimeout(60000);
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto('./');
@@ -2653,30 +2712,15 @@ test.describe('Online-first UX (no forced install)', () => {
     await page.fill('#searchTerm', 'krishna');
     await page.keyboard.press('Enter');
 
-    // The real search runs immediately — no warning gate on desktop broadband.
-    const cancelBtn = page.locator('.search-row .search-button');
-    await expect(cancelBtn).toHaveClass(/is-cancel/, { timeout: 10000 });
-    await expect(page.locator('#mobileSearchWarnOverlay')).not.toHaveClass(/active/);
-    await cancelBtn.click();
-  });
-
-  test('53. Mobile "In Text" warning: "Install library now" opens the EXISTING offline-install panel instead of searching', async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 800 });
-    await page.goto('./');
-    await waitForAppReady(page);
-    await useQuotesView(page);
-
-    await page.fill('#searchTerm', 'krishna');
-    await page.keyboard.press('Enter');
-    await expect(page.locator('#mobileSearchWarnOverlay')).toHaveClass(/active/, { timeout: 5000 });
-
-    await page.click('#mobileSearchWarnInstallBtn');
-    await expect(page.locator('#mobileSearchWarnOverlay')).not.toHaveClass(/active/);
-
-    // Routes into the SAME #offlineInfoPanel flow used by "Work offline" —
-    // not a second/duplicate installer — and does not run the pending search.
-    await expect(page.locator('#offlineInfoPanel')).toBeVisible();
+    // No shard fetch ever starts — the gate intercepts before
+    // performSentenceSearch, so the busy lock/Cancel button never engages.
+    await expect(page.locator('#resultsInfo')).toContainText(/offline/i, { timeout: 10000 });
     expect(await page.evaluate(() => PPP.app._isSentenceSearchBusyForTest())).toBe(false);
+
+    // Its button routes into the SAME #offlineInfoPanel flow used by "Work
+    // offline" — not a second/duplicate installer.
+    await page.click('#resultsInfo button');
+    await expect(page.locator('#offlineInfoPanel')).toBeVisible();
   });
 
   // ---- Field-bug fixes (2026-07-24, Android reports) ----------------------

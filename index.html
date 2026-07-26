@@ -282,23 +282,6 @@
         </div>
     </div>
 
-    <!-- ===== MOBILE "IN TEXT" SIZE WARNING (~200 MB shard transfer) ===== -->
-    <div class="help-modal-overlay" id="mobileSearchWarnOverlay" onclick="PPP.app.closeMobileSearchWarn(event)">
-        <div class="help-modal" onclick="event.stopPropagation()">
-            <div class="help-modal-header">
-                <h2 data-i18n="mobileSearchWarnTitle">Text search uses a lot of data</h2>
-                <button class="help-modal-close" onclick="PPP.app.closeMobileSearchWarn()" aria-label="Close">&times;</button>
-            </div>
-            <div class="help-modal-body">
-                <p id="mobileSearchWarnBody">Searching lecture text transfers about 200 MB and can take many minutes on a phone connection. Installing the EN library once makes it fast.</p>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
-                    <button type="button" class="search-button" id="mobileSearchWarnInstallBtn" data-i18n="mobileSearchWarnInstallBtn" onclick="PPP.app.mobileSearchWarnInstall()">Install library now</button>
-                    <button type="button" class="help-search-btn help-search-btn-small" id="mobileSearchWarnAnywayBtn" data-i18n="mobileSearchWarnAnywayBtn" onclick="PPP.app.mobileSearchWarnProceed()">Search anyway</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <!-- ===== TRANSCRIPT VIEWER MODAL ===== -->
     <div class="transcript-modal-overlay" id="transcriptModalOverlay" onclick="PPP.app.closeTranscriptModal(event)">
         <div class="transcript-modal" onclick="event.stopPropagation()">

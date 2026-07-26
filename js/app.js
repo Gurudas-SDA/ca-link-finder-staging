@@ -468,11 +468,21 @@ PPP.app = (function () {
                     else _ensureInstallListeners(resume.langs, resume.shards);
                     return;
                 }
-                // ONLINE is the base experience: load online immediately (fully usable).
-                // The offline download is OPTIONAL and offered only via the small
-                // "Work offline" button once the online DB is ready (see
-                // loadDataLegacy() -> onDataLoaded() -> maybeShowOfflineWorkButton()),
-                // never as an upfront banner while the DB is still loading.
+                // ONLINE is the base experience for a RETURNING user (purpose
+                // already chosen in an earlier session) whose device has no
+                // local install yet — e.g. storage was cleared, or offline
+                // isn't supported here. The offline download is then OPTIONAL,
+                // offered via the small "Work offline" button once the online
+                // DB is ready (see loadDataLegacy() -> onDataLoaded() ->
+                // maybeShowOfflineWorkButton()).
+                //
+                // A brand-new user (onboarding gate still open, no purpose
+                // chosen yet) must NOT silently start the online path here —
+                // Rājan decision 2026-07-26: first use goes through the
+                // mandatory install gate instead (setPurpose() ->
+                // _startMandatoryInstallGate()), which calls loadDataLegacy()/
+                // startFirstInstallFlow() itself once the choice is known.
+                if (!_currentPurpose()) return;
                 loadDataLegacy();
                 var auto = false; try { auto = localStorage.getItem('ppp_auto_install') === '1'; } catch (e) {}
                 if (auto) { startBackgroundInstall(); }   // test/CI hook keeps exercising install
@@ -687,10 +697,17 @@ PPP.app = (function () {
      *   sizeMode    — 'total' (core+EN+selected) | 'delta' (only selected packs)
      *   shardToggle — add the opt-in "Offline text search" (sentence shards)
      *                 checkbox (default unchecked); getIncludeShards() reads it
+     *   shardsForced — the sentence shards are MANDATORY (Rājan decision
+     *                 2026-07-26: text search requires them) — no checkbox is
+     *                 rendered and getIncludeShards() always returns true.
+     *                 Mutually exclusive with shardToggle in practice (a
+     *                 caller passing both gets the forced/no-checkbox
+     *                 behaviour, since shardsForced short-circuits first).
      * Returns { el, getLangs, getIncludeShards }. getLangs() reads the ticked
      * opt-in langs; getIncludeShards() reads the shard checkbox (false when the
-     * toggle is absent). The live size label recomputes from BOTH the language
-     * selection and the shard toggle via computeInstallBytes.
+     * toggle is absent, true when shardsForced). The live size label
+     * recomputes from BOTH the language selection and the shard state via
+     * computeInstallBytes.
      */
     function _buildLangSelector(manifest, opts) {
         opts = opts || {};
@@ -713,11 +730,11 @@ PPP.app = (function () {
             }
             return out;
         }
-        function includeShards() { return !!(shardCb && shardCb.checked); }
+        function includeShards() { return !!opts.shardsForced || !!(shardCb && shardCb.checked); }
         function refreshSize() {
             var sel = selectedLangs();
             var bytes = PPP.downloader.computeInstallBytes(manifest, sel, includeShards());
-            if (opts.sizeMode === 'delta') bytes -= PPP.downloader.computeInstallBytes(manifest, []);
+            if (opts.sizeMode === 'delta') bytes -= PPP.downloader.computeInstallBytes(manifest, [], !!opts.shardsForced);
             var mb = Math.round(bytes / 1048576);
             sizeLabel.textContent = i18n.t('offlineSizeSelected').replace('{size}', mb);
         }
@@ -754,7 +771,7 @@ PPP.app = (function () {
 
         if (opts.baseChecked) addRow('en', true);
         langList.forEach(function (l) { addRow(l, false); });
-        if (opts.shardToggle) addShardRow();
+        if (opts.shardToggle && !opts.shardsForced) addShardRow();
         wrap.appendChild(sizeLabel);
         refreshSize();
         return { el: wrap, getLangs: selectedLangs, getIncludeShards: includeShards };
@@ -778,13 +795,16 @@ PPP.app = (function () {
         }
         return PPP.downloader.fetchManifest().then(function (manifest) {
             _cacheBaseMB(manifest);
-            // Prompt headline shows the EN-only base size; ticking LV/RU grows it.
-            var sizeMB = Math.round(PPP.downloader.computeInstallBytes(manifest, []) / (1024 * 1024));
+            // Prompt headline shows the mandatory base size — core + EN premium
+            // + EN raw + the sentence shards (Rājan decision 2026-07-26: text
+            // search requires the shards, so they are no longer opt-in). Ticking
+            // LV/RU still grows it further.
+            var sizeMB = Math.round(PPP.downloader.computeInstallBytes(manifest, [], true) / (1024 * 1024));
             // TEST HOOK: Playwright sets localStorage ppp_auto_install=1 so
             // headless runs exercise the REAL install flow without a click.
             var auto = false;
             try { auto = localStorage.getItem('ppp_auto_install') === '1'; } catch (e) {}
-            if (auto) return beginInstall(manifest, _autoInstallLangs(manifest), _autoInstallShards());
+            if (auto) return beginInstall(manifest, _autoInstallLangs(manifest), true);
             showInstallPrompt(manifest, sizeMB);
         }).catch(function (err) {
             console.warn('Manifest fetch failed, using legacy load:', err);
@@ -802,10 +822,13 @@ PPP.app = (function () {
         if (old) old.remove();
         var oldSel = document.getElementById('installLangSelect');
         if (oldSel) oldSel.remove();
+        var oldSkip = document.getElementById('installSkipBtn');
+        if (oldSkip) oldSkip.remove();
 
-        // EN mandatory base + LV/RU opt-in checkboxes + opt-in offline text
-        // search (sentence shards), with a live size label.
-        var selector = _buildLangSelector(manifest, { baseChecked: true, sizeMode: 'total', shardToggle: true });
+        // EN + sentence shards are now the MANDATORY base (text search needs
+        // them — shardsForced skips the opt-in checkbox and always sizes/
+        // installs them); LV/RU stay opt-in checkboxes, unchecked by default.
+        var selector = _buildLangSelector(manifest, { baseChecked: true, sizeMode: 'total', shardsForced: true });
         selector.el.id = 'installLangSelect';
         bar.appendChild(selector.el);
 
@@ -817,12 +840,47 @@ PPP.app = (function () {
         btn.textContent = i18n.t('installButton');
         btn.onclick = function () {
             var langs = selector.getLangs();
-            var incShards = selector.getIncludeShards();
             selector.el.remove();
             btn.remove();
-            beginInstall(manifest, langs, incShards);
+            var skip = document.getElementById('installSkipBtn');
+            if (skip) skip.remove();
+            beginInstall(manifest, langs, true);
         };
         bar.appendChild(btn);
+
+        // Escape hatch (Rājan: never dead-end the user) — reachable if the
+        // mandatory download stalls/fails; a storage- or network-failure
+        // inside beginInstall() re-shows this same button (see its catch).
+        _appendInstallSkipBtn(bar);
+    }
+
+    /**
+     * "Continue without text search" — the fallback when the mandatory
+     * install can't complete (out of storage, or the device/browser cannot
+     * do offline at all). Proceeds with the normal online app; the sentence
+     * shards stay absent, so "In Text" explains and offers the install again
+     * the first time it's tried (_requireTextSearchLibrary).
+     */
+    function _appendInstallSkipBtn(bar) {
+        var skip = document.createElement('button');
+        skip.id = 'installSkipBtn';
+        skip.type = 'button';
+        skip.className = 'help-search-btn help-search-btn-small';
+        skip.style.marginTop = '8px';
+        skip.style.marginLeft = '8px';
+        skip.textContent = i18n.t('continueWithoutTextSearch');
+        skip.onclick = function () {
+            document.removeEventListener('click', _installGuardHandler, true);
+            _installInFlight = false;
+            _removeInstallListeners();   // never auto-resume behind the user's back
+            _releaseWakeLock();
+            ui.hideLoading();
+            var sel = document.getElementById('installLangSelect'); if (sel) sel.remove();
+            var ib = document.getElementById('installOfflineBtn'); if (ib) ib.remove();
+            skip.remove();
+            loadDataLegacy();
+        };
+        bar.appendChild(skip);
     }
 
     // Capture-phase click interceptor active DURING the first install:
@@ -984,7 +1042,12 @@ PPP.app = (function () {
             _releaseWakeLock();
             console.error('Offline install failed:', err);
             if (err && err.notEnoughStorage) {
+                // Never dead-end: this device cannot fit the mandatory
+                // download — offer to continue with everything except text
+                // search rather than leaving the user stuck on this screen.
                 ui.showLoading(i18n.t('notEnoughStorage').replace('{size}', totalMB));
+                var bar = document.getElementById('progressBar');
+                if (bar) _appendInstallSkipBtn(bar);
                 return;
             }
             if (err && err.partial) {
@@ -1819,14 +1882,27 @@ PPP.app = (function () {
         // Allow empty search in citations mode (shows stats overview)
         if (!term && searchMode !== 'citations' && searchMode !== 'citationsTop') return;
 
-        // "In Text" (sentence) search transfers ~200 MB of shards over the
-        // network when the offline library isn't installed. On a mobile
-        // viewport or a known-slow connection, warn BEFORE the first such
-        // search this session and offer the offline install instead — see
-        // _maybeWarnMobileTextSearch below. Metadata/citations searches are
-        // cheap (a few KB) and are never gated here.
+        // "In Text" (sentence) search only runs from the offline sentence
+        // shards now (Rājan decision 2026-07-26: online text search is no
+        // longer offered at all — one full search used to transfer ~200 MB,
+        // ~34 min on Fast-3G). When the shards aren't installed, explain and
+        // offer the install instead of searching — see
+        // _requireTextSearchLibrary below. Metadata/citations searches never
+        // needed the shards and are not gated here.
         if (searchMode === 'sentences' && term) {
-            _maybeWarnMobileTextSearch(function () { _runSearch(term); });
+            // Engage the busy lock SYNCHRONOUSLY, before the gate's own async
+            // IndexedDB read below — _requireTextSearchLibrary's
+            // store.getState('shards').then(...) always defers to a microtask,
+            // even when already resolved. Without this, a second call issued
+            // in the very same tick (rapid double-dispatch, or a mode/language
+            // switch attempted immediately after search()) would race past the
+            // "if (_sentenceSearchBusy)" guard above because the flag hadn't
+            // been set yet — see test 36f. performSentenceSearch below
+            // re-asserts the same flag (harmless no-op); if the gate instead
+            // blocks the search (shards not installed), release it again so
+            // the UI is never left stuck "busy".
+            _sentenceSearchBusy = true;
+            _requireTextSearchLibrary(function () { _runSearch(term); }, function () { _sentenceSearchBusy = false; });
             return;
         }
         _runSearch(term);
@@ -1845,110 +1921,58 @@ PPP.app = (function () {
         performSearch();
     }
 
-    // ---- Mobile "In Text" size warning ------------------------------------
-    // Rājan measurement (2026-07-26): one full "In Text" search transfers
-    // ~200 MB of sentence shards; on Fast-3G that is ~92s before the progress
-    // counter even moves and ~34 min to full results, vs. ~10-16s once the
-    // offline EN library is installed. Desktop broadband users never see
-    // this — only a mobile-sized viewport or a browser-reported sub-4g
-    // connection trigger it, and only when the shards are not installed.
-    var _mobileSearchWarnProceedFn = null;
+    // ---- "In Text" requires the installed library -------------------------
+    // Rājan decision 2026-07-26: online text search is no longer offered at
+    // all — one full "In Text" search used to transfer ~200 MB of sentence
+    // shards (~34 min on Fast-3G). This supersedes the earlier mobile-only
+    // warning dialog (mobileSearchWarn*, tests 51-53, removed): instead of a
+    // dismissable warning, the search simply does not run online — it
+    // explains that text search works from the downloaded library and
+    // offers the EXISTING offline-install flow (#offlineInfoPanel /
+    // renderOfflineInfoPanel) instead of a second/duplicate installer.
 
     /**
-     * Mobile-sized viewport OR navigator.connection.effectiveType worse than
-     * '4g'. The Network Information API is Chrome/Android-only — its absence
-     * must never throw and must never trigger the warning by itself (only
-     * the viewport check can do that alone).
+     * Gate before performSentenceSearch: run it only when the offline
+     * sentence shards are installed (offlineStore state key 'shards', the
+     * same one downloader.js persists at install time — see downloader.js
+     * firstInstall/checkForUpdates). Otherwise render the install notice.
      */
-    function _mobileSearchWarnEnvBad() {
-        var mobileViewport = false;
-        try { mobileViewport = window.matchMedia('(max-width: 640px)').matches; } catch (e) {}
-        var slowConn = false;
-        try {
-            var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-            if (conn && conn.effectiveType) slowConn = conn.effectiveType !== '4g';
-        } catch (e) {}
-        return mobileViewport || slowConn;
-    }
-
-    /**
-     * Once-per-device gate, with one exception: if the user picked "search
-     * anyway" and the shards are STILL not installed, the warning may return
-     * on a LATER session (no permanent flag set for that path) but never
-     * twice in the SAME session (sessionStorage flag, set the instant the
-     * warning is shown, regardless of which button is later pressed).
-     */
-    function _mobileSearchWarnAllowed() {
-        try { if (sessionStorage.getItem('ppp_mobile_search_warn_shown') === '1') return false; } catch (e) {}
-        try { if (localStorage.getItem('ppp_mobile_search_warn_dismissed') === '1') return false; } catch (e) {}
-        return _mobileSearchWarnEnvBad();
-    }
-
-    /**
-     * Gate before performSentenceSearch: skip straight to `proceed()` unless
-     * the environment looks mobile/slow, the warning hasn't already been
-     * shown/dismissed, AND the offline sentence shards are not installed
-     * (offlineStore state key 'shards', the same one downloader.js persists
-     * at install time — see downloader.js firstInstall/checkForUpdates).
-     */
-    function _maybeWarnMobileTextSearch(proceed) {
-        if (!_mobileSearchWarnAllowed()) { proceed(); return; }
+    function _requireTextSearchLibrary(proceed, onBlocked) {
         var store = PPP.offlineStore;
         if (!store || !store.getState) { proceed(); return; }
         store.getState('shards').then(function (installed) {
             if (installed) { proceed(); return; }
-            _showMobileSearchWarn(proceed);
+            if (onBlocked) onBlocked();
+            _renderTextSearchInstallNotice();
         }).catch(function () { proceed(); });
     }
 
-    function _showMobileSearchWarn(proceed) {
-        _mobileSearchWarnProceedFn = proceed;
+    /**
+     * Clean explanation in place of results (never a raw error) + a button
+     * that opens the SAME offline-install panel used everywhere else. Does
+     * not touch the results table itself — a later successful search
+     * replaces #resultsInfo the normal way.
+     */
+    function _renderTextSearchInstallNotice() {
+        var info = document.getElementById('resultsInfo');
+        if (!info) return;
         var mb = _shardsMB();
-        var body = document.getElementById('mobileSearchWarnBody');
-        if (body) body.textContent = i18n.t('mobileSearchWarnBody').replace('{size}', String(mb));
-        var overlay = document.getElementById('mobileSearchWarnOverlay');
-        if (overlay) overlay.classList.add('active');
-        // Set the SESSION flag the instant the warning is shown — "never
-        // twice in the same session" applies regardless of which button (or
-        // neither) the user ends up pressing.
-        try { sessionStorage.setItem('ppp_mobile_search_warn_shown', '1'); } catch (e) {}
-    }
-
-    /** Backdrop click / X close: dismiss without searching and without a
-     *  permanent flag (the session flag set in _showMobileSearchWarn already
-     *  covers "not twice this session"). */
-    function closeMobileSearchWarn(event) {
-        var overlay = document.getElementById('mobileSearchWarnOverlay');
-        if (event && overlay && event.target !== overlay) return;
-        if (overlay) overlay.classList.remove('active');
-        _mobileSearchWarnProceedFn = null;
-    }
-
-    /** "Search anyway" — run the deferred search, no permanent dismiss (the
-     *  warning may reappear in a LATER session while the shards stay absent). */
-    function mobileSearchWarnProceed() {
-        var overlay = document.getElementById('mobileSearchWarnOverlay');
-        if (overlay) overlay.classList.remove('active');
-        var fn = _mobileSearchWarnProceedFn;
-        _mobileSearchWarnProceedFn = null;
-        if (fn) fn();
-    }
-
-    /** "Install library now" — permanently dismiss (this device chose the
-     *  offline path) and route into the EXISTING offline-install flow
-     *  (#offlineInfoPanel / renderOfflineInfoPanel), rather than duplicating
-     *  it. Does not run the pending search — the user asked to install
-     *  first. */
-    function mobileSearchWarnInstall() {
-        var overlay = document.getElementById('mobileSearchWarnOverlay');
-        if (overlay) overlay.classList.remove('active');
-        _mobileSearchWarnProceedFn = null;
-        try { localStorage.setItem('ppp_mobile_search_warn_dismissed', '1'); } catch (e) {}
-        var panel = document.getElementById('offlineInfoPanel');
-        if (panel && panel.style.display !== 'flex') {
+        info.innerHTML = '';
+        var msg = document.createElement('div');
+        msg.className = 'quotes-require-install';
+        msg.textContent = i18n.t('quotesRequireInstallBody').replace('{size}', String(mb));
+        info.appendChild(msg);
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'search-button';
+        btn.textContent = i18n.t('quotesRequireInstallBtn');
+        btn.onclick = function () {
+            var panel = document.getElementById('offlineInfoPanel');
+            if (!panel) return;
             renderOfflineInfoPanel();
             panel.style.display = 'flex';
-        }
+        };
+        info.appendChild(btn);
     }
 
     function performSearch() {
@@ -4868,7 +4892,9 @@ PPP.app = (function () {
         el.textContent = i18n.t('onbIntro').replace('{count}', (totalLectures || 0).toLocaleString());
     }
 
-    /** Onboarding stage (b): purpose chosen — close the gate, enter that view. */
+    /** Onboarding stage (b): purpose chosen — close the gate, enter that view,
+     *  then kick off the mandatory first-use install gate (see
+     *  _startMandatoryInstallGate). */
     function setPurpose(purpose) {
         try { localStorage.setItem('ppp_purpose', purpose); } catch (e) {}
         track('onboarding-purpose', { purpose: purpose });
@@ -4876,6 +4902,57 @@ PPP.app = (function () {
         _applyPurposeView(purpose);
         setSearchMode(purpose === 'quotes' ? 'sentences' : 'metadata');
         _updateTipStrip();
+        _startMandatoryInstallGate();
+    }
+
+    /**
+     * First-use mandatory install (Rājan decision 2026-07-26): every user
+     * downloads the full EN dataset (core + EN premium + EN raw + the
+     * sentence shards "In Text" search needs) on first use; LV/RU stay
+     * optional. loadData() (called unconditionally from init(), before the
+     * purpose is even known) defers its own online-load fallback while the
+     * onboarding gate is open — this function is what actually decides what
+     * happens once the user's purpose choice makes that decision possible.
+     * Skipped for: a returning device that already has the full library
+     * (just opens it), a resumed/interrupted install (the normal boot logic
+     * already knows how to open a partial library and keep downloading in
+     * the background), and a browser that cannot do offline at all (the
+     * existing offlineUnsupported path — proceeds online, "In Text" explains
+     * itself later via _requireTextSearchLibrary).
+     */
+    function _startMandatoryInstallGate() {
+        var store = PPP.offlineStore;
+        if (!store || !store.supported() || !PPP.downloader) {
+            loadDataLegacy();
+            maybeShowOfflineWorkButton();
+            return;
+        }
+        store.open().then(function () {
+            return store.getState('localManifest');
+        }).then(function (localManifest) {
+            return store.getState('shards').then(function (shardsInstalled) {
+                if (localManifest && shardsInstalled) {
+                    return openFromIdb().then(function () {
+                        if (navigator.onLine) backgroundUpdateCheck();
+                    });
+                }
+                return PPP.downloader.getResumeState().then(function (resume) {
+                    if (resume) {
+                        // An install is already under way (e.g. a reload during
+                        // the mandatory install below, or one begun in an
+                        // earlier session) — loadData() already knows how to
+                        // open a partial library and continue downloading the
+                        // rest in the background.
+                        return loadData();
+                    }
+                    // True first use — the mandatory install prompt/flow.
+                    return startFirstInstallFlow();
+                });
+            });
+        }).catch(function (err) {
+            console.warn('Mandatory install gate failed, falling back to online load:', err);
+            loadDataLegacy();
+        });
     }
 
     /** Show/hide the .lectures-only / .quotes-only controls (CSS-driven) and
@@ -5295,13 +5372,6 @@ PPP.app = (function () {
         startFirstInstallFlow: startFirstInstallFlow,
         toggleOfflineInfoPanel: toggleOfflineInfoPanel,
         closeOfflineInfoPanel: closeOfflineInfoPanel,
-        // Mobile "In Text" size warning (~200 MB shard transfer on phones)
-        closeMobileSearchWarn: closeMobileSearchWarn,
-        mobileSearchWarnProceed: mobileSearchWarnProceed,
-        mobileSearchWarnInstall: mobileSearchWarnInstall,
-        // Internal (test only) — force-evaluate/reset the gate without faking
-        // viewport/connection through the browser APIs directly.
-        _mobileSearchWarnAllowedForTest: function () { return _mobileSearchWarnAllowed(); },
         openGuide: function () {
             var lang = localStorage.getItem('preferredLanguage') || 'en';
             window.open('guide/' + lang + '/index.html', '_blank');
