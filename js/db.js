@@ -624,10 +624,11 @@ PPP.db = (function () {
                 return _libraryInstalled().then(function (installed) {
                     if (installed) {
                         // Damaged library: say so, do not fetch behind the user.
-                        if (gz) {
-                            console.warn('Corrupt IDB shard ' + shard.id + ' — dropped, repair required');
-                            return _deleteIdbShard(shard.id).then(function () { throw _shardRepairError(shard); });
-                        }
+                        // Do NOT delete the bad copy first — repairShard
+                        // overwrites it, and deleting up front means a failed or
+                        // declined repair leaves a hole that only the next delta
+                        // update can close (Fable review, 2026-07-27).
+                        if (gz) console.warn('Corrupt IDB shard ' + shard.id + ' — repair required');
                         throw _shardRepairError(shard);
                     }
                     if (gz) {
@@ -644,25 +645,46 @@ PPP.db = (function () {
         return _fetchValidatedShard(shard, signal);
     }
 
+    /** sha256 hex of a buffer, or null where SubtleCrypto is unavailable
+     *  (insecure origin, ancient browser) — the caller then falls back to the
+     *  size check alone, same as the installer does. */
+    function _shardSha256(buffer) {
+        if (!(window.crypto && crypto.subtle && crypto.subtle.digest)) return Promise.resolve(null);
+        return crypto.subtle.digest('SHA-256', buffer).then(function (digest) {
+            var bytes = new Uint8Array(digest), hex = '';
+            for (var i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, '0');
+            return hex;
+        }).catch(function () { return null; });
+    }
+
     /**
      * Re-download ONE shard and write it back into the offline library.
      * A single damaged shard costs a few MB to repair; it must never escalate
      * into a full 342 MB reinstall (Fable, 2026-07-27).
      */
     function repairShard(shardId, signal) {
-        return _shardList().then(function (shards) {
+        return _getSentenceShards().then(function (shards) {
             var shard = null;
             for (var i = 0; i < shards.length; i++) {
                 if (String(shards[i].id) === String(shardId)) { shard = shards[i]; break; }
             }
             if (!shard) throw new Error('Unknown shard ' + shardId);
             return _fetchValidatedShard(shard, signal).then(function (gz) {
-                var key = 'shard:' + shard.id;
-                return PPP.offlineStore.putFile({
-                    key: key, packId: key,
-                    gz: new Blob([gz], { type: 'application/gzip' }),
-                    raw: shard.raw || 0
-                }).then(function () { resetLibraryInstalledCache(); return true; });
+                // Verify the SAME way the installer does. _fetchValidatedShard
+                // only checks the byte length, so a wrong-content-right-size
+                // response would be written back and then trusted forever on the
+                // hot path (Fable review, 2026-07-27).
+                return _shardSha256(gz).then(function (hex) {
+                    if (hex && shard.sha256 && hex !== String(shard.sha256).toLowerCase()) {
+                        throw new Error('Repaired shard ' + shard.id + ' failed sha256 check');
+                    }
+                    var key = 'shard:' + shard.id;
+                    return PPP.offlineStore.putFile({
+                        key: key, packId: key,
+                        gz: new Blob([gz], { type: 'application/gzip' }),
+                        raw: shard.raw || 0
+                    }).then(function () { resetLibraryInstalledCache(); return true; });
+                });
             });
         });
     }

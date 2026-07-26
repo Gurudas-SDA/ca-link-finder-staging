@@ -2910,6 +2910,43 @@ test.describe('Online-first UX (no forced install)', () => {
 
 });
 
+test.describe('A term with no searchable word must not wedge the UI (Fable review, 2026-07-27)', () => {
+
+  test('F5. A Cyrillic "In Text" query leaves search, view and language switching usable', async ({ page }) => {
+    // buildTranscriptSQL returns null when the query has no [a-z0-9] word at
+    // all — which is EVERY query typed in Cyrillic, and a bare "year:2024".
+    // doSearch sets _sentenceSearchBusy synchronously (to close a race with the
+    // view/language switches), and performSentenceSearch's early exit did not
+    // clear it, so the first thing a Russian-speaking user typed killed search,
+    // mode switching and language switching until a reload.
+    // The shards MUST be installed for this test to mean anything. Without them
+    // the install gate rejects the search before performSentenceSearch is ever
+    // called, so the buggy early-exit is never reached — my first version of
+    // this test passed with the fix reverted for exactly that reason.
+    test.setTimeout(180000);
+    await withShardsAutoInstall(page);
+
+    await page.goto('./');
+    await waitForAppReady(page);
+    await waitForShardsInstalled(page);
+    await useQuotesView(page);
+
+    await page.fill('#searchTerm', 'Кришна');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(1500);
+
+    // The lock must be released, not merely look released — a stuck lock is
+    // invisible in the DOM.
+    expect(await page.evaluate(() => PPP.app._sentenceSearchBusyForTest())).toBe(false);
+
+    // And the next query actually runs instead of being refused by the lock.
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#resultsInfo')).toContainText(/Found \d+ sentences/, { timeout: 90000 });
+  });
+
+});
+
 /**
  * FIRST VISIT — the state no other test starts in.
  *

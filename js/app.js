@@ -1116,7 +1116,7 @@ PPP.app = (function () {
      *  NOT a partial state: nothing is unlocked, the library is still required
      *  (Rājan all-or-nothing). It only replaces a silent freeze with a message
      *  and a button. */
-    function _showInstallStalled(langs, includeShards) {
+    function _showInstallStalled(langs, includeShards, retryFn) {
         ui.showLoading(i18n.t('installStalled'));
         // Keep the click guard ARMED on this screen. Disarming it (the obvious
         // move, since the freeze we are fixing WAS a stuck guard) left the
@@ -1140,6 +1140,9 @@ PPP.app = (function () {
         btn.textContent = i18n.t('installRetryBtn');
         btn.onclick = function () {
             btn.remove();
+            // retryFn wins when given: the shards-only path must resume THAT,
+            // not restart a full 342 MB install.
+            if (retryFn) { retryFn(); return; }
             // langs === null means we never got as far as the language prompt
             // (manifest fetch failed) — restart the whole gate rather than
             // guessing a selection on the user's behalf.
@@ -1150,6 +1153,54 @@ PPP.app = (function () {
             }).catch(function () { _showInstallStalled(langs, includeShards); });
         };
         bar.appendChild(btn);
+    }
+
+    /**
+     * Shards-only top-up for a device that already holds the library.
+     *
+     * Same gate discipline as the full install — click guard, stall watchdog,
+     * error + Try again — but it downloads only what is missing (~191 MB instead
+     * of 342 MB) and says so. Everyone who installed before the shards became
+     * mandatory lands here exactly once.
+     */
+    function _startShardsOnlyInstall() {
+        return PPP.downloader.fetchManifest().then(function (manifest) {
+            var bytes = 0;
+            (manifest.sentenceShards || []).forEach(function (s) { if (s && s.size) bytes += s.size; });
+            var sizeMB = Math.round(bytes / (1024 * 1024));
+            _installPct = 0;
+            _installStarted = true;
+            document.addEventListener('click', _installGuardHandler, true);
+            ui.showLoading(i18n.t('installShardsPrompt').replace('{size}', String(sizeMB)));
+            ui.updateProgress(0);
+            _installInFlight = true;
+            _acquireWakeLock();
+            return _withStallWatchdog(function (onProgress) {
+                return PPP.downloader.addShards(onProgress);
+            }, function (p) {
+                var frac = p.totalBytes ? p.loadedBytes / p.totalBytes : 0;
+                _installPct = Math.round(frac * 100);
+                ui.updateProgress(frac);
+                ui.setLoadingText(i18n.t('installShardsPrompt').replace('{size}', String(sizeMB)) + ' ' +
+                    Math.round(p.loadedBytes / (1024 * 1024)) + ' / ' + sizeMB + ' MB');
+            }).then(function () {
+                _disarmInstallGuard();
+                _installInFlight = false;
+                _releaseWakeLock();
+                db.resetLibraryInstalledCache();
+                return openFromIdb();
+            }).catch(function (err) {
+                _disarmInstallGuard();
+                _installInFlight = false;
+                _releaseWakeLock();
+                console.error('Shards-only install failed:', err);
+                // Same honest dead-end screen, but retry resumes THIS path.
+                _showInstallStalled(null, true, _startShardsOnlyInstall);
+            });
+        }).catch(function (err) {
+            console.warn('Shards-only install could not start:', err);
+            _showInstallStalled(null, true, _startShardsOnlyInstall);
+        });
     }
 
     function beginInstall(manifest, langs, includeShards) {
@@ -1178,6 +1229,11 @@ PPP.app = (function () {
             _removeInstallListeners();
             _releaseWakeLock();
             PPP.offlineStore.requestPersist();
+            // The library just arrived — db.js memoizes "is it installed?" and
+            // would otherwise keep answering `false` for the rest of the session,
+            // sending a damaged shard quietly to the network instead of showing
+            // the repair notice (Fable review, 2026-07-27).
+            db.resetLibraryInstalledCache();
             return openFromIdb();
         }).catch(function (err) {
             _disarmInstallGuard();
@@ -1661,6 +1717,7 @@ PPP.app = (function () {
                 _removeInstallListeners();
                 _releaseWakeLock();
                 PPP.offlineStore.requestPersist();
+                db.resetLibraryInstalledCache();   // see beginInstall
                 // Install finished this session — flip the status button to
                 // its installed ✓ state right away.
                 maybeShowOfflineWorkButton(true);
@@ -1743,6 +1800,9 @@ PPP.app = (function () {
     function backgroundUpdateCheck() {
         PPP.downloader.checkForUpdates().then(function (res) {
             if (!res || !res.changedItems) return;
+            // A delta rewrote part of the library, which invalidates db.js's
+            // memoized "is it installed?" answer along with the shard list.
+            db.resetLibraryInstalledCache();
             ui.showUpdateNote(i18n.t('updatedItems').replace('{n}', res.changedItems));
             if (res.coreChanged && res.coreChanged.meta) {
                 // Re-open the meta DB from the fresh IDB copy and re-run the
@@ -2726,11 +2786,21 @@ PPP.app = (function () {
     }
 
     function downloadSelectedZip(zipName) {
-        // Offline guard: ZIP assembly fetches transcript bodies (and raw
-        // fallbacks from the Drive API) over the network.
+        // Offline guard — but only where it is still true. Transcript bodies now
+        // come from the installed library first (_zipPremiumHtml / _zipRawText),
+        // so a device with the library can build a transcript ZIP with no
+        // network at all. This guard used to reject that outright, which meant
+        // the "read from the library" change did nothing for offline users —
+        // exactly what its commit message claimed it fixed (Fable review,
+        // 2026-07-27). MP3s are the genuine exception: audio is not in the
+        // library and only Drive has it.
         if (!net.online) {
-            ui.toast(i18n.t('requiresInternet'));
-            return Promise.resolve();
+            var hasLibrary = !!(PPP.offlineStore && PPP.offlineStore.supported() && _offlineInstalled);
+            var mp3Only = Array.from(selectedNrs).every(function (k) { return k.split('|')[1] === 'mp3'; });
+            if (!hasLibrary || mp3Only) {
+                ui.toast(i18n.t('requiresInternet'));
+                return Promise.resolve();
+            }
         }
         if (typeof JSZip === 'undefined') {
             _showZipSummary(i18n.t('zipNothing'));
@@ -4843,8 +4913,19 @@ PPP.app = (function () {
         var parsed = search.parseSearchQuery(myTerm);
         var q = search.buildTranscriptSQL(parsed);
         if (!q) {
-            // No free-text term — nothing to search on. Synchronous path, no
-            // async hop, so the busy lock is never engaged here.
+            // No free-text term to search on — buildTranscriptSQL returns null
+            // when the query has no [a-z0-9] word at all, which includes EVERY
+            // query typed in Cyrillic and a bare "year:2024".
+            //
+            // The old comment here said the busy lock is never engaged on this
+            // path. That stopped being true when doSearch started setting it
+            // SYNCHRONOUSLY (to close a race with the view/language switches),
+            // so returning without clearing it left search, mode switching and
+            // language switching dead until a reload — hit by the first query a
+            // Russian-speaking user types. Fable review, 2026-07-27.
+            _sentenceSearchBusy = false;
+            _sentenceSearchAbort = null;
+            _setSearchButtonBusy(false);
             document.getElementById('resultsInfo').innerHTML = '';
             _sentenceMatchesByNr = {};
             _sentenceWords = [];
@@ -5291,6 +5372,17 @@ PPP.app = (function () {
                     if (navigator.onLine) backgroundUpdateCheck();
                 });
             }
+            // Library present, only the sentence shards missing. This is the
+            // normal state of EVERY user who installed before tonight: shards
+            // used to be an opt-in checkbox, unchecked by default. Sending them
+            // through startFirstInstallFlow() would re-download all 342 MB,
+            // including the ~150 MB already sitting in their IndexedDB, because
+            // the install state is cleared once an install completes and
+            // _buildWorkList therefore sees nothing as done. Add just the shards
+            // instead (Fable review, 2026-07-27).
+            if (state && state.localManifest && !state.shardsInstalled) {
+                return _startShardsOnlyInstall();
+            }
             return _raceTimeout(PPP.downloader.getResumeState(), 4000, null).then(function (resume) {
                 if (resume) {
                     // An install is already under way (e.g. a reload during
@@ -5718,6 +5810,10 @@ PPP.app = (function () {
         // per-core-key reload branches can be exercised with a stubbed
         // checkForUpdates instead of a real remote manifest change (P14c).
         _backgroundUpdateCheckForTest: backgroundUpdateCheck,
+        // Read-only view of the sentence-search busy lock. A stuck lock is
+        // invisible from the DOM (F5 was shipped because of that), and asserting
+        // on button labels alone would not have caught it.
+        _sentenceSearchBusyForTest: function () { return _sentenceSearchBusy; },
         // Internal (test only) — unit-test the MP3 ZIP count cap in
         // _addOneToZip / toggleSelectPair without fetching real audio.
         _addOneToZip: _addOneToZip,
