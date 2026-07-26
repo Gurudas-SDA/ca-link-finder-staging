@@ -288,6 +288,157 @@ test.describe('PWA offline library', () => {
     expect(info).toMatch(/Found \d+ sentences/);
   });
 
+  test('P15b. TRUE first-use, no ppp_auto_install hook: real install prompt shows a manifest-derived size, and searching before installing never no-ops', async ({ page }) => {
+    // P15 above uses the ppp_auto_install=1 test hook, which every OTHER
+    // test in this suite also sets — that hook is exactly why two real
+    // regressions in commit 0f09795 shipped invisible to the 108-test gate:
+    // with the hook, the mandatory install always runs immediately and the
+    // "nothing installed yet" state (no install screen shown at all; a text
+    // search silently doing nothing) is never exercised. This test drives
+    // the onboarding gate and the search gate with NO auto-install hook at
+    // all — the same path a real first-time visitor takes — and a "Continue
+    // without text search" escape hatch instead of waiting out a real
+    // ~190 MB download over localhost.
+    test.setTimeout(60000);
+    await page.addInitScript(() => {
+      try {
+        localStorage.removeItem('ppp_purpose');
+        localStorage.removeItem('ppp_auto_install');
+        localStorage.setItem('preferredLanguage', 'en');
+      } catch (e) {}
+    });
+    await page.goto('./');
+
+    await expect(page.locator('#onboardingOverlay')).toBeVisible();
+    await page.locator('button.onb-lang').first().click(); // English
+    await expect(page.locator('.onb-stage[data-onb-stage="intro"]')).toBeVisible();
+
+    // Choose "quotes" — real setPurpose() -> _startMandatoryInstallGate() ->
+    // startFirstInstallFlow(), with NO auto-install hook this time: the
+    // fetchManifest().then(showInstallPrompt(...)) branch must actually run
+    // and render the mandatory install step, not silently land in the
+    // quotes view the way the regression did.
+    await page.click('.onb-col-b .onb-go');
+    await expect(page.locator('#onboardingOverlay')).toBeHidden();
+
+    const installSelector = page.locator('#installLangSelect');
+    await expect(installSelector).toBeVisible({ timeout: 20000 });
+
+    // The size text (progressBar loading message) is derived from the REAL
+    // manifest at runtime (core + EN premium + EN raw + shards), not a
+    // hardcoded string — compute the same total the app computes and assert
+    // it appears verbatim.
+    const expectedMB = (function () {
+      var bytes = 0;
+      ['meta', 'extras', 'sentences'].forEach(function (k) {
+        if (realManifest.core && realManifest.core[k] && realManifest.core[k].size) bytes += realManifest.core[k].size;
+      });
+      (realManifest.packs || []).forEach(function (p) { if (p.lang === 'en' && p.size) bytes += p.size; });
+      (realManifest.sentenceShards || []).forEach(function (s) { if (s && s.size) bytes += s.size; });
+      return Math.round(bytes / 1048576);
+    })();
+    expect(expectedMB).toBeGreaterThan(0);
+    await expect(page.locator('#progressBar')).toContainText(String(expectedMB), { timeout: 5000 });
+
+    // Never dead-end: the escape hatch is present and reachable without
+    // waiting out the real download.
+    const skipBtn = page.locator('#installSkipBtn');
+    await expect(skipBtn).toBeVisible();
+    await skipBtn.click();
+
+    // Continuing without the library lands in the normal (online) quotes
+    // view — usable, just without the sentence shards. #searchTerm is
+    // re-enabled early by clearComboDisplay(), BEFORE onDataLoaded() flips
+    // the internal `dataLoaded` flag doSearch() itself gates on — AND in
+    // "sentences" mode updateSearchModePlaceholder() always shows the real
+    // (non-"Loading") placeholder regardless of dataLoaded (unlike metadata
+    // mode), so the placeholder text is not a usable readiness signal here
+    // (see P1's analogous, but metadata-only, note). loadDataLegacy() calls
+    // ui.hideLoading() and onDataLoaded() back-to-back synchronously, so
+    // waiting for the loading overlay to actually disappear is the reliable
+    // proxy for "dataLoaded is now true".
+    const searchInput = page.locator('#searchTerm');
+    await expect(searchInput).toBeEnabled({ timeout: 20000 });
+    await expect(page.locator('#progressBar')).toBeHidden({ timeout: 20000 });
+
+    // The regression: typing a term and pressing Search silently did
+    // nothing (no message, no overlay, #resultsInfo stayed empty). Assert
+    // the REQUIRED behaviour instead — a visible, localized explanation
+    // plus an install affordance, every time a text search is attempted
+    // without the library, via every entry point the fix documents.
+    const expectedShardsMB = Math.round(
+      (realManifest.sentenceShards || []).reduce(function (sum, s) { return sum + ((s && s.size) || 0); }, 0) / 1048576
+    );
+    expect(expectedShardsMB).toBeGreaterThan(0);
+
+    await page.fill('#searchTerm', 'peacock');
+    await page.keyboard.press('Enter');
+    const notice = page.locator('#resultsInfo .quotes-require-install');
+    await expect(notice).toBeVisible({ timeout: 10000 });
+    await expect(notice).toContainText(String(expectedShardsMB));
+    const installOffer = page.locator('#resultsInfo button', { hasText: 'Install library' });
+    await expect(installOffer).toBeVisible();
+
+    // The offer button opens the SAME offline-install panel used elsewhere
+    // — not a dead click, not a duplicate/second installer.
+    await installOffer.click();
+    await expect(page.locator('#offlineInfoPanel')).toBeVisible();
+  });
+
+  test('P15c. A hung offlineStore.getState (never resolves, never rejects) still produces a visible notice within a few seconds, not a silent no-op', async ({ page }) => {
+    // Rājan field report (2026-07-26): on a real device,
+    // PPP.offlineStore.getState('shards') can hang forever — never resolve,
+    // never reject (private browsing, a tab holding a blocking IndexedDB
+    // transaction, a wedged embedded webview). A plain .then()/.catch()
+    // cannot help: nothing ever fires. _requireTextSearchLibrary (and every
+    // other offlineStore read gating a visible onboarding/search response)
+    // must race such a call against a short timeout instead of trusting it
+    // to eventually settle on its own. This test proves that: the stub
+    // NEVER settles, at all, ever — if the gate did not have a timeout,
+    // this test would hang until Playwright's own test timeout killed it.
+    test.setTimeout(30000);
+    await page.addInitScript(() => {
+      try {
+        localStorage.removeItem('ppp_purpose');
+        localStorage.removeItem('ppp_auto_install');
+        localStorage.setItem('preferredLanguage', 'en');
+      } catch (e) {}
+    });
+    await page.goto('./');
+    await page.locator('button.onb-lang').first().click(); // English
+    await page.click('.onb-col-b .onb-go'); // "Search quotes" purpose
+
+    // Reach the searchable quotes view WITHOUT installing (same skip path
+    // as P15b), so the shards genuinely aren't installed either.
+    await expect(page.locator('#installSkipBtn')).toBeVisible({ timeout: 20000 });
+    await page.click('#installSkipBtn');
+    await expect(page.locator('#searchTerm')).toBeEnabled({ timeout: 20000 });
+    await expect(page.locator('#progressBar')).toBeHidden({ timeout: 20000 });
+
+    // Stub getState so it NEVER settles — not slow, not eventually
+    // rejecting, just permanently pending, exactly like the field report.
+    await page.evaluate(() => {
+      PPP.offlineStore.getState = function () { return new Promise(function () {}); };
+    });
+
+    const start = Date.now();
+    await page.fill('#searchTerm', 'peacock');
+    await page.keyboard.press('Enter');
+
+    const notice = page.locator('#resultsInfo .quotes-require-install');
+    await expect(notice).toBeVisible({ timeout: 8000 });
+    const elapsedMs = Date.now() - start;
+    // The internal timeout is 4000ms — the notice must land comfortably
+    // before Playwright's own assertion timeout, proving the gate resolved
+    // itself rather than the stub ever answering.
+    expect(elapsedMs).toBeLessThan(7000);
+
+    // Still a real, localized, actionable message — not a blank fallback.
+    await expect(notice).toContainText(/library|MB/i);
+    const installOffer = page.locator('#resultsInfo button', { hasText: 'Install library' });
+    await expect(installOffer).toBeVisible();
+  });
+
   test('P3. Full offline with SW: shell from cache, data from IDB, requiresInternet guard', async ({ page, context }) => {
     await addAutoInstallHook(page);
     await page.goto('./');

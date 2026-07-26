@@ -425,9 +425,20 @@ PPP.app = (function () {
             loadDataLegacy();
             return;
         }
-        store.open().then(function () {
-            return store.getState('localManifest');
-        }).then(function (localManifest) {
+        // Timeout-hardened the same way as _startMandatoryInstallGate/
+        // _requireTextSearchLibrary (Rājan 2026-07-26): a wedged IndexedDB
+        // read here must degrade to the legacy online load, not hang the
+        // app on "Loading the database…" forever.
+        _raceTimeout(
+            store.open().then(function () { return store.getState('localManifest'); }),
+            4000,
+            _OFFLINE_READ_TIMEOUT
+        ).then(function (localManifest) {
+            if (localManifest === _OFFLINE_READ_TIMEOUT) {
+                console.warn('Offline store read timed out, using legacy load');
+                loadDataLegacy();
+                return;
+            }
             if (localManifest) {
                 // Installed — open instantly from IDB, then check for deltas.
                 return openFromIdb().then(function () {
@@ -444,8 +455,8 @@ PPP.app = (function () {
             // usability here comes from the presence of the records, not from
             // the manifest fence (which must keep meaning "complete install").
             return Promise.all([
-                PPP.downloader.getResumeState ? PPP.downloader.getResumeState() : null,
-                PPP.downloader.isCoreReady ? PPP.downloader.isCoreReady() : false
+                PPP.downloader.getResumeState ? _raceTimeout(PPP.downloader.getResumeState(), 4000, null) : null,
+                PPP.downloader.isCoreReady ? _raceTimeout(PPP.downloader.isCoreReady(), 4000, false) : false
             ]).then(function (res) {
                 var resume = res[0];
                 var coreReady = res[1];
@@ -661,6 +672,49 @@ PPP.app = (function () {
     function _shardsMB() {
         try { var v = parseInt(localStorage.getItem('ppp_shards_mb'), 10); if (v > 0) return v; } catch (e) {}
         return 200;
+    }
+
+    // Sentinel distinguishable from every real offlineStore.getState() value
+    // (which includes `null` and `undefined` as legitimate "not set yet"
+    // results) — see _raceTimeout below.
+    var _OFFLINE_READ_TIMEOUT = {};
+
+    /**
+     * Race a promise against a timeout, resolving with `fallback` if the
+     * real promise neither resolves NOR rejects within `ms`. Rājan field
+     * report (2026-07-26): PPP.offlineStore.getState('shards') hung forever
+     * (never resolved, never rejected) on a real device — private browsing
+     * where IndexedDB exists but silently never answers, another tab
+     * holding a blocking version-change transaction, or a wedged embedded
+     * webview are all real, reachable conditions. A `.catch()` on the
+     * original promise cannot help: a promise that never settles never
+     * rejects either. Used at every offlineStore read that gates a visible
+     * response to a user action (the onboarding mandatory-install gate, the
+     * "In Text" search gate) so a stuck IndexedDB call degrades to a clear
+     * fallback instead of leaving the click unanswered. If the real promise
+     * eventually does settle after the timeout already fired, its result is
+     * silently discarded — the caller already moved on.
+     */
+    function _raceTimeout(promise, ms, fallback) {
+        return new Promise(function (resolve) {
+            var settled = false;
+            var timer = setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                resolve(fallback);
+            }, ms);
+            promise.then(function (v) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve(v);
+            }, function () {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve(fallback);
+            });
+        });
     }
 
     /**
@@ -1216,8 +1270,12 @@ PPP.app = (function () {
         var holder = document.createElement('div');
         holder.id = 'offlineAddLangs';
         panel.appendChild(holder);
+        // Timeout-hardened (Rājan 2026-07-26): a wedged IndexedDB read must
+        // not leave this panel's "add language" section blank forever —
+        // fall back to "shards not installed", the same default an absent
+        // store already uses.
         var shardsStatePromise = (PPP.offlineStore && PPP.offlineStore.getState)
-            ? PPP.offlineStore.getState('shards') : Promise.resolve(false);
+            ? _raceTimeout(PPP.offlineStore.getState('shards'), 4000, false) : Promise.resolve(false);
         Promise.all([
             PPP.downloader.fetchManifest(),
             PPP.downloader.getInstalledLangs(),
@@ -1936,15 +1994,31 @@ PPP.app = (function () {
      * sentence shards are installed (offlineStore state key 'shards', the
      * same one downloader.js persists at install time — see downloader.js
      * firstInstall/checkForUpdates). Otherwise render the install notice.
+     *
+     * Rājan field report (2026-07-26): store.getState('shards') can hang
+     * indefinitely on a real device (private browsing, a blocking tab, a
+     * wedged webview) — a plain .then()/.catch() leaves the click
+     * unanswered forever because a promise that never settles never
+     * rejects either. Raced against a short timeout (_raceTimeout) so ANY
+     * outcome other than a definite "installed" — falsy, rejected, OR
+     * timed out — shows the install notice within a few seconds. This also
+     * fixes the OLD behaviour of quietly calling proceed() on a store
+     * error/absence: since this feature shipped, proceed() runs a sentence
+     * search with nothing left to search online, which used to no-op just
+     * as silently as the hang itself.
      */
     function _requireTextSearchLibrary(proceed, onBlocked) {
         var store = PPP.offlineStore;
-        if (!store || !store.getState) { proceed(); return; }
-        store.getState('shards').then(function (installed) {
-            if (installed) { proceed(); return; }
+        if (!store || !store.getState) {
             if (onBlocked) onBlocked();
             _renderTextSearchInstallNotice();
-        }).catch(function () { proceed(); });
+            return;
+        }
+        _raceTimeout(store.getState('shards'), 4000, _OFFLINE_READ_TIMEOUT).then(function (installed) {
+            if (installed === true) { proceed(); return; }
+            if (onBlocked) onBlocked();
+            _renderTextSearchInstallNotice();
+        });
     }
 
     /**
@@ -4927,27 +5001,41 @@ PPP.app = (function () {
             maybeShowOfflineWorkButton();
             return;
         }
-        store.open().then(function () {
+        // Rājan field report (2026-07-26): a stuck IndexedDB read here left
+        // the onboarding purpose choice with NO install step at all — the
+        // user landed nowhere, forever, with nothing on screen to explain
+        // why. Raced against a short timeout (_raceTimeout) so a hung
+        // store.open()/getState() degrades to "treat as not installed yet"
+        // (the same as a genuinely fresh device) instead of hanging the
+        // gate closed. getResumeState() is a SEPARATE offlineStore/
+        // downloader read and gets its own timeout for the same reason —
+        // its own default (no resume found) already means "run the normal
+        // first-install flow", so timing it out is safe.
+        var stateRead = store.open().then(function () {
             return store.getState('localManifest');
         }).then(function (localManifest) {
             return store.getState('shards').then(function (shardsInstalled) {
-                if (localManifest && shardsInstalled) {
-                    return openFromIdb().then(function () {
-                        if (navigator.onLine) backgroundUpdateCheck();
-                    });
-                }
-                return PPP.downloader.getResumeState().then(function (resume) {
-                    if (resume) {
-                        // An install is already under way (e.g. a reload during
-                        // the mandatory install below, or one begun in an
-                        // earlier session) — loadData() already knows how to
-                        // open a partial library and continue downloading the
-                        // rest in the background.
-                        return loadData();
-                    }
-                    // True first use — the mandatory install prompt/flow.
-                    return startFirstInstallFlow();
+                return { localManifest: localManifest, shardsInstalled: shardsInstalled };
+            });
+        });
+        _raceTimeout(stateRead, 4000, null).then(function (state) {
+            if (state && state.localManifest && state.shardsInstalled) {
+                return openFromIdb().then(function () {
+                    if (navigator.onLine) backgroundUpdateCheck();
                 });
+            }
+            return _raceTimeout(PPP.downloader.getResumeState(), 4000, null).then(function (resume) {
+                if (resume) {
+                    // An install is already under way (e.g. a reload during
+                    // the mandatory install below, or one begun in an
+                    // earlier session) — loadData() already knows how to
+                    // open a partial library and continue downloading the
+                    // rest in the background.
+                    return loadData();
+                }
+                // True first use (or an unreadable/timed-out state, treated
+                // the same way) — the mandatory install prompt/flow.
+                return startFirstInstallFlow();
             });
         }).catch(function (err) {
             console.warn('Mandatory install gate failed, falling back to online load:', err);
