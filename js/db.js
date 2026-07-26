@@ -581,23 +581,90 @@ PPP.db = (function () {
     // (cache-busted + size-validated). A corrupt IDB copy is dropped and
     // refetched from network; a corrupt network response fails closed.
     // Returns Promise<ArrayBuffer>.
+    // Is the FULL offline library installed here? _offlineStoreUsable() only
+    // says the browser supports the store — it says nothing about what is in
+    // it, and the two were conflated. localManifest is written exactly once, when
+    // an install completes (see downloader), so that is the fence.
+    //
+    // The distinction decides whether a missing shard is a fault or normal. On
+    // an INSTALLED device it means the library is damaged, and quietly pulling
+    // ~9 MB over a metered connection is exactly what the all-or-nothing
+    // decision forbids (Rājan 2026-07-26). On a device with NO install — a
+    // returning user whose storage was cleared, or a browser without offline
+    // support — the network IS the normal path and must stay (Fable 2026-07-27:
+    // failing closed here blindly would kill search for a whole class of users).
+    var _libInstalled = null;
+    function _libraryInstalled() {
+        if (_libInstalled) return _libInstalled;
+        if (!_offlineStoreUsable()) { _libInstalled = Promise.resolve(false); return _libInstalled; }
+        _libInstalled = new Promise(function (resolve) {
+            var done = false;
+            var t = setTimeout(function () { if (!done) { done = true; resolve(false); } }, 4000);
+            PPP.offlineStore.getState('localManifest').then(function (m) {
+                if (done) return; done = true; clearTimeout(t); resolve(!!m);
+            }, function () { if (done) return; done = true; clearTimeout(t); resolve(false); });
+        });
+        return _libInstalled;
+    }
+    /** Forget the cached answer — call after an install or a repair. */
+    function resetLibraryInstalledCache() { _libInstalled = null; }
+
+    function _shardRepairError(shard) {
+        var e = new Error('Shard ' + shard.id + ' missing or corrupt in the installed library');
+        e.shardRepairNeeded = true;
+        e.shardId = shard.id;
+        return e;
+    }
+
     function _getShardGz(shard, signal) {
         if (_offlineStoreUsable()) {
             return PPP.offlineStore.getGz('shard:' + shard.id).then(function (gz) {
                 if (signal && signal.aborted) throw _abortError();
                 if (gz && _shardSizeOk(gz, shard)) return gz;   // hot path: trust IDB (sha256-checked at install) + cheap size recheck
-                if (gz) {
-                    // Wrong size → corrupt IDB copy. Drop it, refetch from network.
-                    console.warn('Corrupt IDB shard ' + shard.id + ' — deleting + refetching');
-                    return _deleteIdbShard(shard.id).then(function () { return _fetchValidatedShard(shard, signal); });
-                }
-                return _fetchValidatedShard(shard, signal);             // IDB miss → network
+                return _libraryInstalled().then(function (installed) {
+                    if (installed) {
+                        // Damaged library: say so, do not fetch behind the user.
+                        if (gz) {
+                            console.warn('Corrupt IDB shard ' + shard.id + ' — dropped, repair required');
+                            return _deleteIdbShard(shard.id).then(function () { throw _shardRepairError(shard); });
+                        }
+                        throw _shardRepairError(shard);
+                    }
+                    if (gz) {
+                        console.warn('Corrupt IDB shard ' + shard.id + ' — deleting + refetching');
+                        return _deleteIdbShard(shard.id).then(function () { return _fetchValidatedShard(shard, signal); });
+                    }
+                    return _fetchValidatedShard(shard, signal);         // no install → network is normal
+                });
             }).catch(function (err) {
-                if (err && err.name === 'AbortError') throw err;
+                if (err && (err.name === 'AbortError' || err.shardRepairNeeded)) throw err;
                 return _fetchValidatedShard(shard, signal);
             });
         }
         return _fetchValidatedShard(shard, signal);
+    }
+
+    /**
+     * Re-download ONE shard and write it back into the offline library.
+     * A single damaged shard costs a few MB to repair; it must never escalate
+     * into a full 342 MB reinstall (Fable, 2026-07-27).
+     */
+    function repairShard(shardId, signal) {
+        return _shardList().then(function (shards) {
+            var shard = null;
+            for (var i = 0; i < shards.length; i++) {
+                if (String(shards[i].id) === String(shardId)) { shard = shards[i]; break; }
+            }
+            if (!shard) throw new Error('Unknown shard ' + shardId);
+            return _fetchValidatedShard(shard, signal).then(function (gz) {
+                var key = 'shard:' + shard.id;
+                return PPP.offlineStore.putFile({
+                    key: key, packId: key,
+                    gz: new Blob([gz], { type: 'application/gzip' }),
+                    raw: shard.raw || 0
+                }).then(function () { resetLibraryInstalledCache(); return true; });
+            });
+        });
     }
 
     // Main-thread: open a decompressed shard buffer, run query (+count), free.
@@ -836,6 +903,8 @@ PPP.db = (function () {
         reloadMetaFromStore: reloadMetaFromStore,
         reloadSentencesFromStore: reloadSentencesFromStore,
         resetSentenceShards: resetSentenceShards,
+        repairShard: repairShard,
+        resetLibraryInstalledCache: resetLibraryInstalledCache,
         loadHtmlDB: loadHtmlDB,
         loadSentencesDB: loadSentencesDB,
         searchSentencesChunked: searchSentencesChunked,

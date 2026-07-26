@@ -871,8 +871,12 @@ PPP.app = (function () {
             if (auto) return beginInstall(manifest, _autoInstallLangs(manifest), true);
             showInstallPrompt(manifest, sizeMB);
         }).catch(function (err) {
-            console.warn('Manifest fetch failed, using legacy load:', err);
-            loadDataLegacy();
+            // A transient manifest failure used to skip the mandatory gate
+            // entirely and open the online app (Codex, 2026-07-26). One flaky
+            // request must not decide the product model — show the same error +
+            // Try again screen as any other install failure.
+            console.warn('Manifest fetch failed — install gate cannot start:', err);
+            _showInstallStalled(null, true);
         });
     }
 
@@ -1062,6 +1066,82 @@ PPP.app = (function () {
         return ' [' + first.name + ': ' + first.error + extra + ']';
     }
 
+    function _disarmInstallGuard() {
+        document.removeEventListener('click', _installGuardHandler, true);
+    }
+
+    /**
+     * Stall watchdog for the mandatory install.
+     *
+     * firstInstall() awaits store.getState('install') with no timeout, and a
+     * wedged IndexedDB (private browsing, an embedded webview, another tab
+     * holding a version-change transaction) neither resolves NOR rejects. The
+     * install promise then never settles, so the .then/.catch that disarm the
+     * click guard never run — and since the gate deliberately has no skip
+     * button, the app is frozen for good. Codex audit + Sabhā, 2026-07-26;
+     * all four reviewers reached this independently.
+     *
+     * A byte-level watchdog covers every wedge point at once, wherever it is:
+     * if nothing at all has moved for _INSTALL_STALL_MS, settle with
+     * {stalled:true} so the caller can show an error the user can act on.
+     */
+    var _INSTALL_STALL_MS = 45000;
+    function _withStallWatchdog(start, onTick) {
+        var timer = null, settled = false;
+        return new Promise(function (resolve, reject) {
+            function arm() {
+                if (timer) clearTimeout(timer);
+                timer = setTimeout(function () {
+                    if (settled) return;
+                    settled = true;
+                    reject({ stalled: true });
+                }, _INSTALL_STALL_MS);
+            }
+            arm();
+            start(function (p) {
+                if (settled) return;
+                arm();              // progress: restart the clock
+                onTick(p);
+            }).then(function (v) {
+                if (settled) return;
+                settled = true; clearTimeout(timer); resolve(v);
+            }, function (e) {
+                if (settled) return;
+                settled = true; clearTimeout(timer); reject(e);
+            });
+        });
+    }
+
+    /** Install cannot proceed — say so and offer a real way forward. This is
+     *  NOT a partial state: nothing is unlocked, the library is still required
+     *  (Rājan all-or-nothing). It only replaces a silent freeze with a message
+     *  and a button. */
+    function _showInstallStalled(langs, includeShards) {
+        ui.showLoading(i18n.t('installStalled'));
+        var bar = document.getElementById('progressBar');
+        if (!bar) return;
+        var old = document.getElementById('installStallRetryBtn');
+        if (old) old.remove();
+        var btn = document.createElement('button');
+        btn.id = 'installStallRetryBtn';
+        btn.type = 'button';
+        btn.className = 'search-button';
+        btn.style.marginTop = '8px';
+        btn.textContent = i18n.t('installRetryBtn');
+        btn.onclick = function () {
+            btn.remove();
+            // langs === null means we never got as far as the language prompt
+            // (manifest fetch failed) — restart the whole gate rather than
+            // guessing a selection on the user's behalf.
+            if (!langs) { startFirstInstallFlow(); return; }
+            PPP.downloader.fetchManifest().then(function (m) {
+                if (m) beginInstall(m, langs, includeShards);
+                else _showInstallStalled(langs, includeShards);
+            }).catch(function () { _showInstallStalled(langs, includeShards); });
+        };
+        bar.appendChild(btn);
+    }
+
     function beginInstall(manifest, langs, includeShards) {
         _installPct = 0;
         _installStarted = true;
@@ -1073,14 +1153,16 @@ PPP.app = (function () {
         _installInFlight = true;
         _ensureInstallListeners(langs, includeShards);
         _acquireWakeLock();
-        return PPP.downloader.firstInstall(function (p) {
+        return _withStallWatchdog(function (onProgress) {
+            return PPP.downloader.firstInstall(onProgress, langs, includeShards);
+        }, function (p) {
             var frac = p.totalBytes ? p.loadedBytes / p.totalBytes : 0;
             _installPct = Math.round(frac * 100);
             ui.updateProgress(frac);
             ui.setLoadingText(i18n.t('downloadingAll') + ' ' +
                 Math.round(p.loadedBytes / (1024 * 1024)) + ' / ' + totalMB + ' MB');
-        }, langs, includeShards).then(function () {
-            document.removeEventListener('click', _installGuardHandler, true);
+        }).then(function () {
+            _disarmInstallGuard();
             _installInFlight = false;
             _offlinePartial = false;
             _removeInstallListeners();
@@ -1088,10 +1170,17 @@ PPP.app = (function () {
             PPP.offlineStore.requestPersist();
             return openFromIdb();
         }).catch(function (err) {
-            document.removeEventListener('click', _installGuardHandler, true);
+            _disarmInstallGuard();
             _installInFlight = false;
             _releaseWakeLock();
             console.error('Offline install failed:', err);
+            if (err && err.stalled) {
+                // Nothing moved for 45 s — almost always wedged storage. Do not
+                // auto-resume behind a frozen screen; the user drives the retry.
+                _removeInstallListeners();
+                _showInstallStalled(langs, includeShards);
+                return;
+            }
             if (err && err.notEnoughStorage) {
                 // The device cannot fit the download. Say so plainly and stop.
                 // There is no "continue without it" any more (Rājan 2026-07-26,
@@ -1129,11 +1218,14 @@ PPP.app = (function () {
                     loadDataLegacy();
                 });
             }
-            // Partial progress is durable (resume state) — next start resumes.
-            // For THIS session, fall back to the legacy network path so the
-            // user is never stuck on a broken screen.
-            ui.hideLoading();
-            loadDataLegacy();
+            // A first install that failed outright. It used to drop into the
+            // online app here — which quietly turned the mandatory gate into an
+            // optional one, the exact opposite of the decision (Rājan
+            // 2026-07-26). Progress is durable, so the retry resumes where it
+            // stopped; until it succeeds the app stays gated, but never frozen
+            // and never silent.
+            _removeInstallListeners();
+            _showInstallStalled(langs, includeShards);
         });
     }
 
@@ -4762,6 +4854,15 @@ PPP.app = (function () {
             }
             console.error('Sentence search error:', err);
             var infoEl = document.getElementById('resultsInfo');
+            if (err && err.shardRepairNeeded) {
+                // A piece of the INSTALLED library is missing or damaged. It is
+                // no longer silently re-fetched (that made "all-or-nothing" a
+                // fiction and spent metered data behind the user's back) — say
+                // it plainly and offer a repair of that one shard, a few MB,
+                // never a 342 MB reinstall.
+                _renderShardRepairNotice(err.shardId);
+                return;
+            }
             if (!navigator.onLine) {
                 // P2: offline + sentence shards not installed (opted out, or an
                 // older offline install that predates shards). The shard fetch
@@ -4783,6 +4884,45 @@ PPP.app = (function () {
                 _setSearchButtonBusy(false);
             }
         });
+    }
+
+    /**
+     * "Part of the library is damaged" + Repair. Shown instead of the silent
+     * network re-fetch that used to happen at db.js _getShardGz (Fable
+     * 2026-07-27). Offline, the repair cannot run yet — say so; the same button
+     * works at the next online moment. The rest of the app keeps working: one
+     * damaged shard must not take everything down.
+     */
+    function _renderShardRepairNotice(shardId) {
+        var info = document.getElementById('resultsInfo');
+        if (!info) return;
+        info.innerHTML = '';
+        var msg = document.createElement('div');
+        msg.className = 'quotes-require-install';
+        msg.textContent = navigator.onLine
+            ? i18n.t('libraryPartDamaged')
+            : i18n.t('libraryPartDamagedOffline');
+        info.appendChild(msg);
+        if (!navigator.onLine) return;
+        var btn = document.createElement('button');
+        btn.id = 'shardRepairBtn';
+        btn.type = 'button';
+        btn.className = 'search-button';
+        btn.textContent = i18n.t('libraryRepairBtn');
+        btn.onclick = function () {
+            btn.disabled = true;
+            btn.textContent = i18n.t('libraryRepairing');
+            db.repairShard(shardId).then(function () {
+                ui.toast(i18n.t('libraryRepaired'));
+                doSearch();                     // the search the user actually wanted
+            }).catch(function (e) {
+                console.error('Shard repair failed:', e);
+                btn.disabled = false;
+                btn.textContent = i18n.t('libraryRepairBtn');
+                ui.toast(i18n.t('libraryRepairFailed'));
+            });
+        };
+        info.appendChild(btn);
     }
 
     /** Cancel the in-flight "In Text" (sentence) search, if any — aborts the

@@ -1519,3 +1519,65 @@ test.describe('core.sentences in the offline base', () => {
     });
   });
 });
+
+test.describe('The mandatory install cannot freeze the app (Codex + Sabhā, 2026-07-26)', () => {
+
+  test('P16. An install that never progresses ends in a message with Try again, not a permanent freeze', async ({ page }) => {
+    // The gate has no skip button by design (Rājan: all-or-nothing, "like any
+    // game — there is no partial download"). That makes a non-settling install
+    // fatal: firstInstall() awaits getState('install') with no timeout, and a
+    // wedged IndexedDB (private browsing, embedded webview, another tab holding
+    // a version-change transaction) neither resolves NOR rejects — so the
+    // .then/.catch that disarm the click guard never run and every button on
+    // the page answers with a toast forever. Codex flagged it CRITICAL and all
+    // three Sabhā members reached the same conclusion from the product side.
+    //
+    // The watchdog waits 45 s of total silence, hence the long timeout. That
+    // wait IS the subject: without it this test would hang until Playwright
+    // killed it, which is exactly the user's experience.
+    test.setTimeout(120000);
+
+    // The file-level beforeEach presets ppp_purpose for every test here, which
+    // skips the onboarding gate — and the gate is what triggers the mandatory
+    // install. Init scripts run in registration order, so removing it here
+    // (second) is what makes this path reachable at all.
+    await page.addInitScript(() => {
+      try {
+        localStorage.removeItem('ppp_auto_install');
+        localStorage.removeItem('ppp_purpose');
+        localStorage.setItem('preferredLanguage', 'en');
+      } catch (e) {}
+    });
+    await page.goto('./');
+
+    // An install that never settles: no progress event, no resolve, no reject.
+    await page.waitForFunction(() => window.PPP && PPP.downloader, { timeout: 20000 });
+    await page.evaluate(() => {
+      PPP.downloader.firstInstall = function () { return new Promise(function () {}); };
+    });
+
+    // initOnboarding always opens at the language stage when no purpose is set,
+    // whatever preferredLanguage says — so pick a language, then a purpose.
+    await page.locator('button.onb-lang').first().click();   // English
+    await page.click('.onb-col-a .onb-go');                  // "Browse lectures"
+    await expect(page.locator('#installOfflineBtn')).toBeVisible({ timeout: 20000 });
+    await page.click('#installOfflineBtn');
+
+    // The watchdog must turn the silence into something the user can act on.
+    await expect(page.locator('#installStallRetryBtn')).toBeVisible({ timeout: 75000 });
+    await expect(page.locator('#progressBar')).toContainText('cannot continue');
+
+    // And the guard is disarmed — clicks reach their targets again instead of
+    // being swallowed. (Still not a partial state: nothing was installed, the
+    // library is still required. Only the freeze is gone.)
+    const clickReached = await page.evaluate(() => {
+      let reached = false;
+      const b = document.querySelector('button.features-btn');
+      b.addEventListener('click', function () { reached = true; }, { once: true });
+      b.click();
+      return reached;
+    });
+    expect(clickReached).toBe(true);
+  });
+
+});
