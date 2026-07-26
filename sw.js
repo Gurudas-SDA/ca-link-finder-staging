@@ -194,17 +194,37 @@ self.addEventListener('fetch', function (event) {
 
     // Static assets: cache-first. Precache keys are stored WITH ?v=<hash8>
     // (same sha256[:8] as cache_bust.py), and only ONE version of each path
-    // exists per cache, so matching with ignoreSearch:true is safe and also
-    // covers refs without ?v= (fonts.css woff2 refs, vendor libs,
-    // guide/menu-data.js?v=1).
+    // exists per cache — but "per cache" is the catch. Navigations are
+    // network-first, so a fresh index.html carrying NEW ?v= hashes can render
+    // while the PREVIOUS shell cache is still the active one (the new SW is
+    // installed but has not activated yet). Matching with ignoreSearch:true in
+    // that window hands the new index.html the OLD app.js, and the page breaks
+    // in a way no test sees. Codex audit, 2026-07-26.
+    //
+    // So a request carrying an explicit ?v= must be satisfied EXACTLY or go to
+    // the network. The loose match survives as the offline last resort, and
+    // stays the normal path for refs without ?v= (fonts.css woff2 refs, vendor
+    // libs, guide/menu-data.js?v=1 — where the version is not a content hash).
+    const versioned = url.searchParams.has('v');
     event.respondWith((async function () {
-        const hit = await caches.match(request, { ignoreSearch: true });
+        const hit = await caches.match(request, { ignoreSearch: !versioned });
         if (hit) return hit;
-        const resp = await fetch(request);
-        if (resp && resp.ok && (resp.type === 'basic' || resp.type === 'default')) {
-            const cache = await caches.open(CACHE);
-            cache.put(request, resp.clone()).catch(function () {});
+        try {
+            const resp = await fetch(request);
+            if (resp && resp.ok && (resp.type === 'basic' || resp.type === 'default')) {
+                const cache = await caches.open(CACHE);
+                cache.put(request, resp.clone()).catch(function () {});
+            }
+            return resp;
+        } catch (err) {
+            // Offline and this exact version is not cached. A stale copy of the
+            // right file beats a dead page — but only as a last resort, never
+            // ahead of the network the way it used to be.
+            if (versioned) {
+                const loose = await caches.match(request, { ignoreSearch: true });
+                if (loose) return loose;
+            }
+            throw err;
         }
-        return resp;
     })());
 });

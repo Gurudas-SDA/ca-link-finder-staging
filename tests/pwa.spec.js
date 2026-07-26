@@ -1520,6 +1520,97 @@ test.describe('core.sentences in the offline base', () => {
   });
 });
 
+test.describe('Service Worker cannot pair a new index.html with old JS (Codex, 2026-07-26)', () => {
+
+  test('P18. A versioned asset request is never answered from a different version in cache', async ({ page }) => {
+    // Navigations are network-first, so right after a deploy a fresh index.html
+    // with NEW ?v= hashes can render while the PREVIOUS shell cache is still
+    // active. The static-asset branch matched ignoreSearch:true, so it happily
+    // returned the OLD app.js for a request naming the new one — the exact skew
+    // that broke production on 2026-07-26, invisible to every test.
+    test.setTimeout(90000);
+
+    await page.goto('./');
+    await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+
+    // Wait for the shell precache to exist (poll from Node — an async predicate
+    // inside waitForFunction resolves truthy immediately and ends it vacuously).
+    let shell = null;
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline && !shell) {
+      shell = await page.evaluate(async () => {
+        const names = await caches.keys();
+        const n = names.find(x => x.indexOf('ca-shell-') === 0);
+        if (!n) return null;
+        const c = await caches.open(n);
+        return (await c.keys()).length >= 10 ? n : null;
+      });
+      if (!shell) await page.waitForTimeout(500);
+    }
+    expect(shell, 'shell cache never filled').not.toBeNull();
+
+    // Make the ONLY cached entry for this path a stale version. Without
+    // dropping the precached real one first, caches.match(ignoreSearch) could
+    // return that instead and the test would pass on the old code too.
+    const planted = await page.evaluate(async (name) => {
+      const c = await caches.open(name);
+      const keys = await c.keys();
+      let removed = 0;
+      for (const k of keys) {
+        if (new URL(k.url).pathname.endsWith('/js/app.js')) { await c.delete(k); removed++; }
+      }
+      await c.put('js/app.js?v=stale001',
+        new Response('/* STALE-CACHED-BODY */', { headers: { 'Content-Type': 'application/javascript' } }));
+      return removed;
+    }, shell);
+    expect(planted, 'precached js/app.js not found — cache layout changed').toBeGreaterThan(0);
+
+    // Ask for a DIFFERENT version. The old code answered this from the stale
+    // cache entry; it must now go to the network and get the real file.
+    const body = await page.evaluate(() =>
+      fetch('js/app.js?v=fresh002').then(r => r.text()));
+
+    expect(body).not.toContain('STALE-CACHED-BODY');
+    expect(body).toContain('PPP Link Finder');
+  });
+
+  test('P18b. Unversioned assets still come from cache (the loose match is not gone)', async ({ page }) => {
+    // The fix must not turn every cache hit into a network round-trip: refs
+    // without ?v= (woff2 from fonts.css, vendor libs) rely on the loose match.
+    test.setTimeout(90000);
+
+    await page.goto('./');
+    await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+
+    let shell = null;
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline && !shell) {
+      shell = await page.evaluate(async () => {
+        const names = await caches.keys();
+        const n = names.find(x => x.indexOf('ca-shell-') === 0);
+        if (!n) return null;
+        const c = await caches.open(n);
+        return (await c.keys()).length >= 10 ? n : null;
+      });
+      if (!shell) await page.waitForTimeout(500);
+    }
+    expect(shell).not.toBeNull();
+
+    await page.evaluate(async (name) => {
+      const c = await caches.open(name);
+      await c.put('unversioned-probe.txt?ignored=1',
+        new Response('FROM-CACHE', { headers: { 'Content-Type': 'text/plain' } }));
+    }, shell);
+
+    // No ?v= on the request, and the network would 404 — the loose match must
+    // still answer it.
+    const body = await page.evaluate(() =>
+      fetch('unversioned-probe.txt').then(r => r.text()).catch(e => 'ERR:' + e.message));
+    expect(body).toContain('FROM-CACHE');
+  });
+
+});
+
 test.describe('ZIP export uses the installed library (Rājan, 2026-07-26)', () => {
   test.use({ serviceWorkers: 'block' });
 
