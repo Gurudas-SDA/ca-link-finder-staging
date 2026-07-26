@@ -2137,6 +2137,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
   });
 
   test('39b. In Text on-screen: matched word carries .sent-word-hit; the sentence line is yellow, the word green', async ({ page }) => {
+    test.setTimeout(120000);
     await page.goto('./');
     await waitForAppReady(page);
 
@@ -2149,10 +2150,17 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
     // Rendered colours: run a real In Text search and read computed styles of
     // the on-screen sentence line + the highlighted word inside it.
+    // "In Text" streams 21 shards (Phase B chunked search) — Rājan's own
+    // measurements put this at 15-20s on a warm desktop and every other
+    // sentence-search test in this suite waits up to 90s for the same
+    // `#resultsInfo strong` / row signal (see e.g. tests 36f, 37, 43+). The
+    // 20s timeout this test used to have was simply too tight — an idle/cold
+    // run legitimately takes >20s with no functional regression (verified
+    // live: correct markup, correct colours, just slower than the wait).
     await useQuotesView(page);
     await page.fill('#searchTerm', 'krishna');
     await page.keyboard.press('Enter');
-    await page.waitForSelector('#resultsTable tbody .match-hint.sentence-hit', { timeout: 20000 });
+    await page.waitForSelector('#resultsTable tbody .match-hint.sentence-hit', { timeout: 90000 });
 
     const colours = await page.evaluate(() => {
       const line = document.querySelector('#resultsTable tbody .match-hint.sentence-hit');
@@ -2476,6 +2484,7 @@ test.describe('Online-first UX (no forced install)', () => {
   });
 
   test('42. Checkbox-sync: toggling one row syncs every row of the same lecture (sentence search)', async ({ page }) => {
+    test.setTimeout(120000);
     await page.goto('./');
     await waitForAppReady(page);
     await switchLanguage(page, 'en');
@@ -2487,7 +2496,10 @@ test.describe('Online-first UX (no forced install)', () => {
     await useQuotesView(page);
     await page.fill('#searchTerm', 'krishna');
     await page.keyboard.press('Enter');
-    await page.waitForSelector('.select-checkbox[data-lang="en"]', { timeout: 20000 });
+    // Same 21-shard "In Text" stream as test 39b — 20s was too tight (flaky
+    // under load: passed alone, failed in the full run); align with the
+    // suite's own 90s convention for this operation.
+    await page.waitForSelector('.select-checkbox[data-lang="en"]', { timeout: 90000 });
 
     // Find a lecture nr that appears in at least two EN sibling checkboxes.
     const nr = await page.evaluate(() => {
@@ -2519,6 +2531,48 @@ test.describe('Online-first UX (no forced install)', () => {
     await page.locator(sib('en')).last().uncheck();
     expect(await page.locator(sib('en') + ':checked').count()).toBe(0);
     await expect(page.locator('#downloadSelectedBtn')).toBeDisabled();
+  });
+
+  test('42b. Cancel: stopping an in-flight "In Text" search leaves a clean, reusable UI', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+
+    await useQuotesView(page);
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+
+    // The button flips to Cancel synchronously the instant the shard loop
+    // starts (well before the first shard's fetch resolves) — wait for that,
+    // then cancel immediately to keep this deterministic (not a race against
+    // the search finishing first).
+    const cancelBtn = page.locator('.search-row .search-button');
+    await expect(cancelBtn).toHaveClass(/is-cancel/, { timeout: 10000 });
+    await expect(cancelBtn).toContainText(/Cancel/i);
+    await expect(page.locator('#progressBar')).toBeVisible();
+    await cancelBtn.click();
+
+    // Busy lock releases promptly (no stuck "Searching… n/21").
+    await page.waitForFunction(() => (
+      window.PPP && PPP.app._isSentenceSearchBusyForTest && PPP.app._isSentenceSearchBusyForTest() === false
+    ), { timeout: 10000 });
+    await expect(page.locator('#progressBar')).toBeHidden();
+
+    // Button is back to plain "Search", no residue on the results area.
+    await expect(cancelBtn).not.toHaveClass(/is-cancel/);
+    await expect(cancelBtn).toContainText(/^Search$/i);
+    expect(await page.locator('#resultsTable tbody .match-hint.sentence-hit').count()).toBe(0);
+
+    // A new search can start immediately and completes normally.
+    await page.fill('#searchTerm', 'rice');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsTable tbody .match-hint.sentence-hit', { timeout: 90000 });
+    expect(await page.locator('#resultsTable tbody .match-hint.sentence-hit').count()).toBeGreaterThan(0);
+    await expect(cancelBtn).not.toHaveClass(/is-cancel/);
   });
 
   test('43. "In Text" search offline (shards not installed) shows a clean message, not a raw error', async ({ page }) => {

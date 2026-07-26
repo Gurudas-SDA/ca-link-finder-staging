@@ -653,6 +653,15 @@ h1 {
 .search-bar button.search-button:hover {
     background: linear-gradient(135deg, var(--btn-gold-dark), var(--btn-gold));
 }
+/* Cancel state: same button, while an "In Text" sentence search (15-20s+
+   shard stream) is in flight — distinct red so it doesn't read as "Search"
+   again (Rājan request: no way to stop a running text search). */
+.search-bar button.search-button.is-cancel {
+    background: linear-gradient(135deg, #c0392b, #e74c3c);
+}
+.search-bar button.search-button.is-cancel:hover {
+    background: linear-gradient(135deg, #a93226, #c0392b);
+}
 
 /* ===== HELP BUTTON (left of search bar) ===== */
 .search-row {

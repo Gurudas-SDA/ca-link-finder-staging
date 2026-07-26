@@ -493,17 +493,41 @@ PPP.db = (function () {
         _shardsPromise = null;
     }
 
+    // Cancellation: a chunked sentence search may be given an AbortSignal. All
+    // helpers below accept it optionally and reject with a distinguishable
+    // AbortError as soon as they notice it fired — the shard loop checks
+    // between shards, and the network fetch aborts the in-flight XHR itself
+    // rather than just ignoring its result (Rājan: cancel must stop real work,
+    // not just hide the progress text).
+    function _abortError() {
+        var e = new Error('Search cancelled');
+        e.name = 'AbortError';
+        return e;
+    }
+
     // Fetch a gz shard over the network (XHR arraybuffer, same-origin baseline).
-    function _fetchGzBytes(url) {
+    // `signal` (optional AbortSignal): aborts the XHR in-flight and rejects
+    // with an AbortError instead of resolving/erroring normally.
+    function _fetchGzBytes(url, signal) {
         return new Promise(function (resolve, reject) {
+            if (signal && signal.aborted) { reject(_abortError()); return; }
             var xhr = new XMLHttpRequest();
             xhr.open('GET', url, true);
             xhr.responseType = 'arraybuffer';
+            var onAbort = function () {
+                xhr.abort();
+                reject(_abortError());
+            };
+            if (signal) signal.addEventListener('abort', onAbort);
+            function cleanup() {
+                if (signal) signal.removeEventListener('abort', onAbort);
+            }
             xhr.onload = function () {
+                cleanup();
                 if (xhr.status === 200 || xhr.status === 0) resolve(xhr.response);
                 else reject(new Error('HTTP ' + xhr.status + ' loading ' + url));
             };
-            xhr.onerror = function () { reject(new Error('Network error loading ' + url)); };
+            xhr.onerror = function () { cleanup(); reject(new Error('Network error loading ' + url)); };
             xhr.send();
         });
     }
@@ -541,9 +565,9 @@ PPP.db = (function () {
     // stale/updated shard at the same path can't be served from the SW cache),
     // then size-validated. Fails closed on a size mismatch — never opens a
     // truncated/corrupt buffer in sql.js.
-    function _fetchValidatedShard(shard) {
+    function _fetchValidatedShard(shard, signal) {
         var netUrl = shard.path + (shard.sha256 ? ('?v=' + String(shard.sha256).slice(0, 16)) : '');
-        return _fetchGzBytes(netUrl).then(function (gz) {
+        return _fetchGzBytes(netUrl, signal).then(function (gz) {
             if (!_shardSizeOk(gz, shard)) {
                 throw new Error('Corrupt/partial shard ' + shard.id + ' (size '
                     + (gz && gz.byteLength) + ' != ' + shard.size + ')');
@@ -557,19 +581,23 @@ PPP.db = (function () {
     // (cache-busted + size-validated). A corrupt IDB copy is dropped and
     // refetched from network; a corrupt network response fails closed.
     // Returns Promise<ArrayBuffer>.
-    function _getShardGz(shard) {
+    function _getShardGz(shard, signal) {
         if (_offlineStoreUsable()) {
             return PPP.offlineStore.getGz('shard:' + shard.id).then(function (gz) {
+                if (signal && signal.aborted) throw _abortError();
                 if (gz && _shardSizeOk(gz, shard)) return gz;   // hot path: trust IDB (sha256-checked at install) + cheap size recheck
                 if (gz) {
                     // Wrong size → corrupt IDB copy. Drop it, refetch from network.
                     console.warn('Corrupt IDB shard ' + shard.id + ' — deleting + refetching');
-                    return _deleteIdbShard(shard.id).then(function () { return _fetchValidatedShard(shard); });
+                    return _deleteIdbShard(shard.id).then(function () { return _fetchValidatedShard(shard, signal); });
                 }
-                return _fetchValidatedShard(shard);             // IDB miss → network
-            }).catch(function () { return _fetchValidatedShard(shard); });
+                return _fetchValidatedShard(shard, signal);             // IDB miss → network
+            }).catch(function (err) {
+                if (err && err.name === 'AbortError') throw err;
+                return _fetchValidatedShard(shard, signal);
+            });
         }
-        return _fetchValidatedShard(shard);
+        return _fetchValidatedShard(shard, signal);
     }
 
     // Main-thread: open a decompressed shard buffer, run query (+count), free.
@@ -647,9 +675,12 @@ PPP.db = (function () {
      * Runs the given `sql` / `countSql` (built by search.buildTranscriptSQL)
      * once per shard, one shard resident at a time, then merges + re-caps.
      * `onProgress(done, total)` fires after each shard completes.
+     * `signal` (optional AbortSignal): checked between shards AND handed to
+     * the network fetch so a cancel aborts the in-flight request too, not
+     * just the loop — rejects with an AbortError as soon as it fires.
      * Resolves { rows, count, lectures } (rows already capped to params.$limit).
      */
-    function searchSentencesChunked(sql, countSql, params, onProgress) {
+    function searchSentencesChunked(sql, countSql, params, onProgress, signal) {
         return _getSentenceShards().then(function (shards) {
             var total = shards.length;
             if (!total) throw new Error('No sentence shards in manifest');
@@ -659,9 +690,11 @@ PPP.db = (function () {
             var idx = 0;
 
             function next() {
+                if (signal && signal.aborted) return Promise.reject(_abortError());
                 if (idx >= total) return Promise.resolve();
                 var shard = shards[idx];
-                return _getShardGz(shard).then(function (gz) {
+                return _getShardGz(shard, signal).then(function (gz) {
+                    if (signal && signal.aborted) throw _abortError();
                     return _shardQueryClose(gz, sql, countSql, params);
                 }).then(function (res) {
                     if (res && res.rows && res.rows.length) {

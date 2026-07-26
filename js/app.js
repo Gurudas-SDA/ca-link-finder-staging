@@ -3131,7 +3131,14 @@ PPP.app = (function () {
         track('quick-action', { action: 'recommendations' });
         var div = document.getElementById('recommendationsList');
         var resultsTable = document.getElementById('resultsTable');
-        if (div.style.display !== 'none' && div.style.display !== '') {
+        // Toggle state is tracked via navView (set synchronously below), NOT
+        // div.style.display: the panel's content — and its display:'block' —
+        // is only applied once the async DB query resolves (renderRecommendationsHTML).
+        // A second call arriving before that promise settles used to read
+        // div.style.display as still '' and re-enter the "open" branch instead
+        // of closing, leaving #resultsTable stuck hidden (flaky under load —
+        // Rājan/Codex report, 2026-07-26, test 50l).
+        if (navView === 'topSearches') {
             // Toggle OFF — panel closes, no browse view is active anymore.
             div.style.display = 'none';
             if (resultsTable) resultsTable.style.display = '';
@@ -3228,7 +3235,10 @@ PPP.app = (function () {
     function showTopics() {
         var div = document.getElementById('topicsList');
         var resultsTable = document.getElementById('resultsTable');
-        if (div.style.display !== 'none' && div.style.display !== '') {
+        // See showRecommendations() above: toggle state must be read from
+        // transcriptView (set synchronously), not div.style.display, which
+        // is only applied once the async DB query resolves.
+        if (transcriptView === 'byTopic') {
             // Toggle OFF — By Topic no longer the active transcript view.
             div.style.display = 'none';
             if (resultsTable) resultsTable.style.display = '';
@@ -4315,6 +4325,12 @@ PPP.app = (function () {
     // and the catch tail of performSentenceSearch so it can never stick at
     // true after an error.
     var _sentenceSearchBusy = false;
+    // AbortController for the CURRENTLY in-flight performSentenceSearch run
+    // (null when idle). Cancel button wiring calls .abort() on this; the
+    // shard loop in db.searchSentencesChunked notices and stops, the busy
+    // lock still gets released in performSentenceSearch's own finally-style
+    // tail (single source of truth — cancel never clears the flag itself).
+    var _sentenceSearchAbort = null;
 
     // Extract the flat, diacritic-folded, whole-word list a search matched on
     // (mirrors the word-splitting rule in search.js buildTranscriptSQL).
@@ -4354,6 +4370,8 @@ PPP.app = (function () {
         }
 
         _sentenceSearchBusy = true;
+        _sentenceSearchAbort = new AbortController();
+        _setSearchButtonBusy(true);
 
         _sentenceParsed = parsed;
         _sentenceTerm = myTerm;
@@ -4368,7 +4386,7 @@ PPP.app = (function () {
             if (!stillCurrent()) return;
             ui.updateProgress(done / total);
             ui.showLoading(i18n.t('searching') + ' ' + done + '/' + total + '…');
-        }).then(function (res) {
+        }, _sentenceSearchAbort.signal).then(function (res) {
             // Final gate before ANY render / persist: a newer search or a
             // mode/language switch since we started means these rows are
             // stale — never leak them into the current view.
@@ -4395,6 +4413,13 @@ PPP.app = (function () {
             // run rejecting must not overwrite the live view.
             if (!stillCurrent()) return;
             ui.hideLoading();
+            if (err && err.name === 'AbortError') {
+                // User-initiated cancel (Cancel button) — not a real error.
+                // Leave whatever results/summary were on screen before this
+                // search started untouched (nothing was rendered for this
+                // run), just stop the spinner. No error text, no toast.
+                return;
+            }
             console.error('Sentence search error:', err);
             var infoEl = document.getElementById('resultsInfo');
             if (!navigator.onLine) {
@@ -4407,13 +4432,50 @@ PPP.app = (function () {
                 infoEl.innerHTML = '<strong>Error: ' + utils.escapeHtml(err.message) + '</strong>';
             }
         }).then(function () {
-            // ALWAYS release the busy lock for THIS run (success or error), so
-            // it can never stick at true. Only clear the flag if no newer
-            // search has been issued since — an older run finishing after it
-            // was superseded must not unlock UI actions on behalf of the
-            // newer, still in-flight run (which owns the lock now).
-            if (mySeq === _sentenceSearchSeq) _sentenceSearchBusy = false;
+            // ALWAYS release the busy lock for THIS run (success, error or
+            // cancel), so it can never stick at true. Only clear the flag if
+            // no newer search has been issued since — an older run finishing
+            // after it was superseded must not unlock UI actions on behalf of
+            // the newer, still in-flight run (which owns the lock now).
+            if (mySeq === _sentenceSearchSeq) {
+                _sentenceSearchBusy = false;
+                _sentenceSearchAbort = null;
+                _setSearchButtonBusy(false);
+            }
         });
+    }
+
+    /** Cancel the in-flight "In Text" (sentence) search, if any — aborts the
+     *  underlying shard fetch loop (db.searchSentencesChunked) and lets
+     *  performSentenceSearch's own cleanup tail release the busy lock and
+     *  restore the Search button. A no-op if nothing is running. */
+    function cancelSentenceSearch() {
+        if (_sentenceSearchAbort) _sentenceSearchAbort.abort();
+    }
+
+    /** Search button click dispatcher: while a sentence search is in flight
+     *  the same visible button doubles as Cancel (Rājan request — the user
+     *  had no way to stop a 15-20s+ "In Text" search). Direct calls to
+     *  PPP.app.search() (tests, keyboard Enter, filters) are untouched and
+     *  keep the existing busy-lock-refuses-with-a-toast behavior (test 36f) —
+     *  this dispatcher only changes what CLICKING THE BUTTON does. */
+    function searchOrCancel() {
+        if (_sentenceSearchBusy && searchMode === 'sentences') {
+            cancelSentenceSearch();
+            return;
+        }
+        doSearch();
+    }
+
+    /** Swap the search button between its normal "Search" label/behavior and
+     *  a "Cancel" label while a sentence search is in flight. Purely visual —
+     *  searchOrCancel() (wired to the button's onclick) decides the actual
+     *  behavior from _sentenceSearchBusy/searchMode, not from this class. */
+    function _setSearchButtonBusy(isBusy) {
+        var btn = document.querySelector('.search-row .search-button');
+        if (!btn) return;
+        btn.classList.toggle('is-cancel', !!isBusy);
+        btn.textContent = i18n.t(isBusy ? 'cancelSearch' : 'searchButton');
     }
 
     // Re-run the stored sentence query with a very high limit and export to Excel.
@@ -4935,6 +4997,8 @@ PPP.app = (function () {
     return {
         init: init,
         search: doSearch,
+        searchOrCancel: searchOrCancel,
+        cancelSentenceSearch: cancelSentenceSearch,
         setLanguage: setLanguage,
         showLatestFiles: showLatestFiles,
         showBy2026: showBy2026,
