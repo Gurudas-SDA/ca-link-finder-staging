@@ -581,10 +581,17 @@ PPP.db = (function () {
     // (cache-busted + size-validated). A corrupt IDB copy is dropped and
     // refetched from network; a corrupt network response fails closed.
     // Returns Promise<ArrayBuffer>.
-    // Is the FULL offline library installed here? _offlineStoreUsable() only
-    // says the browser supports the store — it says nothing about what is in
-    // it, and the two were conflated. localManifest is written exactly once, when
-    // an install completes (see downloader), so that is the fence.
+    // Are the sentence SHARDS installed here? _offlineStoreUsable() only says
+    // the browser supports the store — it says nothing about what is in it, and
+    // the two were conflated.
+    //
+    // The fence is state 'shards', not 'localManifest'. localManifest means "an
+    // install completed", which does NOT imply the shards are present: they were
+    // an opt-in extra for a long time and are still added separately by
+    // addShards(). Keying on localManifest made every shard read on such a
+    // device fail closed with "the library is damaged" — test 31f caught it the
+    // moment resetLibraryInstalledCache started being called and the memo
+    // stopped hiding the mistake behind a stale `false`.
     //
     // The distinction decides whether a missing shard is a fault or normal. On
     // an INSTALLED device it means the library is damaged, and quietly pulling
@@ -593,21 +600,21 @@ PPP.db = (function () {
     // returning user whose storage was cleared, or a browser without offline
     // support — the network IS the normal path and must stay (Fable 2026-07-27:
     // failing closed here blindly would kill search for a whole class of users).
-    var _libInstalled = null;
-    function _libraryInstalled() {
-        if (_libInstalled) return _libInstalled;
-        if (!_offlineStoreUsable()) { _libInstalled = Promise.resolve(false); return _libInstalled; }
-        _libInstalled = new Promise(function (resolve) {
+    var _shardsInstalledMemo = null;
+    function _shardsInstalled() {
+        if (_shardsInstalledMemo) return _shardsInstalledMemo;
+        if (!_offlineStoreUsable()) { _shardsInstalledMemo = Promise.resolve(false); return _shardsInstalledMemo; }
+        _shardsInstalledMemo = new Promise(function (resolve) {
             var done = false;
             var t = setTimeout(function () { if (!done) { done = true; resolve(false); } }, 4000);
-            PPP.offlineStore.getState('localManifest').then(function (m) {
-                if (done) return; done = true; clearTimeout(t); resolve(!!m);
+            PPP.offlineStore.getState('shards').then(function (installed) {
+                if (done) return; done = true; clearTimeout(t); resolve(installed === true);
             }, function () { if (done) return; done = true; clearTimeout(t); resolve(false); });
         });
-        return _libInstalled;
+        return _shardsInstalledMemo;
     }
     /** Forget the cached answer — call after an install or a repair. */
-    function resetLibraryInstalledCache() { _libInstalled = null; }
+    function resetLibraryInstalledCache() { _shardsInstalledMemo = null; }
 
     function _shardRepairError(shard) {
         var e = new Error('Shard ' + shard.id + ' missing or corrupt in the installed library');
@@ -621,7 +628,7 @@ PPP.db = (function () {
             return PPP.offlineStore.getGz('shard:' + shard.id).then(function (gz) {
                 if (signal && signal.aborted) throw _abortError();
                 if (gz && _shardSizeOk(gz, shard)) return gz;   // hot path: trust IDB (sha256-checked at install) + cheap size recheck
-                return _libraryInstalled().then(function (installed) {
+                return _shardsInstalled().then(function (installed) {
                     if (installed) {
                         // Damaged library: say so, do not fetch behind the user.
                         // Do NOT delete the bad copy first — repairShard
