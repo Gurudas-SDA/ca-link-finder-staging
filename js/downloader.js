@@ -722,6 +722,65 @@ PPP.downloader = (function () {
         });
     }
 
+    /**
+     * Add the sentence shards (offline text search, ~200 MB) to an ALREADY
+     * installed library that opted out of them at install time. Mirrors
+     * addLanguages(): downloads + applies only the shards (core/EN/other
+     * languages are already present), then persists `shards: true` and folds
+     * the shard list into `localManifest` so checkForUpdates' delta logic
+     * treats them as present from now on (see _manifestForStore(manifest,
+     * true) — same shape, built here without re-fetching the manifest twice).
+     * onProgress({loadedBytes, totalBytes}) mirrors addLanguages.
+     */
+    function addShards(onProgress) {
+        return fetchManifest().then(function (manifest) {
+            var work = [];
+            var totalBytes = 0;
+            (manifest.sentenceShards || []).forEach(function (s) {
+                if (s) { work.push({ type: 'shard', name: s.id, entry: s }); totalBytes += (s.size || 0); }
+            });
+            if (work.length === 0) {
+                return store.setState('shards', true).then(function () { return { added: true }; });
+            }
+            var install = { completedCore: {}, completedPacks: {}, completedShards: {} };
+            var baseBytes = 0;
+            var itemBytes = {};
+            var lastEmit = 0;
+            function emit(force) {
+                if (!onProgress) return;
+                var now = Date.now();
+                if (!force && now - lastEmit < 100) return;
+                lastEmit = now;
+                var loaded = baseBytes;
+                for (var k in itemBytes) loaded += itemBytes[k];
+                onProgress({ loadedBytes: Math.min(loaded, totalBytes), totalBytes: totalBytes });
+            }
+            emit(true);
+            return _runPool(work, function (item) {
+                itemBytes[item.name] = 0;
+                return _processItem(
+                    item, install,
+                    function (n) { itemBytes[item.name] += n; emit(); },
+                    function () { itemBytes[item.name] = 0; emit(true); }
+                ).then(function () {
+                    delete itemBytes[item.name];
+                    baseBytes += item.entry.size;
+                    emit(true);
+                });
+            }, CONCURRENCY).then(function () {
+                emit(true);
+                return store.getState('localManifest').then(function (lm) {
+                    var updated = {};
+                    if (lm) Object.keys(lm).forEach(function (k) { updated[k] = lm[k]; });
+                    updated.sentenceShards = manifest.sentenceShards || [];
+                    return store.commitState({ shards: true, localManifest: updated }, []);
+                });
+            }).then(function () {
+                return { added: true };
+            });
+        });
+    }
+
     return {
         fetchManifest: fetchManifest,
         firstInstall: firstInstall,
@@ -729,6 +788,7 @@ PPP.downloader = (function () {
         computeInstallBytes: computeInstallBytes,
         getInstalledLangs: getInstalledLangs,
         addLanguages: addLanguages,
+        addShards: addShards,
         getResumeState: getResumeState,
         isCoreReady: isCoreReady
     };

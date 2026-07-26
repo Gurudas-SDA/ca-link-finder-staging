@@ -625,16 +625,32 @@ PPP.app = (function () {
     }
 
     // Cache the EN-base size (MB) so the offline-first-run/offer copy can show a
-    // computed value even before a manifest is fetched this session.
+    // computed value even before a manifest is fetched this session. Also
+    // caches the sentence-shards total (the "Offline text search" opt-in
+    // pack set) for the mobile "In Text" size warning below — same pattern,
+    // read from the SAME manifest fetch so no extra request is needed.
     function _cacheBaseMB(manifest) {
         try {
             var mb = Math.round(PPP.downloader.computeInstallBytes(manifest, []) / 1048576);
             if (mb > 0) localStorage.setItem('ppp_base_mb', String(mb));
         } catch (e) {}
+        try {
+            var shardBytes = 0;
+            (manifest.sentenceShards || []).forEach(function (s) { if (s && s.size) shardBytes += s.size; });
+            var shardMB = Math.round(shardBytes / 1048576);
+            if (shardMB > 0) localStorage.setItem('ppp_shards_mb', String(shardMB));
+        } catch (e) {}
     }
     function _baseMB() {
         try { var v = parseInt(localStorage.getItem('ppp_base_mb'), 10); if (v > 0) return v; } catch (e) {}
         return 151; // EN base fallback (core + prem-en + raw-en ≈ 150.8 MB)
+    }
+    // Measured (2026-07-26): a full "In Text" search transfers ~200.6 MB of
+    // sentence shards. Fallback used until a manifest fetch has cached the
+    // real total in ppp_shards_mb (see _cacheBaseMB above).
+    function _shardsMB() {
+        try { var v = parseInt(localStorage.getItem('ppp_shards_mb'), 10); if (v > 0) return v; } catch (e) {}
+        return 200;
     }
 
     /**
@@ -1137,11 +1153,14 @@ PPP.app = (function () {
         var holder = document.createElement('div');
         holder.id = 'offlineAddLangs';
         panel.appendChild(holder);
+        var shardsStatePromise = (PPP.offlineStore && PPP.offlineStore.getState)
+            ? PPP.offlineStore.getState('shards') : Promise.resolve(false);
         Promise.all([
             PPP.downloader.fetchManifest(),
-            PPP.downloader.getInstalledLangs()
+            PPP.downloader.getInstalledLangs(),
+            shardsStatePromise
         ]).then(function (res) {
-            var manifest = res[0], installed = res[1];
+            var manifest = res[0], installed = res[1], shardsInstalled = !!res[2];
             if (!document.body.contains(holder)) return;
             _cacheBaseMB(manifest);
             holder.innerHTML = '';
@@ -1155,23 +1174,93 @@ PPP.app = (function () {
             var available = _optInLangsFromManifest(manifest).filter(function (l) {
                 return installed.indexOf(l) === -1;
             });
-            if (available.length === 0) return;
 
-            var selector = _buildLangSelector(manifest, { langList: available, sizeMode: 'delta' });
-            holder.appendChild(selector.el);
+            if (available.length > 0) {
+                var selector = _buildLangSelector(manifest, { langList: available, sizeMode: 'delta' });
+                holder.appendChild(selector.el);
 
-            var addBtn = document.createElement('button');
-            addBtn.type = 'button';
-            addBtn.id = 'offlineAddLangBtn';
-            addBtn.className = 'search-button';
-            addBtn.textContent = i18n.t('offlineAddLangBtn');
-            addBtn.onclick = function () {
-                var toAdd = selector.getLangs();
-                if (toAdd.length === 0) return;
-                _runAddLanguages(toAdd, holder);
-            };
-            holder.appendChild(addBtn);
+                var addBtn = document.createElement('button');
+                addBtn.type = 'button';
+                addBtn.id = 'offlineAddLangBtn';
+                addBtn.className = 'search-button';
+                addBtn.textContent = i18n.t('offlineAddLangBtn');
+                addBtn.onclick = function () {
+                    var toAdd = selector.getLangs();
+                    if (toAdd.length === 0) return;
+                    _runAddLanguages(toAdd, holder);
+                };
+                holder.appendChild(addBtn);
+            }
+
+            // Library installed but the sentence shards (offline "In Text"
+            // search) were opted out at install time — offer to add them
+            // separately (this is what the mobile size-warning's "Install
+            // library now" button lands on for exactly this device state).
+            if (!shardsInstalled && manifest.sentenceShards && manifest.sentenceShards.length > 0) {
+                _renderAddShardsUI(holder, manifest);
+            }
         }).catch(function (e) { console.warn('Add-language UI failed:', e); });
+    }
+
+    /**
+     * Offer to add the sentence shards to an already-installed library that
+     * opted out of them (see _renderAddLanguageUI above). Appended into the
+     * SAME holder as the language-add UI, so both can coexist.
+     */
+    function _renderAddShardsUI(holder, manifest) {
+        var shardBytes = 0;
+        (manifest.sentenceShards || []).forEach(function (s) { if (s && s.size) shardBytes += s.size; });
+        var mb = Math.round(shardBytes / 1048576);
+
+        var wrap = document.createElement('div');
+        wrap.id = 'offlineAddShards';
+        wrap.className = 'offline-lang-row offline-shard-row';
+
+        var line = document.createElement('div');
+        line.textContent = i18n.t('offlineShardsOffer').replace('{size}', String(mb));
+        wrap.appendChild(line);
+
+        var addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.id = 'offlineAddShardsBtn';
+        addBtn.className = 'search-button';
+        addBtn.textContent = i18n.t('offlineAddShardsBtn');
+        addBtn.onclick = function () { _runAddShards(wrap); };
+        wrap.appendChild(addBtn);
+
+        holder.appendChild(wrap);
+    }
+
+    function _runAddShards(holder) {
+        holder.innerHTML = '';
+        var msg = document.createElement('span');
+        msg.textContent = i18n.t('offlineDownloading')
+            .replace('{loaded}', '0').replace('{total}', '?').replace('{pct}', '0');
+        holder.appendChild(msg);
+        PPP.downloader.addShards(function (p) {
+            var mb = Math.round(p.loadedBytes / 1048576);
+            var totalMB = Math.round(p.totalBytes / 1048576);
+            var pct = p.totalBytes ? Math.round(p.loadedBytes / p.totalBytes * 100) : 0;
+            msg.textContent = i18n.t('offlineDownloading')
+                .replace('{loaded}', mb).replace('{total}', totalMB).replace('{pct}', pct);
+        }).then(function () {
+            holder.innerHTML = '';
+            var done = document.createElement('span');
+            done.textContent = i18n.t('offlineShardsAdded');
+            holder.appendChild(done);
+            var reloadBtn = document.createElement('button');
+            reloadBtn.type = 'button';
+            reloadBtn.className = 'search-button';
+            reloadBtn.textContent = i18n.t('offlineReloadBtn');
+            reloadBtn.onclick = function () { location.reload(); };
+            holder.appendChild(reloadBtn);
+        }).catch(function (err) {
+            console.error('Add shards failed:', err);
+            holder.innerHTML = '';
+            var em = document.createElement('span');
+            em.textContent = i18n.t('offlineOfferError');
+            holder.appendChild(em);
+        });
     }
 
     function _runAddLanguages(toAdd, holder) {
@@ -1729,6 +1818,21 @@ PPP.app = (function () {
         if (!dataLoaded) return;
         // Allow empty search in citations mode (shows stats overview)
         if (!term && searchMode !== 'citations' && searchMode !== 'citationsTop') return;
+
+        // "In Text" (sentence) search transfers ~200 MB of shards over the
+        // network when the offline library isn't installed. On a mobile
+        // viewport or a known-slow connection, warn BEFORE the first such
+        // search this session and offer the offline install instead — see
+        // _maybeWarnMobileTextSearch below. Metadata/citations searches are
+        // cheap (a few KB) and are never gated here.
+        if (searchMode === 'sentences' && term) {
+            _maybeWarnMobileTextSearch(function () { _runSearch(term); });
+            return;
+        }
+        _runSearch(term);
+    }
+
+    function _runSearch(term) {
         setActiveCollection(null);
         // A typed search is not a browse view / transcript sort — clear both so
         // the top-nav and By Date/Topic/Newest highlights don't linger. Verse
@@ -1739,6 +1843,112 @@ PPP.app = (function () {
         lastSearchTerm = term;
         currentPage = 1;
         performSearch();
+    }
+
+    // ---- Mobile "In Text" size warning ------------------------------------
+    // Rājan measurement (2026-07-26): one full "In Text" search transfers
+    // ~200 MB of sentence shards; on Fast-3G that is ~92s before the progress
+    // counter even moves and ~34 min to full results, vs. ~10-16s once the
+    // offline EN library is installed. Desktop broadband users never see
+    // this — only a mobile-sized viewport or a browser-reported sub-4g
+    // connection trigger it, and only when the shards are not installed.
+    var _mobileSearchWarnProceedFn = null;
+
+    /**
+     * Mobile-sized viewport OR navigator.connection.effectiveType worse than
+     * '4g'. The Network Information API is Chrome/Android-only — its absence
+     * must never throw and must never trigger the warning by itself (only
+     * the viewport check can do that alone).
+     */
+    function _mobileSearchWarnEnvBad() {
+        var mobileViewport = false;
+        try { mobileViewport = window.matchMedia('(max-width: 640px)').matches; } catch (e) {}
+        var slowConn = false;
+        try {
+            var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+            if (conn && conn.effectiveType) slowConn = conn.effectiveType !== '4g';
+        } catch (e) {}
+        return mobileViewport || slowConn;
+    }
+
+    /**
+     * Once-per-device gate, with one exception: if the user picked "search
+     * anyway" and the shards are STILL not installed, the warning may return
+     * on a LATER session (no permanent flag set for that path) but never
+     * twice in the SAME session (sessionStorage flag, set the instant the
+     * warning is shown, regardless of which button is later pressed).
+     */
+    function _mobileSearchWarnAllowed() {
+        try { if (sessionStorage.getItem('ppp_mobile_search_warn_shown') === '1') return false; } catch (e) {}
+        try { if (localStorage.getItem('ppp_mobile_search_warn_dismissed') === '1') return false; } catch (e) {}
+        return _mobileSearchWarnEnvBad();
+    }
+
+    /**
+     * Gate before performSentenceSearch: skip straight to `proceed()` unless
+     * the environment looks mobile/slow, the warning hasn't already been
+     * shown/dismissed, AND the offline sentence shards are not installed
+     * (offlineStore state key 'shards', the same one downloader.js persists
+     * at install time — see downloader.js firstInstall/checkForUpdates).
+     */
+    function _maybeWarnMobileTextSearch(proceed) {
+        if (!_mobileSearchWarnAllowed()) { proceed(); return; }
+        var store = PPP.offlineStore;
+        if (!store || !store.getState) { proceed(); return; }
+        store.getState('shards').then(function (installed) {
+            if (installed) { proceed(); return; }
+            _showMobileSearchWarn(proceed);
+        }).catch(function () { proceed(); });
+    }
+
+    function _showMobileSearchWarn(proceed) {
+        _mobileSearchWarnProceedFn = proceed;
+        var mb = _shardsMB();
+        var body = document.getElementById('mobileSearchWarnBody');
+        if (body) body.textContent = i18n.t('mobileSearchWarnBody').replace('{size}', String(mb));
+        var overlay = document.getElementById('mobileSearchWarnOverlay');
+        if (overlay) overlay.classList.add('active');
+        // Set the SESSION flag the instant the warning is shown — "never
+        // twice in the same session" applies regardless of which button (or
+        // neither) the user ends up pressing.
+        try { sessionStorage.setItem('ppp_mobile_search_warn_shown', '1'); } catch (e) {}
+    }
+
+    /** Backdrop click / X close: dismiss without searching and without a
+     *  permanent flag (the session flag set in _showMobileSearchWarn already
+     *  covers "not twice this session"). */
+    function closeMobileSearchWarn(event) {
+        var overlay = document.getElementById('mobileSearchWarnOverlay');
+        if (event && overlay && event.target !== overlay) return;
+        if (overlay) overlay.classList.remove('active');
+        _mobileSearchWarnProceedFn = null;
+    }
+
+    /** "Search anyway" — run the deferred search, no permanent dismiss (the
+     *  warning may reappear in a LATER session while the shards stay absent). */
+    function mobileSearchWarnProceed() {
+        var overlay = document.getElementById('mobileSearchWarnOverlay');
+        if (overlay) overlay.classList.remove('active');
+        var fn = _mobileSearchWarnProceedFn;
+        _mobileSearchWarnProceedFn = null;
+        if (fn) fn();
+    }
+
+    /** "Install library now" — permanently dismiss (this device chose the
+     *  offline path) and route into the EXISTING offline-install flow
+     *  (#offlineInfoPanel / renderOfflineInfoPanel), rather than duplicating
+     *  it. Does not run the pending search — the user asked to install
+     *  first. */
+    function mobileSearchWarnInstall() {
+        var overlay = document.getElementById('mobileSearchWarnOverlay');
+        if (overlay) overlay.classList.remove('active');
+        _mobileSearchWarnProceedFn = null;
+        try { localStorage.setItem('ppp_mobile_search_warn_dismissed', '1'); } catch (e) {}
+        var panel = document.getElementById('offlineInfoPanel');
+        if (panel && panel.style.display !== 'flex') {
+            renderOfflineInfoPanel();
+            panel.style.display = 'flex';
+        }
     }
 
     function performSearch() {
@@ -5085,6 +5295,13 @@ PPP.app = (function () {
         startFirstInstallFlow: startFirstInstallFlow,
         toggleOfflineInfoPanel: toggleOfflineInfoPanel,
         closeOfflineInfoPanel: closeOfflineInfoPanel,
+        // Mobile "In Text" size warning (~200 MB shard transfer on phones)
+        closeMobileSearchWarn: closeMobileSearchWarn,
+        mobileSearchWarnProceed: mobileSearchWarnProceed,
+        mobileSearchWarnInstall: mobileSearchWarnInstall,
+        // Internal (test only) — force-evaluate/reset the gate without faking
+        // viewport/connection through the browser APIs directly.
+        _mobileSearchWarnAllowedForTest: function () { return _mobileSearchWarnAllowed(); },
         openGuide: function () {
             var lang = localStorage.getItem('preferredLanguage') || 'en';
             window.open('guide/' + lang + '/index.html', '_blank');

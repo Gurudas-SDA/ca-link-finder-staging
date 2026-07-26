@@ -2600,6 +2600,85 @@ test.describe('Online-first UX (no forced install)', () => {
     await context.setOffline(false);
   });
 
+  // ---- Mobile "In Text" size warning (2026-07-26) --------------------------
+  // A full "In Text" search transfers ~200 MB of sentence shards (measured);
+  // on a phone/slow connection with the offline library not installed this
+  // can take many minutes. The warning below must appear BEFORE the shard
+  // search starts, only on a mobile viewport or a browser-reported slow
+  // connection, and only when the shards are not already installed.
+
+  test('51. Mobile "In Text" warning appears before the first shard search, and "Search anyway" proceeds without repeating it this session', async ({ page }) => {
+    test.setTimeout(60000);
+    await page.setViewportSize({ width: 390, height: 800 });
+    await page.goto('./');
+    await waitForAppReady(page);
+    await useQuotesView(page);
+
+    const overlay = page.locator('#mobileSearchWarnOverlay');
+    await expect(overlay).not.toHaveClass(/active/);
+
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+
+    // The warning appears BEFORE any shard fetch starts — the sentence
+    // search busy lock (Cancel button) must still be off while it's up.
+    await expect(overlay).toHaveClass(/active/, { timeout: 5000 });
+    expect(await page.evaluate(() => PPP.app._isSentenceSearchBusyForTest())).toBe(false);
+    await expect(page.locator('#mobileSearchWarnBody')).toContainText(/MB/);
+
+    // "Search anyway" closes the warning and runs the real (deferred) search.
+    const cancelBtn = page.locator('.search-row .search-button');
+    await page.click('#mobileSearchWarnAnywayBtn');
+    await expect(overlay).not.toHaveClass(/active/);
+    await expect(cancelBtn).toHaveClass(/is-cancel/, { timeout: 10000 });
+    await cancelBtn.click(); // only proving the search started — no need to wait it out
+    await page.waitForFunction(() => PPP.app._isSentenceSearchBusyForTest() === false, { timeout: 10000 });
+
+    // A SECOND "In Text" search in the SAME session must NOT show the
+    // warning again — it should run straight away, same as any other search.
+    await page.fill('#searchTerm', 'rice');
+    await page.keyboard.press('Enter');
+    await expect(overlay).not.toHaveClass(/active/);
+    await expect(cancelBtn).toHaveClass(/is-cancel/, { timeout: 10000 });
+    await cancelBtn.click();
+  });
+
+  test('52. Mobile "In Text" warning does not appear at a desktop viewport on a normal connection', async ({ page }) => {
+    test.setTimeout(60000);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto('./');
+    await waitForAppReady(page);
+    await useQuotesView(page);
+
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+
+    // The real search runs immediately — no warning gate on desktop broadband.
+    const cancelBtn = page.locator('.search-row .search-button');
+    await expect(cancelBtn).toHaveClass(/is-cancel/, { timeout: 10000 });
+    await expect(page.locator('#mobileSearchWarnOverlay')).not.toHaveClass(/active/);
+    await cancelBtn.click();
+  });
+
+  test('53. Mobile "In Text" warning: "Install library now" opens the EXISTING offline-install panel instead of searching', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 800 });
+    await page.goto('./');
+    await waitForAppReady(page);
+    await useQuotesView(page);
+
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#mobileSearchWarnOverlay')).toHaveClass(/active/, { timeout: 5000 });
+
+    await page.click('#mobileSearchWarnInstallBtn');
+    await expect(page.locator('#mobileSearchWarnOverlay')).not.toHaveClass(/active/);
+
+    // Routes into the SAME #offlineInfoPanel flow used by "Work offline" —
+    // not a second/duplicate installer — and does not run the pending search.
+    await expect(page.locator('#offlineInfoPanel')).toBeVisible();
+    expect(await page.evaluate(() => PPP.app._isSentenceSearchBusyForTest())).toBe(false);
+  });
+
   // ---- Field-bug fixes (2026-07-24, Android reports) ----------------------
 
   test('44. Premium transcript opens when net.online lies "false" but the network works (fetch, not flag)', async ({ page }) => {
