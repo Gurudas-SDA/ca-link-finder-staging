@@ -1118,6 +1118,16 @@ PPP.app = (function () {
      *  and a button. */
     function _showInstallStalled(langs, includeShards) {
         ui.showLoading(i18n.t('installStalled'));
+        // Keep the click guard ARMED on this screen. Disarming it (the obvious
+        // move, since the freeze we are fixing WAS a stuck guard) left the
+        // search box live behind the error with no data behind it: pressing
+        // Search did nothing at all — the same silence this whole night has been
+        // spent removing. Found by driving a clean profile in a real browser;
+        // the suite could not see it. The guard already lets everything inside
+        // #progressBar through, and the Try again button lives there, so the one
+        // action that should work still does.
+        _installStarted = false;    // toast says "the library is required", not "x% done"
+        document.addEventListener('click', _installGuardHandler, true);
         var bar = document.getElementById('progressBar');
         if (!bar) return;
         var old = document.getElementById('installStallRetryBtn');

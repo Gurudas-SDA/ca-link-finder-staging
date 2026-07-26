@@ -1718,17 +1718,17 @@ test.describe('The mandatory install cannot freeze the app (Codex + Sabhā, 2026
     await expect(page.locator('#installStallRetryBtn')).toBeVisible({ timeout: 75000 });
     await expect(page.locator('#progressBar')).toContainText('cannot continue');
 
-    // And the guard is disarmed — clicks reach their targets again instead of
-    // being swallowed. (Still not a partial state: nothing was installed, the
-    // library is still required. Only the freeze is gone.)
-    const clickReached = await page.evaluate(() => {
-      let reached = false;
-      const b = document.querySelector('button.features-btn');
-      b.addEventListener('click', function () { reached = true; }, { once: true });
-      b.click();
-      return reached;
-    });
-    expect(clickReached).toBe(true);
+    // The Try again button is reachable — that is the whole point of the fix.
+    await expect(page.locator('#installStallRetryBtn')).toBeEnabled();
+
+    // But the app itself stays gated. Disarming the guard here was the obvious
+    // move and it was wrong: it left the search box live in front of no data, so
+    // pressing Search did nothing at all. Found by hand in a real browser, not
+    // by this suite. The guard stays armed and answers with the reason.
+    await page.fill('#searchTerm', 'krishna');
+    await page.locator('button.search-button').first().click({ force: true });
+    await expect(page.locator('#uiToast')).toContainText('has to be downloaded', { timeout: 5000 });
+    expect(await page.locator('#resultsTable tbody tr').count()).toBeLessThan(2);
   });
 
 });
