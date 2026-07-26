@@ -2587,6 +2587,46 @@ PPP.app = (function () {
         return Promise.resolve(m);
     }
 
+    /** Premium transcript HTML for the ZIP: installed library first, network
+     *  second. A store read that fails or comes back empty is not an error —
+     *  it just means "not in the library", so fall through to the network. */
+    function _zipPremiumHtml(nr, lang, signal) {
+        var key = 't:' + lang + ':' + String(nr);
+        var fromStore = (PPP.offlineStore && PPP.offlineStore.supported())
+            ? PPP.offlineStore.getText(key).catch(function () { return null; })
+            : Promise.resolve(null);
+        return fromStore.then(function (txt) {
+            if (txt && txt.trim()) return txt;
+            return fetch('transcripts/' + lang + '/' + encodeURIComponent(String(nr)) + '.html', { signal: signal })
+                .then(function (r) { return r.ok ? r.text() : ''; })
+                .catch(function (e) {
+                    if (e && e.name === 'AbortError') throw e;
+                    return '';                      // offline and not installed
+                });
+        });
+    }
+
+    /** Raw EN transcript text for the ZIP: installed library first, Drive
+     *  second. Returns '' when neither has it. */
+    function _zipRawText(nr, driveId, signal) {
+        var fromStore = (PPP.offlineStore && PPP.offlineStore.supported())
+            ? PPP.offlineStore.getText('raw:en:' + String(nr)).catch(function () { return null; })
+            : Promise.resolve(null);
+        return fromStore.then(function (txt) {
+            if (txt && txt.trim()) return txt;
+            if (!driveId) return '';
+            var key = (PPP.config && PPP.config.driveApiKey) || '';
+            var url = 'https://www.googleapis.com/drive/v3/files/' + driveId +
+                '?alt=media&key=' + encodeURIComponent(key);
+            return fetch(url, { signal: signal }).then(function (rr) {
+                return rr.status === 200 ? rr.text() : '';
+            }).catch(function (e) {
+                if (e && e.name === 'AbortError') throw e;
+                return '';
+            });
+        });
+    }
+
     // Add one lecture's transcript to the zip.
     // Returns true (added), 'unavailable' (nothing offline / MP3 count cap
     // hit), or throws on abort. `zipCtx` carries cross-item ZIP state —
@@ -2623,8 +2663,14 @@ PPP.app = (function () {
         // Sentence-search two-tier highlight: only non-empty when this ZIP was
         // triggered from an "In Transcripts" search result (see performSentenceSearch).
         var matchedSentences = _sentenceMatchesByNr[String(nr)] || [];
-        return fetch('transcripts/' + lang + '/' + encodeURIComponent(String(nr)) + '.html', { signal: signal })
-            .then(function (r) { return r.ok ? r.text() : ''; })
+        // The installed library FIRST. ZIP was written before the offline
+        // library existed and still asked the network for premium HTML and
+        // Google Drive for raw text — both of which are already on the device
+        // (Rājan spotted this, 2026-07-26). So ZIP did not work offline at all,
+        // and online it re-downloaded what the user had already paid for. Same
+        // two keys the transcript viewer uses; the network stays as the fallback
+        // for a lecture the library does not contain.
+        return _zipPremiumHtml(nr, lang, signal)
             .then(function (html) {
                 if (html && html.trim()) {
                     // Premium per-lecture HTML (same-origin) — wrap into a standalone doc.
@@ -2641,32 +2687,28 @@ PPP.app = (function () {
                     zip.file(folder + '/Nr_' + nr + '_' + safeTitle + '_' + lang + '.html', doc);
                     return true;
                 }
-                // Premium missing (404 / empty). Raw fallback exists only in EN.
+                // Premium missing (not in the library, 404 / empty). Raw fallback
+                // exists only in EN — library first, Drive second.
                 if (lang === 'en') {
-                    var id = _driveIdFromUrl(meta && meta.enUrl);
-                    if (!id) return 'unavailable';
-                    var key = (PPP.config && PPP.config.driveApiKey) || '';
-                    var url = 'https://www.googleapis.com/drive/v3/files/' + id + '?alt=media&key=' + encodeURIComponent(key);
-                    return fetch(url, { signal: signal }).then(function (rr) {
-                        if (rr.status === 200) {
-                            return rr.text().then(function (txt) {
-                                // Wrap raw plain text into <p> paragraphs so the same
-                                // DOM-based highlighter can mark sentences/words, then
-                                // save as HTML (was .txt) so highlighting is visible.
-                                var paragraphs = (txt || '').split(/\r?\n/).map(function (line) {
-                                    return '<p>' + utils.escapeHtml(line) + '</p>';
-                                }).join('\n');
-                                var container = document.createElement('div');
-                                container.innerHTML = paragraphs;
-                                if (matchedSentences.length) {
-                                    _wrapMatchesInContainer(container, matchedSentences, _sentenceWords);
-                                }
-                                var rawDoc = _buildHtmlDoc({ nr: nr, lang: 'en', title: title, html: container.innerHTML });
-                                zip.file(folder + '/Nr_' + nr + '_' + safeTitle + '_EN_raw.html', rawDoc);
-                                return true;
-                            });
+                    return _zipRawText(nr, _driveIdFromUrl(meta && meta.enUrl), signal).then(function (txt) {
+                        if (!txt || !txt.trim()) return 'unavailable';
+                        // A raw record from the library is already HTML paragraphs
+                        // (build_raw_en_transcripts.py); the Drive copy is plain
+                        // text. Wrap only the plain-text case so the same
+                        // DOM-based highlighter can mark sentences/words either way.
+                        var body = /<p[\s>]/i.test(txt)
+                            ? txt
+                            : txt.split(/\r?\n/).map(function (line) {
+                                return '<p>' + utils.escapeHtml(line) + '</p>';
+                            }).join('\n');
+                        var container = document.createElement('div');
+                        container.innerHTML = body;
+                        if (matchedSentences.length) {
+                            _wrapMatchesInContainer(container, matchedSentences, _sentenceWords);
                         }
-                        return 'unavailable';
+                        var rawDoc = _buildHtmlDoc({ nr: nr, lang: 'en', title: title, html: container.innerHTML });
+                        zip.file(folder + '/Nr_' + nr + '_' + safeTitle + '_EN_raw.html', rawDoc);
+                        return true;
                     });
                 }
                 return 'unavailable';

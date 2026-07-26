@@ -1520,6 +1520,66 @@ test.describe('core.sentences in the offline base', () => {
   });
 });
 
+test.describe('ZIP export uses the installed library (Rājan, 2026-07-26)', () => {
+  test.use({ serviceWorkers: 'block' });
+
+  test('P17. With the library installed, a ZIP is built without touching the network', async ({ page }) => {
+    // ZIP predates the offline library and never caught up: it asked the network
+    // for premium HTML and Google Drive for raw text, both of which are already
+    // on the device. So ZIP did not work offline at all, and online it
+    // re-downloaded what the user had already paid for. Every existing ZIP test
+    // passed throughout, because they all run online.
+    test.setTimeout(180000);
+
+    await addAutoInstallHook(page);
+    await page.goto('./');
+    await waitForLocalManifestSet(page, 130000);
+    await page.reload();
+    await waitForDataReady(page);
+
+    // Hard-block both sources ZIP used to depend on. Any attempt is a failure,
+    // not a slow path — record it rather than letting it fall back quietly.
+    const blocked = [];
+    await page.route('**/transcripts/**', route => { blocked.push(route.request().url()); route.abort(); });
+    await page.route('**googleapis.com**', route => { blocked.push(route.request().url()); route.abort(); });
+
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('.select-checkbox[data-lang="en"]', { timeout: 20000 });
+
+    // Pick a lecture whose premium transcript really is in IDB.
+    const nr = await page.evaluate(async () => {
+      const boxes = [...document.querySelectorAll('.select-checkbox[data-lang="en"]')];
+      for (const b of boxes) {
+        const n = b.getAttribute('data-nr');
+        const txt = await PPP.offlineStore.getText('t:en:' + n).catch(() => null);
+        if (txt && txt.trim()) return n;
+      }
+      return null;
+    });
+    expect(nr, 'no EN premium transcript found in IDB after install').not.toBeNull();
+
+    await page.locator(`.select-checkbox[data-lang="en"][data-nr="${nr}"]`).check();
+    await page.click('#downloadSelectedBtn');
+    await page.fill('#zipNameInput', 'offline zip test');
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download', { timeout: 60000 }),
+      page.click('#zipDownloadBtn'),
+    ]);
+    expect(download.suggestedFilename()).toBe('offline_zip_test.zip');
+
+    // A real document inside, not an empty archive (an empty zip is ~22 bytes).
+    const fs = require('fs');
+    const path = await download.path();
+    expect(fs.statSync(path).size).toBeGreaterThan(500);
+
+    // And the proof: neither the transcripts path nor Drive was ever asked.
+    expect(blocked).toEqual([]);
+  });
+
+});
+
 test.describe('The mandatory install cannot freeze the app (Codex + Sabhā, 2026-07-26)', () => {
 
   test('P16. An install that never progresses ends in a message with Try again, not a permanent freeze', async ({ page }) => {
