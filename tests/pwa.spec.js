@@ -1611,6 +1611,44 @@ test.describe('Service Worker cannot pair a new index.html with old JS (Codex, 2
 
 });
 
+test.describe('The device stores the library once (measured install, 2026-07-27)', () => {
+
+  test('P19. Sentence shards never land in the Service Worker cache as a second copy', async ({ page }) => {
+    // Found by running a real full install in a browser and measuring, which no
+    // test did: the shell cache had grown to 232 MB because v10's "data/ is
+    // cache-first" rule also caught the 21 shards. The device then held 342 MB
+    // in IndexedDB plus a second 191 MB copy in the SW cache — 574 MB for a
+    // 342 MB install — and nothing ever read the SW copy.
+    test.setTimeout(180000);
+
+    await addAutoInstallHook(page);
+    await page.addInitScript(() => {
+      try { localStorage.setItem('ppp_install_shards', '1'); } catch (e) {}
+    });
+    await page.goto('./');
+    await waitForLocalManifestSet(page, 150000);
+
+    // Shards are in IndexedDB — that is where they belong.
+    const inIdb = await page.evaluate(() => PPP.offlineStore.getState('shards'));
+    expect(inIdb).toBe(true);
+
+    // …and nowhere in the shell cache.
+    const cachedShards = await page.evaluate(async () => {
+      const names = await caches.keys();
+      const out = [];
+      for (const n of names) {
+        const c = await caches.open(n);
+        for (const k of await c.keys()) {
+          if (new URL(k.url).pathname.indexOf('/data/shards/') !== -1) out.push(k.url);
+        }
+      }
+      return out;
+    });
+    expect(cachedShards).toEqual([]);
+  });
+
+});
+
 test.describe('ZIP export uses the installed library (Rājan, 2026-07-26)', () => {
   test.use({ serviceWorkers: 'block' });
 

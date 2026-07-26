@@ -35,7 +35,19 @@ const CACHE = 'ca-shell-' + self.SHELL_VERSION;
 const V8_MARKER_PREFIX = 'sw-marker-'; // v8 left marker caches with this prefix
 
 // Raw offline-library content owned by IndexedDB — SW never caches these.
-const PASSTHROUGH_PREFIXES = ['packs/', 'transcripts/'];
+//
+// data/shards/ joined this list on 2026-07-27 after measuring a real full
+// install: the shell cache had grown to 232 MB because the v10 "data/ is
+// cache-first" rule also caught the 21 sentence shards, so the device ended up
+// holding 342 MB in IndexedDB AND a second 191 MB copy in the SW cache — 574 MB
+// for a 342 MB install. Nothing reads the SW copy: shard fetches happen during
+// the install (which writes them to IndexedDB) and, since online sentence search
+// was removed, nowhere else. Pure duplication.
+//
+// The three core DBs (meta, extras, sentences) stay cache-first on purpose —
+// that is what makes a repeat visit open instantly for someone who has NOT
+// installed the library.
+const PASSTHROUGH_PREFIXES = ['packs/', 'transcripts/', 'data/shards/'];
 
 // data/ files with no ?v= hash of their own — must always be read fresh.
 const NETWORK_FIRST_DATA = ['data/manifest.json', 'data/db-versions.json'];
