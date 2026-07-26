@@ -1054,6 +1054,19 @@ PPP.ui = (function () {
         var fav = PPP.favorites;
         var cols = fav.getCollections();
 
+        // A brand-new device has no collections, and this popup is the ONLY way
+        // a user can reach favorites — so the list came up empty and the only
+        // option was "+ New collection", i.e. you had to invent a folder name
+        // before you could star anything. The backward-compatible toggle() API
+        // has always auto-created 'Favorites' in exactly this case; the UI now
+        // matches it. Test "11" passed throughout because it calls that API
+        // directly, bypassing the path a real user has to take.
+        // (Manual audit 2026-07-26.)
+        if (cols.length === 0) {
+            fav.createCollection('Favorites');
+            cols = fav.getCollections();
+        }
+
         var popup = document.createElement('div');
         popup.className = 'save-to-popup';
         _activePopup = popup;

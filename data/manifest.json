@@ -579,5 +579,41 @@
       "nrLo": 9635,
       "nrHi": 10247
     }
-  ]
+  ],
+  "catalog": {
+    "lectures": 9842,
+    "sources": {
+      "@AnandaGopal108": 5,
+      "@ChaitanyaAcademy": 2588,
+      "@DasMadhavananda": 1,
+      "@Freedomspiral1111": 1,
+      "@Freedomspiral1112": 1,
+      "@Freedomspiral1113": 1,
+      "@Ilyatarkov": 324,
+      "@Kunjesvari": 30,
+      "@SuChandrakanta": 1,
+      "@TheSundaramadhavadas": 1,
+      "@anupamalowe7634": 26,
+      "@chaitanyaacademylive6700": 602,
+      "@doyalhari": 3,
+      "@hemadri108": 158,
+      "@jayadevdas6939": 208,
+      "@krsnaRU": 11,
+      "@krsnakathatv": 13,
+      "@maratishekeev2152": 1,
+      "@nntdas": 1,
+      "@sripremprayojanprabhu5690": 67,
+      "@vedukeliult4107": 2,
+      "@vrndavanavilasinidasi3937": 272,
+      "Guru_das": 369,
+      "Private_mp3": 27,
+      "Private_mp3_Bihari": 2328,
+      "Telegram": 930,
+      "facebook.com/ChaitanyaAcademyInternational": 331,
+      "mixcloud.com/prem_katha": 23,
+      "soundcloud.com/ananda-gopal-das": 1,
+      "soundcloud.com/anupama-lowe": 12,
+      "soundcloud.com/ca108": 1504
+    }
+  }
 }

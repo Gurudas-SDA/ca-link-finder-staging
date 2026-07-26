@@ -2909,3 +2909,133 @@ test.describe('Online-first UX (no forced install)', () => {
   });
 
 });
+
+/**
+ * FIRST VISIT — the state no other test starts in.
+ *
+ * Every test above runs under a beforeEach that presets ppp_auto_install='1',
+ * preferredLanguage and ppp_purpose, so the onboarding screen never renders and
+ * the library is always installed. The manual audit of 2026-07-26 found four
+ * user-visible defects living entirely in the state those presets skip. This
+ * block deliberately sets NOTHING and walks in as a brand-new device.
+ */
+test.describe('First visit (no presets — audit 2026-07-26)', () => {
+
+  // The file-level beforeEach above presets ppp_auto_install / preferredLanguage
+  // / ppp_purpose for EVERY test in this file. Init scripts run in registration
+  // order, so this one runs second and undoes them — that is what makes the
+  // first-visit state reachable at all.
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      try {
+        localStorage.removeItem('ppp_auto_install');
+        localStorage.removeItem('preferredLanguage');
+        localStorage.removeItem('ppp_purpose');
+        localStorage.removeItem('ppp_collections');
+        localStorage.removeItem('ppp_total_lectures');
+        localStorage.removeItem('installDismissed');
+      } catch (e) {}
+    });
+  });
+
+  test('F1. Onboarding intro shows the real recording count, never "0 recordings"', async ({ page }) => {
+    // loadData() returns early while no purpose is chosen (mandatory install
+    // gate), so the meta DB — where totalLectures comes from — is not loaded on
+    // this screen. The count now comes from manifest.json's catalog block.
+    await page.goto('./');
+    await page.click('.onb-lang');   // English
+
+    const intro = page.locator('#onbIntroText');
+    await expect(intro).toBeVisible();
+    await expect(intro).toHaveText(/\d[\d,\s]*recordings/, { timeout: 15000 });
+    await expect(intro).not.toHaveText(/\b0 recordings\b/);
+  });
+
+  test('F2. "List Of Sources" on the onboarding screen actually renders a list', async ({ page }) => {
+    // Used to hit `if (!dataLoaded) return;` and do nothing at all — a silent
+    // no-op on the one screen where Rājan placed the button.
+    await page.goto('./');
+    await page.click('.onb-lang');
+    await page.click('.onb-intro-after button');
+
+    const list = page.locator('#sourcesList');
+    await expect(list).toBeVisible({ timeout: 15000 });
+    expect(await list.locator('li').count()).toBeGreaterThan(5);
+  });
+
+  test('F3. The install banner never covers the first button row', async ({ page }) => {
+    // #installBanner sits between .hero and .search-section, and the latter is
+    // pulled up 44px; without body.install-banner-visible the search card
+    // climbed over the banner, whose z-index 20 then ate the clicks on
+    // Filters / By Added / Top Searches (and By Verse / Verses (Top)).
+    // The delayed banner path is skipped under navigator.webdriver, so this
+    // test goes in through beforeinstallprompt — the other way it can appear.
+    await page.goto('./');
+    await page.click('.onb-lang');
+    await page.click('.onb-col-a .onb-go');            // "Browse lectures"
+    await page.locator('#installSkipBtn').click();     // continue without the library
+    await waitForAppReady(page);
+
+    await page.evaluate(() => {
+      const ev = new Event('beforeinstallprompt');
+      ev.preventDefault = function () {};
+      ev.prompt = function () {};
+      ev.userChoice = Promise.resolve({});
+      window.dispatchEvent(ev);
+    });
+    await expect(page.locator('#installBanner')).toBeVisible();
+
+    // Hit-test, not visibility: an element that paints is not yet an element
+    // you can press (language-chooser lesson, 2026-07-25).
+    const blocked = await page.evaluate(() => {
+      return [...document.querySelectorAll('.search-quick-buttons button')]
+        .filter((b) => {
+          const r = b.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        })
+        .map((b) => {
+          const r = b.getBoundingClientRect();
+          const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          const ok = top ? (top === b || b.contains(top) || top.contains(b)) : false;
+          return ok ? null : b.innerText.trim();
+        })
+        .filter(Boolean);
+    });
+    expect(blocked).toEqual([]);
+
+    // Dismissing it puts the -44px float back.
+    await page.click('.install-dismiss');
+    await expect(page.locator('#installBanner')).toBeHidden();
+    const margin = await page.evaluate(
+      () => getComputedStyle(document.querySelector('.search-section')).marginTop
+    );
+    expect(margin).toBe('-44px');
+  });
+
+  test('F4. A first star offers a default collection instead of demanding a new one', async ({ page }) => {
+    // The popup listed getCollections(), empty on a fresh device, so the only
+    // option was "+ New collection" — you had to name a folder before you could
+    // favorite anything. toggle() has always auto-created 'Favorites'; test 11
+    // uses that API directly and so never saw the mismatch.
+    await page.goto('./');
+    await page.click('.onb-lang');
+    await page.click('.onb-col-a .onb-go');
+    await page.locator('#installSkipBtn').click();
+    await waitForAppReady(page);
+
+    await page.fill('#searchTerm', 'janmastami');
+    await page.click('button.search-button');
+    await expect(page.locator('#resultsTable tbody tr').first()).toBeVisible({ timeout: 20000 });
+
+    await page.locator('#resultsTable tbody tr').first().locator('button.fav-star').click();
+    const items = page.locator('.save-to-popup .save-to-item');
+    await expect(items).toHaveCount(1);
+    await expect(items.first()).toContainText('Favorites');
+
+    // One click saves — no naming step.
+    await items.first().locator('input[type=checkbox]').click();
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('ppp_collections')));
+    expect(saved.collections[0].lectures.length).toBe(1);
+  });
+
+});

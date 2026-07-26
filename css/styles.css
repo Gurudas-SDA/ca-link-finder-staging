@@ -400,6 +400,16 @@ h1 {
     position: relative;
     z-index: 10;
 }
+/* The -44px pull makes the search card float over the HERO. When the install
+   banner is showing it sits BETWEEN the two, so the same pull dragged the card
+   over the BANNER instead — and the banner (z-index 20) swallowed clicks on the
+   first button row: Filters / By Added / Top Searches, and Filters / By Verse /
+   Verses (Top) in the quotes view. Found by the 2026-07-26 manual audit; no test
+   can see it, because app.js skips this banner when navigator.webdriver is set.
+   showInstallBanner()/dismissInstall()/installApp() toggle the body class. */
+body.install-banner-visible .search-section {
+    margin-top: 0;
+}
 .search-card {
     background: var(--surface);
     border-radius: var(--radius);

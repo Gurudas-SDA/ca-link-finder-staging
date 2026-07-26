@@ -314,7 +314,17 @@ PPP.app = (function () {
             var dismissed = localStorage.getItem('installDismissed');
             var banner = document.getElementById('installBanner');
             if (deferredPrompt || (banner && banner.style.display === 'block') || isStandalone || dismissed) return;
-            var isAndroid = /android/i.test(navigator.userAgent);
+            var ua = navigator.userAgent;
+            var isAndroid = /android/i.test(ua);
+            // "Add to Home Screen" is a PHONE/TABLET gesture. Before the audit
+            // this branch treated every non-Android agent as iOS, so a Windows
+            // or macOS desktop was shown iOS instructions it cannot follow —
+            // and the banner also displaced the first button row there.
+            // Desktop still gets a real offer through beforeinstallprompt
+            // (showInstallBanner('native') above) when the browser supports it.
+            var isIOS = /iphone|ipad|ipod/i.test(ua) ||
+                (/macintosh/i.test(ua) && navigator.maxTouchPoints > 1); // iPadOS 13+
+            if (!isAndroid && !isIOS) return;
             showInstallBanner(isAndroid ? 'android' : 'ios');
         }, 2000);
 
@@ -3624,18 +3634,40 @@ PPP.app = (function () {
         var div = document.getElementById(targetId || 'sourcesList');
         if (!div) return;
         if (div.style.display !== 'none' && div.style.display !== '') { div.style.display = 'none'; return; }
-        if (!dataLoaded) return;
 
-        function renderSourcesHTML(sources) {
+        // interactive=false renders the plain list used on the onboarding
+        // screen: applySourceFilter() runs a search, and there is no loaded DB
+        // to search there — a click would land on nothing.
+        function renderSourcesHTML(sources, interactive) {
             var esc = utils.escapeHtml;
             var enc = utils.encodeForAttr;
             var html = '<h3>' + i18n.t('sources') + '</h3><ul>';
             Object.keys(sources).sort().forEach(function (name) {
-                html += '<li onclick="PPP.app.applySourceFilter(decodeURIComponent(\'' + enc(name) + '\'))">' + esc(name) + '</li>';
+                html += interactive === false
+                    ? '<li>' + esc(name) + '</li>'
+                    : '<li onclick="PPP.app.applySourceFilter(decodeURIComponent(\'' + enc(name) + '\'))">' + esc(name) + '</li>';
             });
             html += '</ul>';
             div.innerHTML = html;
             div.style.display = 'block';
+        }
+
+        // First visit: the meta DB is not loaded yet (mandatory install gate),
+        // and this button lives on that very screen. It used to `return`
+        // silently on !dataLoaded, so for every new user it did nothing at all.
+        // Fall back to the manifest catalog, and if even that is unavailable
+        // say so — never fail silently. (Audit 2026-07-26.)
+        if (!dataLoaded) {
+            _getCatalog().then(function (cat) {
+                if (cat && cat.sources && Object.keys(cat.sources).length) {
+                    renderSourcesHTML(cat.sources, false);
+                } else {
+                    div.innerHTML = '<h3>' + utils.escapeHtml(i18n.t('sources')) + '</h3><p>' +
+                        utils.escapeHtml(i18n.t('sourcesUnavailable')) + '</p>';
+                    div.style.display = 'block';
+                }
+            });
+            return;
         }
 
         if (usingSqlite) {
@@ -4957,13 +4989,54 @@ PPP.app = (function () {
         updateOnbIntro();
     }
 
+    /**
+     * Catalog figures (lecture count, source list) for the ONBOARDING screen.
+     *
+     * That screen is shown BEFORE the meta DB is loaded: loadData() returns
+     * early while no purpose is chosen (Rājan's mandatory install gate), so
+     * totalLectures is 0 and dataLoaded is false for every genuinely new user —
+     * the exact audience the intro sentence and "List Of Sources" address.
+     * manifest.json is small (~20 KB) and already part of this screen's work,
+     * so both figures ride along in its "catalog" block
+     * (scripts/build_offline_packs.py read_catalog()).
+     *
+     * Never rejects: an older manifest without the block, or no network at all,
+     * resolves to null and each caller keeps its previous behaviour.
+     */
+    var _catalogPromise = null;
+    function _getCatalog() {
+        if (!_catalogPromise) {
+            _catalogPromise = fetch('data/manifest.json')
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (m) { return (m && m.catalog) || null; })
+                .catch(function () { return null; });
+        }
+        return _catalogPromise;
+    }
+
     /** Live "{count} recordings" text in the onboarding intro sentence — kept
      *  in sync with totalLectures (cached value first, real value once the
-     *  meta DB resolves — see _loadMetaIntoApp). */
+     *  meta DB resolves — see _loadMetaIntoApp). Before the meta DB exists at
+     *  all (first visit) the count comes from the manifest catalog; until that
+     *  resolves the sentence renders WITHOUT a number rather than with "0". */
     function updateOnbIntro() {
         var el = document.getElementById('onbIntroText');
         if (!el) return;
-        el.textContent = i18n.t('onbIntro').replace('{count}', (totalLectures || 0).toLocaleString());
+        function render(count) {
+            var tpl = i18n.t('onbIntro');
+            el.textContent = count > 0
+                ? tpl.replace('{count}', count.toLocaleString())
+                // No figure yet: drop the placeholder and the space around it
+                // instead of asserting "0 recordings", which is simply false.
+                : tpl.replace(/\s*\{count\}\s*/, ' ');
+        }
+        if (totalLectures > 0) { render(totalLectures); return; }
+        render(0);
+        _getCatalog().then(function (cat) {
+            // Guard against a late meta DB having already filled the real value.
+            if (totalLectures > 0) { render(totalLectures); return; }
+            if (cat && cat.lectures) { render(cat.lectures); }
+        });
     }
 
     /** Onboarding stage (b): purpose chosen — close the gate, enter that view,
@@ -5326,6 +5399,17 @@ PPP.app = (function () {
             btnEl.setAttribute('onclick', 'PPP.app.showInstallInstruction()');
         }
         banner.style.display = 'block';
+        // The banner sits between .hero and .search-section, and the latter is
+        // pulled up 44px to float over the hero. Without cancelling that pull
+        // the search card climbs over the BANNER, which (z-index 20) then eats
+        // the clicks on the first button row. See styles.css
+        // body.install-banner-visible. Audit 2026-07-26.
+        document.body.classList.add('install-banner-visible');
+    }
+
+    function _hideInstallBanner() {
+        document.getElementById('installBanner').style.display = 'none';
+        document.body.classList.remove('install-banner-visible');
     }
 
     function installApp() {
@@ -5334,7 +5418,7 @@ PPP.app = (function () {
             deferredPrompt.prompt();
             deferredPrompt.userChoice.then(function () {
                 deferredPrompt = null;
-                document.getElementById('installBanner').style.display = 'none';
+                _hideInstallBanner();
             });
         }
     }
@@ -5364,7 +5448,7 @@ PPP.app = (function () {
     }
 
     function dismissInstall() {
-        document.getElementById('installBanner').style.display = 'none';
+        _hideInstallBanner();
         localStorage.setItem('installDismissed', '1');
     }
 
