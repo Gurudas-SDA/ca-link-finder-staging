@@ -288,7 +288,7 @@ test.describe('PWA offline library', () => {
     expect(info).toMatch(/Found \d+ sentences/);
   });
 
-  test('P15b. TRUE first-use, no ppp_auto_install hook: real install prompt shows a manifest-derived size, and searching before installing never no-ops', async ({ page }) => {
+  test('P15b. TRUE first-use, no ppp_auto_install hook: the install prompt shows a manifest-derived size and offers no way past it (all-or-nothing)', async ({ page }) => {
     // P15 above uses the ppp_auto_install=1 test hook, which every OTHER
     // test in this suite also sets — that hook is exactly why two real
     // regressions in commit 0f09795 shipped invisible to the 108-test gate:
@@ -340,14 +340,38 @@ test.describe('PWA offline library', () => {
     expect(expectedMB).toBeGreaterThan(0);
     await expect(page.locator('#progressBar')).toContainText(String(expectedMB), { timeout: 5000 });
 
-    // Never dead-end: the escape hatch is present and reachable without
-    // waiting out the real download.
-    const skipBtn = page.locator('#installSkipBtn');
-    await expect(skipBtn).toBeVisible();
-    await skipBtn.click();
+    // All-or-nothing (Rājan 2026-07-26, "kā jebkura spēle — tai nav daļējas
+    // lejupielādes"): the ONLY choice on this screen is adding LV and/or RU.
+    // There is no way past it — an earlier build offered "Continue without
+    // text search" here and let users into a half-app.
+    await expect(page.locator('#installSkipBtn')).toHaveCount(0);
+    await expect(page.locator('#installOfflineBtn')).toBeVisible();
+    const langBoxes = installSelector.locator('input[type=checkbox]');
+    expect(await langBoxes.count()).toBe(3);          // EN (base) + LV + RU
+    await expect(langBoxes.first()).toBeChecked();    // EN is not optional
+    await expect(langBoxes.first()).toBeDisabled();
+  });
 
-    // Continuing without the library lands in the normal (online) quotes
-    // view — usable, just without the sentence shards. #searchTerm is
+  test('P15b2. Without an install, a text search still explains itself instead of no-opping', async ({ page }) => {
+    // The other half of the old P15b. Reaching "no library installed" no
+    // longer means skipping the gate — it means a RETURNING device: the
+    // purpose was chosen in an earlier session (so the gate does not re-run)
+    // but storage was cleared, or offline is unsupported here. loadData()
+    // then takes the loadDataLegacy() online path with no shards, which is
+    // exactly the state _requireTextSearchLibrary has to answer for.
+    test.setTimeout(60000);
+    await page.addInitScript(() => {
+      try {
+        localStorage.removeItem('ppp_auto_install');
+        localStorage.setItem('preferredLanguage', 'en');
+        localStorage.setItem('ppp_purpose', 'quotes');
+      } catch (e) {}
+    });
+    await page.goto('./');
+    await expect(page.locator('#onboardingOverlay')).toBeHidden();
+
+    // The returning-device path lands in the normal (online) quotes view —
+    // usable, just without the sentence shards. #searchTerm is
     // re-enabled early by clearComboDisplay(), BEFORE onDataLoaded() flips
     // the internal `dataLoaded` flag doSearch() itself gates on — AND in
     // "sentences" mode updateSearchModePlaceholder() always shows the real
@@ -399,19 +423,15 @@ test.describe('PWA offline library', () => {
     test.setTimeout(30000);
     await page.addInitScript(() => {
       try {
-        localStorage.removeItem('ppp_purpose');
         localStorage.removeItem('ppp_auto_install');
         localStorage.setItem('preferredLanguage', 'en');
+        localStorage.setItem('ppp_purpose', 'quotes');
       } catch (e) {}
     });
+    // Returning device, nothing installed (storage cleared / offline
+    // unsupported) — the same route P15b2 uses now that the install gate has
+    // no way past it.
     await page.goto('./');
-    await page.locator('button.onb-lang').first().click(); // English
-    await page.click('.onb-col-b .onb-go'); // "Search quotes" purpose
-
-    // Reach the searchable quotes view WITHOUT installing (same skip path
-    // as P15b), so the shards genuinely aren't installed either.
-    await expect(page.locator('#installSkipBtn')).toBeVisible({ timeout: 20000 });
-    await page.click('#installSkipBtn');
     await expect(page.locator('#searchTerm')).toBeEnabled({ timeout: 20000 });
     await expect(page.locator('#progressBar')).toBeHidden({ timeout: 20000 });
 

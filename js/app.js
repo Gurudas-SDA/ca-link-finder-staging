@@ -878,6 +878,11 @@ PPP.app = (function () {
 
     function showInstallPrompt(manifest, sizeMB) {
         _cacheBaseMB(manifest);
+        // Arm the click guard NOW, not at beginInstall(): while this prompt
+        // waits for a decision the app is not usable, and the search box was
+        // still live behind it, answering clicks with silence.
+        _installStarted = false;
+        document.addEventListener('click', _installGuardHandler, true);
         ui.showLoading(i18n.t('installPrompt').replace('{size}', sizeMB));
         ui.updateProgress(0);
         var bar = document.getElementById('progressBar');
@@ -886,8 +891,6 @@ PPP.app = (function () {
         if (old) old.remove();
         var oldSel = document.getElementById('installLangSelect');
         if (oldSel) oldSel.remove();
-        var oldSkip = document.getElementById('installSkipBtn');
-        if (oldSkip) oldSkip.remove();
 
         // EN + sentence shards are now the MANDATORY base (text search needs
         // them — shardsForced skips the opt-in checkbox and always sizes/
@@ -906,51 +909,32 @@ PPP.app = (function () {
             var langs = selector.getLangs();
             selector.el.remove();
             btn.remove();
-            var skip = document.getElementById('installSkipBtn');
-            if (skip) skip.remove();
             beginInstall(manifest, langs, true);
         };
         bar.appendChild(btn);
 
-        // Escape hatch (Rājan: never dead-end the user) — reachable if the
-        // mandatory download stalls/fails; a storage- or network-failure
-        // inside beginInstall() re-shows this same button (see its catch).
-        _appendInstallSkipBtn(bar);
+        // NO escape hatch here. Rājan, 2026-07-26: "kā jebkura spēle — tai nav
+        // daļējas lejupielādes". The only choice on this screen is whether to
+        // add Latvian and/or Russian; everything else is downloaded on first
+        // use regardless, and until it is there the app does not run. An
+        // earlier build offered "Continue without text search" next to
+        // Download — that was this session's own addition, not the decision,
+        // and it let users into a half-app where 7,680 raw transcripts cannot
+        // be opened.
     }
 
-    /**
-     * "Continue without text search" — the fallback when the mandatory
-     * install can't complete (out of storage, or the device/browser cannot
-     * do offline at all). Proceeds with the normal online app; the sentence
-     * shards stay absent, so "In Text" explains and offers the install again
-     * the first time it's tried (_requireTextSearchLibrary).
-     */
-    function _appendInstallSkipBtn(bar) {
-        var skip = document.createElement('button');
-        skip.id = 'installSkipBtn';
-        skip.type = 'button';
-        skip.className = 'help-search-btn help-search-btn-small';
-        skip.style.marginTop = '8px';
-        skip.style.marginLeft = '8px';
-        skip.textContent = i18n.t('continueWithoutTextSearch');
-        skip.onclick = function () {
-            document.removeEventListener('click', _installGuardHandler, true);
-            _installInFlight = false;
-            _removeInstallListeners();   // never auto-resume behind the user's back
-            _releaseWakeLock();
-            ui.hideLoading();
-            var sel = document.getElementById('installLangSelect'); if (sel) sel.remove();
-            var ib = document.getElementById('installOfflineBtn'); if (ib) ib.remove();
-            skip.remove();
-            loadDataLegacy();
-        };
-        bar.appendChild(skip);
-    }
-
-    // Capture-phase click interceptor active DURING the first install:
-    // interactions outside the loading area answer with a "still
-    // downloading — X%" toast instead of half-working on missing data.
+    // Capture-phase click interceptor active from the moment the mandatory
+    // install prompt appears until the library is on the device: interactions
+    // outside the loading area answer with a toast instead of half-working on
+    // missing data. Before Download is pressed the toast says the library is
+    // required; during the download it reports the percentage.
+    //
+    // It also covers the WAITING state, not just the download (Rājan
+    // 2026-07-26, all-or-nothing). Until this was armed early, the search box
+    // and Search button stayed live behind the prompt and answered a click
+    // with nothing at all — the same silent no-op this whole design removes.
     var _installPct = 0;
+    var _installStarted = false;
     function _installGuardHandler(e) {
         var bar = document.getElementById('progressBar');
         if (bar && bar.contains(e.target)) return;
@@ -958,7 +942,9 @@ PPP.app = (function () {
         if (!el) return;
         e.preventDefault();
         e.stopPropagation();
-        ui.toast(i18n.t('stillDownloading').replace('{pct}', _installPct));
+        ui.toast(_installStarted
+            ? i18n.t('stillDownloading').replace('{pct}', _installPct)
+            : i18n.t('libraryRequiredFirst'));
     }
 
     // ---- Install continuity (single flight, auto-retry, wake lock) ---------
@@ -1078,6 +1064,7 @@ PPP.app = (function () {
 
     function beginInstall(manifest, langs, includeShards) {
         _installPct = 0;
+        _installStarted = true;
         document.addEventListener('click', _installGuardHandler, true);
         ui.showLoading(i18n.t('downloadingAll'));
         ui.updateProgress(0);
@@ -1106,12 +1093,12 @@ PPP.app = (function () {
             _releaseWakeLock();
             console.error('Offline install failed:', err);
             if (err && err.notEnoughStorage) {
-                // Never dead-end: this device cannot fit the mandatory
-                // download — offer to continue with everything except text
-                // search rather than leaving the user stuck on this screen.
+                // The device cannot fit the download. Say so plainly and stop.
+                // There is no "continue without it" any more (Rājan 2026-07-26,
+                // all-or-nothing): a half-installed library is exactly the
+                // state this design exists to prevent. Freeing space and
+                // reloading resumes from where it stopped.
                 ui.showLoading(i18n.t('notEnoughStorage').replace('{size}', totalMB));
-                var bar = document.getElementById('progressBar');
-                if (bar) _appendInstallSkipBtn(bar);
                 return;
             }
             if (err && err.partial) {
@@ -2046,6 +2033,19 @@ PPP.app = (function () {
         msg.className = 'quotes-require-install';
         msg.textContent = i18n.t('quotesRequireInstallBody').replace('{size}', String(mb));
         info.appendChild(msg);
+        // _shardsMB() falls back to a figure baked in on 2026-07-26 whenever no
+        // manifest fetch has cached the real one yet — which is the norm on the
+        // path that reaches this notice (a returning device with nothing
+        // installed never renders the install prompt). Quote the real number
+        // as soon as the manifest lands, so this cannot drift as shards change.
+        _getManifest().then(function (m) {
+            if (!m) return;
+            _cacheBaseMB(m);
+            var real = _shardsMB();
+            if (real !== mb && msg.isConnected) {
+                msg.textContent = i18n.t('quotesRequireInstallBody').replace('{size}', String(real));
+            }
+        });
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'search-button';
@@ -5003,15 +5003,17 @@ PPP.app = (function () {
      * Never rejects: an older manifest without the block, or no network at all,
      * resolves to null and each caller keeps its previous behaviour.
      */
-    var _catalogPromise = null;
-    function _getCatalog() {
-        if (!_catalogPromise) {
-            _catalogPromise = fetch('data/manifest.json')
+    var _manifestPromise = null;
+    function _getManifest() {
+        if (!_manifestPromise) {
+            _manifestPromise = fetch('data/manifest.json')
                 .then(function (r) { return r.ok ? r.json() : null; })
-                .then(function (m) { return (m && m.catalog) || null; })
                 .catch(function () { return null; });
         }
-        return _catalogPromise;
+        return _manifestPromise;
+    }
+    function _getCatalog() {
+        return _getManifest().then(function (m) { return (m && m.catalog) || null; });
     }
 
     /** Live "{count} recordings" text in the onboarding intro sentence — kept

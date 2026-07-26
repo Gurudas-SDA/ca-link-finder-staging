@@ -2970,10 +2970,17 @@ test.describe('First visit (no presets — audit 2026-07-26)', () => {
     // Filters / By Added / Top Searches (and By Verse / Verses (Top)).
     // The delayed banner path is skipped under navigator.webdriver, so this
     // test goes in through beforeinstallprompt — the other way it can appear.
+    // The install gate is all-or-nothing, so this test does not try to walk
+    // past it — it puts the app in the state AFTER onboarding (purpose chosen,
+    // library installing via the usual hook) and looks at the layout there.
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('ppp_auto_install', '1');
+        localStorage.setItem('preferredLanguage', 'en');
+        localStorage.setItem('ppp_purpose', 'lectures');
+      } catch (e) {}
+    });
     await page.goto('./');
-    await page.click('.onb-lang');
-    await page.click('.onb-col-a .onb-go');            // "Browse lectures"
-    await page.locator('#installSkipBtn').click();     // continue without the library
     await waitForAppReady(page);
 
     await page.evaluate(() => {
@@ -3017,10 +3024,17 @@ test.describe('First visit (no presets — audit 2026-07-26)', () => {
     // option was "+ New collection" — you had to name a folder before you could
     // favorite anything. toggle() has always auto-created 'Favorites'; test 11
     // uses that API directly and so never saw the mismatch.
+    // What matters here is an EMPTY ppp_collections (cleared by this block's
+    // beforeEach), not the onboarding screen — so reach the results table the
+    // normal way rather than trying to slip past the all-or-nothing gate.
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('ppp_auto_install', '1');
+        localStorage.setItem('preferredLanguage', 'en');
+        localStorage.setItem('ppp_purpose', 'lectures');
+      } catch (e) {}
+    });
     await page.goto('./');
-    await page.click('.onb-lang');
-    await page.click('.onb-col-a .onb-go');
-    await page.locator('#installSkipBtn').click();
     await waitForAppReady(page);
 
     await page.fill('#searchTerm', 'janmastami');
