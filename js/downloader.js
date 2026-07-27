@@ -25,8 +25,53 @@ PPP.downloader = (function () {
     var MAX_ATTEMPTS = 4;
     var RETRY_DELAYS = [1000, 4000, 10000];
 
-    function _delay(ms) {
-        return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    /* ---- Cancellation -----------------------------------------------------
+     * The two gated entry points (firstInstall, addShards) take an optional
+     * `signal` as their LAST argument. It is either a real
+     * AbortSignal — then fetch() itself is cancelled mid-flight — or any object
+     * with an `aborted` property, which the pool and the retry ladder poll.
+     * Without this, a caller that gave up on the promise (the app's stall
+     * watchdog) left the whole pool running: a second attempt then downloaded
+     * the same 342 MB in parallel and both wrote install snapshots into the
+     * same IndexedDB record (Fable review, 2026-07-27).
+     */
+    function _abortError() {
+        var e = new Error('Install cancelled');
+        e.aborted = true;
+        return e;
+    }
+
+    function _isAborted(signal) {
+        return !!(signal && signal.aborted);
+    }
+
+    function _isAbortErr(err) {
+        return !!(err && (err.aborted === true || err.name === 'AbortError'));
+    }
+
+    /** Only a real AbortSignal may be handed to fetch(); the polled fallback
+     *  object would make fetch() throw TypeError. */
+    function _fetchSignal(signal) {
+        return (signal && typeof signal.addEventListener === 'function') ? signal : null;
+    }
+
+    /** Sleep that wakes up early when the install is cancelled — otherwise a
+     *  cancel during the 10 s retry back-off would sit there doing nothing. */
+    function _delay(ms, signal) {
+        return new Promise(function (resolve, reject) {
+            var fired = false;
+            var timer = null;
+            function done() {
+                if (fired) return;
+                fired = true;
+                if (timer) clearTimeout(timer);
+                if (_isAborted(signal)) reject(_abortError());
+                else resolve();
+            }
+            timer = setTimeout(done, ms);
+            var s = _fetchSignal(signal);
+            if (s) { try { s.addEventListener('abort', done); } catch (e) {} }
+        });
     }
 
     /**
@@ -44,8 +89,11 @@ PPP.downloader = (function () {
         return /quota/i.test(String(err.message || ''));
     }
 
-    function fetchManifest() {
-        return fetch('data/manifest.json', { cache: 'no-store' }).then(function (r) {
+    function fetchManifest(signal) {
+        var opts = { cache: 'no-store' };
+        var s = _fetchSignal(signal);
+        if (s) opts.signal = s;
+        return fetch('data/manifest.json', opts).then(function (r) {
             if (!r.ok) throw new Error('manifest HTTP ' + r.status);
             return r.json();
         });
@@ -126,11 +174,16 @@ PPP.downloader = (function () {
      * received chunk; falls back to a plain arrayBuffer() when the response
      * has no readable body stream.
      */
-    function _fetchWithProgress(url, onBytes) {
-        return fetch(url, { cache: 'no-store' }).then(function (r) {
+    function _fetchWithProgress(url, onBytes, signal) {
+        if (_isAborted(signal)) return Promise.reject(_abortError());
+        var opts = { cache: 'no-store' };
+        var fs = _fetchSignal(signal);
+        if (fs) opts.signal = fs;
+        return fetch(url, opts).then(function (r) {
             if (!r.ok) throw new Error('HTTP ' + r.status + ' loading ' + url);
             if (!r.body || !r.body.getReader) {
                 return r.arrayBuffer().then(function (buf) {
+                    if (_isAborted(signal)) throw _abortError();
                     if (onBytes) onBytes(buf.byteLength);
                     return buf;
                 });
@@ -139,6 +192,13 @@ PPP.downloader = (function () {
             var chunks = [];
             var received = 0;
             function pump() {
+                // Polled cancellation: covers the browsers without a real
+                // AbortSignal, where fetch() cannot be killed but the read loop
+                // can still stop instead of pulling the whole file.
+                if (_isAborted(signal)) {
+                    try { reader.cancel(); } catch (e) {}
+                    return Promise.reject(_abortError());
+                }
                 return reader.read().then(function (res) {
                     if (res.done) return null;
                     chunks.push(res.value);
@@ -212,17 +272,32 @@ PPP.downloader = (function () {
 
     /**
      * Simple promise pool: run worker(item) over items, `concurrency` at a time.
+     *
+     * Two guarantees the callers depend on:
+     *  - When `signal` is aborted, no further item is STARTED; the runners drain
+     *    (each in-flight item ends quickly, its fetch having been cancelled).
+     *  - The returned promise settles only after EVERY runner has stopped, so
+     *    "the pool finished" really means nothing is still downloading. It used
+     *    to reject the moment one item failed while the other runner kept
+     *    pulling items behind the caller's back — the caller then believed the
+     *    job had stopped and started a second one.
      */
-    function _runPool(items, worker, concurrency) {
+    function _runPool(items, worker, concurrency, signal) {
         var idx = 0;
+        var firstErr = null;
         function next() {
+            if (firstErr || _isAborted(signal)) return Promise.resolve();
             if (idx >= items.length) return Promise.resolve();
             var item = items[idx++];
-            return worker(item).then(next);
+            return worker(item).then(next, function (err) {
+                if (!firstErr) firstErr = err;
+            });
         }
         var runners = [];
         for (var k = 0; k < Math.min(concurrency, items.length); k++) runners.push(next());
-        return Promise.all(runners);
+        return Promise.all(runners).then(function () {
+            if (firstErr) throw firstErr;
+        });
     }
 
     /**
@@ -257,12 +332,13 @@ PPP.downloader = (function () {
      * IndexedDB transaction as the item's file records.
      * item = { type:'core'|'pack', name, coreKey?, pack?, entry }
      */
-    function _processItem(item, install, onBytes, resetBytes) {
+    function _processItem(item, install, onBytes, resetBytes, signal) {
         var entry = item.entry;
         var attempt = 0;
         function tryOnce() {
+            if (_isAborted(signal)) return Promise.reject(_abortError());
             attempt++;
-            return _fetchWithProgress(_itemUrl(entry), onBytes)
+            return _fetchWithProgress(_itemUrl(entry), onBytes, signal)
                 .then(function (buf) { return _verifyBuffer(buf, entry, item.name); })
                 .then(function (buf) {
                     // The `completedX` flags are set INSIDE the apply callback,
@@ -310,6 +386,10 @@ PPP.downloader = (function () {
                     else if (item.type === 'shard') delete install.completedShards[entry.id];
                     else delete install.completedPacks[entry.id];
                     resetBytes();
+                    // Cancelled: never retry, never dress it up as a download
+                    // failure. The caller is stopping this install on purpose
+                    // and the durable resume state stays exactly as it is.
+                    if (_isAborted(signal) || _isAbortErr(err)) throw _abortError();
                     // A full store cannot be retried into having room: the
                     // whole retry ladder would just re-download megabytes to
                     // fail at the very same IndexedDB write (field bug
@@ -318,7 +398,7 @@ PPP.downloader = (function () {
                     // the automatic-resume loop.
                     var quota = _isQuotaError(err);
                     if (!quota && attempt < MAX_ATTEMPTS) {
-                        return _delay(RETRY_DELAYS[attempt - 1] || RETRY_DELAYS[RETRY_DELAYS.length - 1])
+                        return _delay(RETRY_DELAYS[attempt - 1] || RETRY_DELAYS[RETRY_DELAYS.length - 1], signal)
                             .then(tryOnce);
                     }
                     // IDB DOMExceptions can carry an empty .message — fall back
@@ -372,16 +452,23 @@ PPP.downloader = (function () {
      * durable `install` state, hash-compared against the current manifest)
      * are skipped and pre-counted into the progress bar.
      * onProgress({ loadedBytes, totalBytes }) — throttled to ~10/s.
+     * `signal` (optional, last) cancels the whole install: fetches are aborted,
+     * no further item is started, and NOTHING is committed — the durable resume
+     * state is left exactly as the last completed item wrote it, so the next
+     * attempt continues instead of starting over.
      */
-    function firstInstall(onProgress, langs, includeShards) {
+    function firstInstall(onProgress, langs, includeShards, signal) {
+        if (_isAborted(signal)) return Promise.reject(_abortError());
         var sel = _normLangs(langs);
         var wantShards = !!includeShards;
         // Ask for eviction protection BEFORE the first byte, not after the
         // last: a ~139 MB library written into a non-persistent origin can be
         // evicted by the phone halfway through the download. Fire-and-forget.
         store.requestPersist();
-        return fetchManifest().then(function (manifest) {
+        return fetchManifest(signal).then(function (manifest) {
+            if (_isAborted(signal)) throw _abortError();
             return store.getState('install').then(function (saved) {
+                if (_isAborted(signal)) throw _abortError();
                 var install = saved || { completedCore: {}, completedPacks: {}, completedShards: {} };
                 if (!install.completedShards) install.completedShards = {};
                 // Record the selection ON the durable state, present in the
@@ -416,13 +503,15 @@ PPP.downloader = (function () {
                 return _storagePreflight(totalBytes - plan.doneBytes).then(function () {
                     return store.setState('install', install);
                 }).then(function () {
+                if (_isAborted(signal)) throw _abortError();
                 emit(true);
                 return _runPool(plan.work, function (item) {
                     itemBytes[item.name] = 0;
                     return _processItem(
                         item, install,
                         function (n) { itemBytes[item.name] += n; emit(); },
-                        function () { itemBytes[item.name] = 0; emit(true); }
+                        function () { itemBytes[item.name] = 0; emit(true); },
+                        signal
                     ).then(function () {
                         // Fold the finished item into the base (exact size).
                         delete itemBytes[item.name];
@@ -441,6 +530,10 @@ PPP.downloader = (function () {
                         // rest later. checkForUpdates/addLanguages keep their
                         // original abort-on-error behaviour.
                         delete itemBytes[item.name];
+                        // A cancellation is not a failed item — recording it
+                        // would turn a deliberate stop into a permanent
+                        // "this pack is broken" report.
+                        if (_isAbortErr(err)) return;
                         failed.push({
                             name: item.name,
                             error: String((err && err.message) || err),
@@ -448,8 +541,13 @@ PPP.downloader = (function () {
                         });
                         emit(true);
                     });
-                }, CONCURRENCY).then(function () {
+                }, CONCURRENCY, signal).then(function () {
                     emit(true);
+                    // Cancelled mid-pool: every runner has stopped by now (see
+                    // _runPool), so it is safe for the caller to start again.
+                    // Commit nothing — localManifest here would fence a library
+                    // that is only partly on the device.
+                    if (_isAborted(signal)) throw _abortError();
                     if (failed.length > 0) {
                         // Do NOT write localManifest: checkForUpdates treats it
                         // as ground truth, so recording it over a library with
@@ -730,10 +828,14 @@ PPP.downloader = (function () {
      * the shard list into `localManifest` so checkForUpdates' delta logic
      * treats them as present from now on (see _manifestForStore(manifest,
      * true) — same shape, built here without re-fetching the manifest twice).
-     * onProgress({loadedBytes, totalBytes}) mirrors addLanguages.
+     * onProgress({loadedBytes, totalBytes}) mirrors addLanguages. `signal`
+     * (optional, last) cancels it exactly like firstInstall: fetches aborted,
+     * no further item started, `shards: true` NOT committed.
      */
-    function addShards(onProgress) {
-        return fetchManifest().then(function (manifest) {
+    function addShards(onProgress, signal) {
+        if (_isAborted(signal)) return Promise.reject(_abortError());
+        return fetchManifest(signal).then(function (manifest) {
+            if (_isAborted(signal)) throw _abortError();
             var work = [];
             var totalBytes = 0;
             (manifest.sentenceShards || []).forEach(function (s) {
@@ -761,14 +863,16 @@ PPP.downloader = (function () {
                 return _processItem(
                     item, install,
                     function (n) { itemBytes[item.name] += n; emit(); },
-                    function () { itemBytes[item.name] = 0; emit(true); }
+                    function () { itemBytes[item.name] = 0; emit(true); },
+                    signal
                 ).then(function () {
                     delete itemBytes[item.name];
                     baseBytes += item.entry.size;
                     emit(true);
                 });
-            }, CONCURRENCY).then(function () {
+            }, CONCURRENCY, signal).then(function () {
                 emit(true);
+                if (_isAborted(signal)) throw _abortError();
                 return store.getState('localManifest').then(function (lm) {
                     var updated = {};
                     if (lm) Object.keys(lm).forEach(function (k) { updated[k] = lm[k]; });

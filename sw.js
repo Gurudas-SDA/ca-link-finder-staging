@@ -1,5 +1,10 @@
 // Service Worker v10 — offline app shell (precache + cache-first)
-// Versija: 2026-07-26
+// Versija: 2026-07-27
+//
+// 2026-07-27: shell files changed (js/db.js) and the last two hand-written
+// '?v=' labels became content hashes — see the static-asset section below.
+// Bumping the date is what makes the browser's SW update check see a byte
+// difference; sw-precache.js content alone is invisible to it.
 //
 // 2026-07-26: bumped alongside sw-precache.js (js/app.js, js/i18n.js and
 // others changed in commit 0f09795 without a cache-bust pass — see the
@@ -214,9 +219,18 @@ self.addEventListener('fetch', function (event) {
     // in a way no test sees. Codex audit, 2026-07-26.
     //
     // So a request carrying an explicit ?v= must be satisfied EXACTLY or go to
-    // the network. The loose match survives as the offline last resort, and
-    // stays the normal path for refs without ?v= (fonts.css woff2 refs, vendor
-    // libs, guide/menu-data.js?v=1 — where the version is not a content hash).
+    // the network. That rule only holds while EVERY ?v= in the app is a content
+    // hash; two references used hand-written labels instead
+    // (guide/menu-data.js?v=1, js/db-worker.js?v=cache5) and therefore missed
+    // this exact match on every single load — one wasted round trip plus a
+    // duplicate cache entry per generation. Both are content-hashed by
+    // scripts/cache_bust.py now (TARGETS and JS_REFS respectively); do not
+    // reintroduce a literal ?v= label anywhere.
+    //
+    // The loose match survives as the offline last resort, and stays the normal
+    // path for references carrying no ?v= at all: css/fonts/fonts.css and its
+    // woff2 urls, js/vendor/{papaparse,xlsx.full,sql-wasm}.js, manifest.json
+    // and the icons.
     const versioned = url.searchParams.has('v');
     event.respondWith((async function () {
         const hit = await caches.match(request, { ignoreSearch: !versioned });

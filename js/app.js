@@ -972,6 +972,26 @@ PPP.app = (function () {
     var _retryLangs = null;         // selection to resume with (null = default)
     var _retryShards = false;
     var _wakeLock = null;
+    // What an automatic resume must run while an install ERROR SCREEN is up.
+    // The gated paths (mandatory install, shards-only top-up) are not resumed
+    // by startBackgroundInstall — each has its own flow — so the error screen
+    // hands over the exact function its own Try again button would call. Set by
+    // _showInstallStalled, consumed once by _installRetryTick.
+    var _pendingResume = null;
+    // True while the attempt in flight was started AUTOMATICALLY. Only such an
+    // attempt may spend a unit of _autoFailCount, and only when it actually
+    // FAILS. Charging the budget for the tick itself meant two tab switches
+    // exhausted it and the listeners came off — precisely the regression the
+    // error screen keeps them armed to avoid.
+    var _autoAttemptPending = false;
+    // Floor between VISIBILITY-driven resumes. Returning to the tab now costs
+    // nothing budget-wise, so it needs its own brake: without one, flicking
+    // between tabs would relaunch a failing install over and over. An 'online'
+    // event is deliberately NOT rate-limited — "the network came back" is the
+    // signal this whole mechanism exists to act on, and repeated REAL failures
+    // still spend the budget and stop the loop.
+    var _VISIBILITY_RESUME_MIN_MS = 30000;
+    var _lastAutoResumeAt = 0;
 
     function _acquireWakeLock() {
         // Advisory only: unsupported browsers, denied permission or a hidden
@@ -993,14 +1013,35 @@ PPP.app = (function () {
         _wakeLock = null;
     }
 
-    function _installRetryTick() {
+    /**
+     * @param {boolean} rateLimited true for the visibility-driven tick, which
+     *        must not be able to relaunch a failing install on every tab switch.
+     */
+    function _installRetryTick(rateLimited) {
         // De-duplication: the guard is the single source of truth, so an
         // 'online' burst plus a visibilitychange can never start two pools.
         if (_installInFlight || !navigator.onLine) return;
+        if (_pendingResume) {
+            // An install error screen is on display. Resuming automatically is
+            // the whole point on a flaky connection — a network blip must not
+            // demote itself into "user has to notice and press a button".
+            // Bounded by the SAME counter that stops the iPad wipe-the-message
+            // loop, but the counter is charged where a failure HAPPENS, not
+            // here: merely looking at the tab is not a failed install.
+            if (_autoFailCount >= AUTO_FAIL_MAX) { _removeInstallListeners(); return; }
+            var now = Date.now();
+            if (rateLimited && (now - _lastAutoResumeAt) < _VISIBILITY_RESUME_MIN_MS) return;
+            _lastAutoResumeAt = now;
+            _autoAttemptPending = true;
+            var fn = _pendingResume;
+            _pendingResume = null;
+            fn();
+            return;
+        }
         startBackgroundInstall(_retryLangs, _retryShards);
     }
 
-    function _onlineRetryHandler() { _installRetryTick(); }
+    function _onlineRetryHandler() { _installRetryTick(false); }
 
     function _visibilityRetryHandler() {
         if (document.visibilityState !== 'visible') return;
@@ -1010,7 +1051,7 @@ PPP.app = (function () {
             _acquireWakeLock();
             return;
         }
-        _installRetryTick();
+        _installRetryTick(true);    // rate-limited: a tab switch is not an event
     }
 
     /**
@@ -1024,6 +1065,21 @@ PPP.app = (function () {
         _installListenersOn = true;
         window.addEventListener('online', _onlineRetryHandler);
         document.addEventListener('visibilitychange', _visibilityRetryHandler);
+    }
+
+    /**
+     * Stop the AUTOMATIC resume for good (until a human presses Retry, which
+     * refills the budget). Used where retrying by itself cannot possibly help
+     * and would only wipe the message off the screen: a device with no storage
+     * left repeats the exact same failing IndexedDB write. Spending the budget
+     * — rather than only unhooking the listeners — also stops the error screen
+     * from re-arming them behind our back (_showInstallStalled).
+     */
+    function _stopAutoResume() {
+        _autoFailCount = AUTO_FAIL_MAX;
+        _autoAttemptPending = false;
+        _pendingResume = null;
+        _removeInstallListeners();
     }
 
     /** Remove the retry listeners — only on a fully successful install. */
@@ -1086,28 +1142,115 @@ PPP.app = (function () {
      * {stalled:true} so the caller can show an error the user can act on.
      */
     var _INSTALL_STALL_MS = 45000;
+    // How long a NEW attempt waits for the cancelled one to actually stop.
+    // The abort kills the fetches at once, so the only thing that can still be
+    // outstanding is an IndexedDB apply — which is exactly the wedge the
+    // watchdog exists for, hence a bound rather than an unlimited wait: a
+    // frozen store must not freeze the Try again button too.
+    var _CANCEL_WAIT_MS = 5000;
+
+    // The install that is running right now, whoever started it (mandatory
+    // gate, shards-only top-up, background resume). Exactly one at a time.
+    var _installJob = null;
+
+    /**
+     * Cancellation handle. A real AbortController when the browser has one —
+     * then fetch() is killed mid-flight; otherwise a plain flag the downloader
+     * polls between items, chunks and retries, so the pool still stops.
+     */
+    function _makeAbortHandle() {
+        var handle = { aborted: false, signal: null, abort: null };
+        var ctrl = null;
+        try { if (typeof AbortController === 'function') ctrl = new AbortController(); } catch (e) { ctrl = null; }
+        if (ctrl) {
+            handle.signal = ctrl.signal;
+            handle.abort = function () { handle.aborted = true; try { ctrl.abort(); } catch (e) {} };
+        } else {
+            var flag = { aborted: false };
+            handle.signal = flag;
+            handle.abort = function () { handle.aborted = true; flag.aborted = true; };
+        }
+        return handle;
+    }
+
+    /** Publish the running install so a later start can cancel AND await it. */
+    function _registerInstallJob(handle, work) {
+        var job = {
+            handle: handle,
+            done: Promise.resolve(work).then(function () {}, function () {})
+        };
+        _installJob = job;
+        job.done.then(function () { if (_installJob === job) _installJob = null; });
+        return job;
+    }
+
+    /**
+     * Stop the install currently running and wait until it has REALLY stopped.
+     *
+     * The stall watchdog used to only drop its promise: the pool underneath
+     * kept downloading, so "Try again" started a SECOND one. Two pools over the
+     * same 342 MB doubled the data bill on exactly the weak connections that
+     * stall, wrote `install` snapshots over each other, and threw away the
+     * stuck download's result if it did finish — leaving the user staring at an
+     * error screen with a complete library on the device (Fable review,
+     * 2026-07-27). Cancelling for real and awaiting the stop is what makes the
+     * retry a retry instead of a duplicate.
+     */
+    function _cancelInstallJob() {
+        var job = _installJob;
+        if (!job) return Promise.resolve();
+        _installJob = null;
+        try { job.handle.abort(); } catch (e) {}
+        return new Promise(function (resolve) {
+            var t = setTimeout(function () {
+                console.warn('Previous install did not stop within ' + _CANCEL_WAIT_MS +
+                    ' ms (wedged storage?) — continuing anyway; its downloads are aborted.');
+                resolve();
+            }, _CANCEL_WAIT_MS);
+            job.done.then(function () { clearTimeout(t); resolve(); });
+        });
+    }
+
     function _withStallWatchdog(start, onTick) {
-        var timer = null, settled = false;
-        return new Promise(function (resolve, reject) {
-            function arm() {
-                if (timer) clearTimeout(timer);
-                timer = setTimeout(function () {
+        // Single flight, enforced where it matters: never begin on top of work
+        // that may still be downloading (see _cancelInstallJob).
+        return _cancelInstallJob().then(function () {
+            return new Promise(function (resolve, reject) {
+                var timer = null, settled = false;
+                var handle = _makeAbortHandle();
+                function disarm() { if (timer) { clearTimeout(timer); timer = null; } }
+                function arm() {
+                    disarm();
+                    timer = setTimeout(function () {
+                        if (settled) return;
+                        settled = true;
+                        // Cancel for real — the promise this rejects is not the
+                        // download, and dropping it never stopped anything.
+                        try { handle.abort(); } catch (e) {}
+                        reject({ stalled: true });
+                    }, _INSTALL_STALL_MS);
+                }
+                arm();
+                var work;
+                try {
+                    work = start(function (p) {
+                        if (settled) return;
+                        arm();              // progress: restart the clock
+                        onTick(p);
+                    }, handle.signal);
+                } catch (e) {
+                    work = Promise.reject(e);
+                }
+                // Registered even after a stall: `done` is how the next attempt
+                // knows the cancelled pool has finished unwinding.
+                _registerInstallJob(handle, work);
+                Promise.resolve(work).then(function (v) {
                     if (settled) return;
-                    settled = true;
-                    reject({ stalled: true });
-                }, _INSTALL_STALL_MS);
-            }
-            arm();
-            start(function (p) {
-                if (settled) return;
-                arm();              // progress: restart the clock
-                onTick(p);
-            }).then(function (v) {
-                if (settled) return;
-                settled = true; clearTimeout(timer); resolve(v);
-            }, function (e) {
-                if (settled) return;
-                settled = true; clearTimeout(timer); reject(e);
+                    settled = true; disarm(); resolve(v);
+                }, function (e) {
+                    if (settled) return;
+                    settled = true; disarm(); reject(e);
+                });
             });
         });
     }
@@ -1117,6 +1260,11 @@ PPP.app = (function () {
      *  (Rājan all-or-nothing). It only replaces a silent freeze with a message
      *  and a button. */
     function _showInstallStalled(langs, includeShards, retryFn) {
+        // Budget accounting lives HERE, where an attempt has demonstrably
+        // failed — not at the tick that started it. An automatic attempt that
+        // fails costs one unit; a manual one costs nothing (the human already
+        // decided); simply returning to the tab costs nothing at all.
+        if (_autoAttemptPending) { _autoAttemptPending = false; _autoFailCount++; }
         ui.showLoading(i18n.t('installStalled'));
         // Keep the click guard ARMED on this screen. Disarming it (the obvious
         // move, since the freeze we are fixing WAS a stuck guard) left the
@@ -1138,8 +1286,14 @@ PPP.app = (function () {
         btn.className = 'search-button';
         btn.style.marginTop = '8px';
         btn.textContent = i18n.t('installRetryBtn');
-        btn.onclick = function () {
-            btn.remove();
+
+        // ONE way forward, used by both the button and the automatic resume —
+        // so a connection coming back can never start something different (or
+        // something extra) from what Try again would have started.
+        function doRetry() {
+            _pendingResume = null;
+            var b = document.getElementById('installStallRetryBtn');
+            if (b) b.remove();
             // retryFn wins when given: the shards-only path must resume THAT,
             // not restart a full 342 MB install.
             if (retryFn) { retryFn(); return; }
@@ -1149,10 +1303,29 @@ PPP.app = (function () {
             if (!langs) { startFirstInstallFlow(); return; }
             PPP.downloader.fetchManifest().then(function (m) {
                 if (m) beginInstall(m, langs, includeShards);
-                else _showInstallStalled(langs, includeShards);
-            }).catch(function () { _showInstallStalled(langs, includeShards); });
+                else _showInstallStalled(langs, includeShards, retryFn);
+            }).catch(function () { _showInstallStalled(langs, includeShards, retryFn); });
+        }
+
+        btn.onclick = function () {
+            // A human pressed it: refill the automatic budget so the connection
+            // gets its full allowance again after this attempt, and make sure
+            // this attempt is not billed to the automatic one it replaces.
+            _autoFailCount = 0;
+            _autoAttemptPending = false;
+            _lastAutoResumeAt = Date.now();   // space automatic tries from this one
+            doRetry();
         };
         bar.appendChild(btn);
+
+        // Keep the automatic resume alive ON the error screen. Removing the
+        // 'online'/'visibilitychange' listeners here turned every network blip
+        // into a manual click — the regression landed precisely on the bad
+        // connections that produce this screen in the first place. The resume
+        // runs through doRetry(), i.e. the same single-flight path as the
+        // button, so it cannot become the second pool of A1.
+        _pendingResume = doRetry;
+        if (_autoFailCount < AUTO_FAIL_MAX) _ensureInstallListeners(langs, includeShards);
     }
 
     /**
@@ -1175,8 +1348,8 @@ PPP.app = (function () {
             ui.updateProgress(0);
             _installInFlight = true;
             _acquireWakeLock();
-            return _withStallWatchdog(function (onProgress) {
-                return PPP.downloader.addShards(onProgress);
+            return _withStallWatchdog(function (onProgress, signal) {
+                return PPP.downloader.addShards(onProgress, signal);
             }, function (p) {
                 var frac = p.totalBytes ? p.loadedBytes / p.totalBytes : 0;
                 _installPct = Math.round(frac * 100);
@@ -1186,18 +1359,26 @@ PPP.app = (function () {
             }).then(function () {
                 _disarmInstallGuard();
                 _installInFlight = false;
+                _pendingResume = null;
+                _autoFailCount = 0;
+                _autoAttemptPending = false;
+                _removeInstallListeners();
                 _releaseWakeLock();
                 db.resetLibraryInstalledCache();
                 return openFromIdb();
             }).catch(function (err) {
+                if (err && err.aborted) return;   // superseded by a newer attempt
                 _disarmInstallGuard();
                 _installInFlight = false;
                 _releaseWakeLock();
                 console.error('Shards-only install failed:', err);
-                // Same honest dead-end screen, but retry resumes THIS path.
+                // Same honest dead-end screen, but retry — manual OR automatic
+                // on the next 'online'/visibility tick — resumes THIS path,
+                // never a full 342 MB reinstall.
                 _showInstallStalled(null, true, _startShardsOnlyInstall);
             });
         }).catch(function (err) {
+            if (err && err.aborted) return;
             console.warn('Shards-only install could not start:', err);
             _showInstallStalled(null, true, _startShardsOnlyInstall);
         });
@@ -1214,8 +1395,8 @@ PPP.app = (function () {
         _installInFlight = true;
         _ensureInstallListeners(langs, includeShards);
         _acquireWakeLock();
-        return _withStallWatchdog(function (onProgress) {
-            return PPP.downloader.firstInstall(onProgress, langs, includeShards);
+        return _withStallWatchdog(function (onProgress, signal) {
+            return PPP.downloader.firstInstall(onProgress, langs, includeShards, signal);
         }, function (p) {
             var frac = p.totalBytes ? p.loadedBytes / p.totalBytes : 0;
             _installPct = Math.round(frac * 100);
@@ -1226,6 +1407,9 @@ PPP.app = (function () {
             _disarmInstallGuard();
             _installInFlight = false;
             _offlinePartial = false;
+            _pendingResume = null;
+            _autoFailCount = 0;
+            _autoAttemptPending = false;
             _removeInstallListeners();
             _releaseWakeLock();
             PPP.offlineStore.requestPersist();
@@ -1236,14 +1420,19 @@ PPP.app = (function () {
             db.resetLibraryInstalledCache();
             return openFromIdb();
         }).catch(function (err) {
+            // Cancelled because a newer attempt took over — it owns the screen
+            // and the flags now.
+            if (err && err.aborted) return;
             _disarmInstallGuard();
             _installInFlight = false;
             _releaseWakeLock();
             console.error('Offline install failed:', err);
             if (err && err.stalled) {
-                // Nothing moved for 45 s — almost always wedged storage. Do not
-                // auto-resume behind a frozen screen; the user drives the retry.
-                _removeInstallListeners();
+                // Nothing moved for 45 s — almost always wedged storage. The
+                // download underneath has been ABORTED by the watchdog (not
+                // merely abandoned), so the error screen can keep its automatic
+                // resume armed: a connection coming back retries through the
+                // same single-flight path as the button, never beside it.
                 _showInstallStalled(langs, includeShards);
                 return;
             }
@@ -1273,7 +1462,7 @@ PPP.app = (function () {
                     // 69%→79%→69% loop). Disarm the auto-resume listeners and
                     // say the real cause; a manual retry / next boot still
                     // resumes from the durable install state.
-                    _removeInstallListeners();
+                    _stopAutoResume();
                     ui.toast(i18n.t('offlineStorageFull').replace('{left}', String(leftMB)));
                 } else {
                     ui.toast(i18n.t('offlineInterrupted').replace('{left}', String(leftMB)) +
@@ -1281,7 +1470,20 @@ PPP.app = (function () {
                 }
                 return PPP.downloader.isCoreReady().then(function (ready) {
                     if (ready) return openFromIdb();
-                    loadDataLegacy();
+                    // Core not on the device yet. This used to drop into
+                    // loadDataLegacy() — the THIRD way a failed install quietly
+                    // turned the mandatory gate into an optional one (28468a2
+                    // closed the other two, 1d). A partial install with no
+                    // usable core is not a working app: "In Text" has no
+                    // shards, transcripts have no records, and the user is
+                    // silently handed the half-app the all-or-nothing design
+                    // exists to prevent. Same honest screen as every other
+                    // install failure — error + Try again, gate still closed.
+                    _showInstallStalled(langs, includeShards);
+                }, function () {
+                    // Even the readiness probe failed — still no reason to open
+                    // an app without data behind it.
+                    _showInstallStalled(langs, includeShards);
                 });
             }
             // A first install that failed outright. It used to drop into the
@@ -1289,8 +1491,9 @@ PPP.app = (function () {
             // optional one, the exact opposite of the decision (Rājan
             // 2026-07-26). Progress is durable, so the retry resumes where it
             // stopped; until it succeeds the app stays gated, but never frozen
-            // and never silent.
-            _removeInstallListeners();
+            // and never silent. The auto-resume listeners stay armed (budgeted
+            // by AUTO_FAIL_MAX inside _installRetryTick) so a network blip
+            // resumes by itself instead of demanding a click.
             _showInstallStalled(langs, includeShards);
         });
     }
@@ -1702,7 +1905,11 @@ PPP.app = (function () {
             _retryLangs = sel;
             _retryShards = incShards;
             var totalMB = Math.round(PPP.downloader.computeInstallBytes(manifest, sel, incShards) / 1048576);
-            return PPP.downloader.firstInstall(function (p) {
+            // Cancellable and registered like every other install path, so a
+            // gated install starting later stops this pool instead of running
+            // beside it (A1 — two pools over the same 342 MB).
+            var handle = _makeAbortHandle();
+            var work = PPP.downloader.firstInstall(function (p) {
                 var mb = Math.round(p.loadedBytes / 1048576);
                 var pct = p.totalBytes ? Math.round(p.loadedBytes / p.totalBytes * 100) : 0;
                 var m = document.getElementById('offlineProgressMsg');
@@ -1710,10 +1917,15 @@ PPP.app = (function () {
                     m.textContent = i18n.t('offlineDownloading')
                         .replace('{loaded}', mb).replace('{total}', totalMB).replace('{pct}', pct);
                 }
-            }, sel, incShards).then(function () {
+            }, sel, incShards, handle.signal);
+            _registerInstallJob(handle, work);
+            return work.then(function () {
+                if (handle.aborted) return;     // superseded by a newer attempt
                 _installInFlight = false;
                 _offlinePartial = false;
                 _autoFailCount = 0;
+                _pendingResume = null;
+                _autoAttemptPending = false;
                 _removeInstallListeners();
                 _releaseWakeLock();
                 PPP.offlineStore.requestPersist();
@@ -1736,6 +1948,9 @@ PPP.app = (function () {
                 }
             });
         }).catch(function (err) {
+            // Cancelled because another install path took over — that one owns
+            // the flags and the UI now; touching them here would undo it.
+            if (err && err.aborted) return;
             _installInFlight = false;
             _releaseWakeLock();
             // Listeners stay armed on failure — that is the whole point: the
@@ -1759,7 +1974,7 @@ PPP.app = (function () {
                         // Storage full: retrying automatically only repeats
                         // the same failing IndexedDB write — stop the loop and
                         // name the real cause. Manual Retry stays available.
-                        _removeInstallListeners();
+                        _stopAutoResume();
                         errMsg.textContent = i18n.t('offlineStorageFull').replace('{left}', String(leftMB));
                     } else {
                         _autoFailCount++;
@@ -4150,7 +4365,7 @@ PPP.app = (function () {
     var _currentTranscriptCtx = null;
 
     function _sanitizeFilename(s) {
-        return String(s || '').replace(/[<>:"/\\|?* -]/g, '_').replace(/\s+/g, '_').slice(0, 120) || 'transcript';
+        return String(s || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, '_').slice(0, 120) || 'transcript';
     }
 
     function _escapeHtmlAttr(s) {

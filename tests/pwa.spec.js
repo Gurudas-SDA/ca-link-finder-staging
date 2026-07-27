@@ -1609,6 +1609,55 @@ test.describe('Service Worker cannot pair a new index.html with old JS (Codex, 2
     expect(body).toContain('FROM-CACHE');
   });
 
+  test('P18c. The db-worker ?v= is a content hash, so its request hits the precache exactly', async ({ page }) => {
+    // Consequence of P18: an exact-match rule only works if every ?v= is a
+    // content hash. js/db-worker.js was requested as '?v=cache5' — a
+    // hand-written label — while build_sw_precache.py stored the entry under
+    // the sha256[:8] hash, so this asset missed the cache on EVERY load and
+    // left a duplicate entry behind. scripts/cache_bust.py (JS_REFS) keeps the
+    // reference in js/db.js in sync now; this test fails if a label comes back.
+    test.setTimeout(90000);
+
+    await page.goto('./');
+    await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+
+    let shell = null;
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline && !shell) {
+      shell = await page.evaluate(async () => {
+        const names = await caches.keys();
+        const n = names.find(x => x.indexOf('ca-shell-') === 0);
+        if (!n) return null;
+        const c = await caches.open(n);
+        return (await c.keys()).length >= 10 ? n : null;
+      });
+      if (!shell) await page.waitForTimeout(500);
+    }
+    expect(shell, 'shell cache never filled').not.toBeNull();
+
+    // Read the reference the app really uses, from source — never hardcode the
+    // hash here, it changes with every db-worker.js edit.
+    const ref = await page.evaluate(async () => {
+      const src = await fetch('js/db.js').then(r => r.text());
+      const m = src.match(/new Worker\(['"]([^'"]+)['"]\)/);
+      return m ? m[1] : null;
+    });
+    expect(ref, 'no new Worker(...) reference found in js/db.js').not.toBeNull();
+    expect(ref, 'the worker ?v= must be a sha256[:8] content hash, not a label')
+      .toMatch(/^js\/db-worker\.js\?v=[0-9a-f]{8}$/);
+
+    // Exact match, the way sw.js v10 answers a ?v= request.
+    const hit = await page.evaluate(async (url) => {
+      const r = await caches.match(url);
+      return !!r;
+    }, ref);
+    expect(hit, 'the URL the app requests is not a precache key: ' + ref).toBe(true);
+
+    // And the old style would indeed have missed — that is what made this a bug.
+    const labelHit = await page.evaluate(async () => !!(await caches.match('js/db-worker.js?v=cache5')));
+    expect(labelHit).toBe(false);
+  });
+
 });
 
 test.describe('The device stores the library once (measured install, 2026-07-27)', () => {
@@ -1767,6 +1816,279 @@ test.describe('The mandatory install cannot freeze the app (Codex + Sabhā, 2026
     await page.locator('button.search-button').first().click({ force: true });
     await expect(page.locator('#uiToast')).toContainText('has to be downloaded', { timeout: 5000 });
     expect(await page.locator('#resultsTable tbody tr').count()).toBeLessThan(2);
+  });
+
+});
+
+test.describe('An installed library never fetches a shard behind the user (A2, 2026-07-27)', () => {
+  // The shard reader failed closed for "no record in IDB", but its OUTER catch
+  // swallowed a failure of the IndexedDB read ITSELF (quota, corrupt store,
+  // aborted transaction) and went to the network — the exact metered download
+  // the all-or-nothing install forbids (Rājan, 2026-07-26).
+  //
+  // No install is needed to exercise it: the fence reads PPP.offlineStore, so
+  // the store is stubbed to fail the way a damaged IDB does. That keeps the
+  // test at a few seconds instead of a 342 MB install, and it also lets the
+  // NEGATIVE case (no library installed → the network IS the normal path) be
+  // checked, which a real install cannot do.
+  test.use({ serviceWorkers: 'block' });
+
+  /** Stub the offline store: reads always blow up; 'shards' state as given. */
+  async function withBrokenIdb(page, shardsInstalled) {
+    return page.evaluate(function (installed) {
+      PPP.offlineStore.supported = function () { return true; };
+      PPP.offlineStore.getGz = function () {
+        // What a corrupted/aborted IndexedDB read looks like — NOT "no record",
+        // which resolves with undefined and is handled on the hot path.
+        return Promise.reject(new DOMException('backing store failure', 'UnknownError'));
+      };
+      PPP.offlineStore.getState = function (key) {
+        return Promise.resolve(key === 'shards' ? installed : null);
+      };
+      PPP.db.resetLibraryInstalledCache();   // the memo must not hide the answer
+      return PPP.db.searchSentencesChunked(
+        'SELECT 1 AS n', null, { $limit: 1 }
+      ).then(function () {
+        return { threw: false, repair: false, msg: '' };
+      }, function (e) {
+        return { threw: true, repair: e && e.shardRepairNeeded === true, msg: String(e && e.message) };
+      });
+    }, shardsInstalled);
+  }
+
+  test('P20. IDB read error + shards installed → repair error, zero shard requests', async ({ page }) => {
+    const shardReqs = [];
+    page.on('request', r => {
+      if (r.url().indexOf('/data/shards/') !== -1) shardReqs.push(r.url());
+    });
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.db && PPP.offlineStore, { timeout: 30000 });
+
+    const res = await withBrokenIdb(page, true);
+    expect(res.threw).toBe(true);
+    expect(res.repair, 'a damaged library must surface the repair path: ' + res.msg).toBe(true);
+    expect(shardReqs, 'an installed device fetched a shard from the network').toEqual([]);
+  });
+
+  test('P20b. Same IDB read error with NO library installed → the network stays the normal path', async ({ page }) => {
+    // The other half of the fence. Failing closed for everyone would kill
+    // search for online users with no install (Fable, 2026-07-27), so this
+    // must NOT become a repair error.
+    const shardReqs = [];
+    page.on('request', r => {
+      if (r.url().indexOf('/data/shards/') !== -1) shardReqs.push(r.url());
+    });
+    // Abort the shard download: the attempt is the assertion, the ~9 MB is not.
+    await page.route('**/data/shards/**', route => route.abort());
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.db && PPP.offlineStore, { timeout: 30000 });
+
+    const res = await withBrokenIdb(page, false);
+    expect(res.repair, 'a device with no install must not be told to repair').toBe(false);
+    expect(shardReqs.length, 'the online fallback fetch never happened').toBeGreaterThan(0);
+  });
+
+});
+
+// ===========================================================================
+// A stalled install must STOP, stay gated, and resume by itself
+// (Fable review, 2026-07-27 — three defects the 110-test suite did not cover)
+// ===========================================================================
+//
+// Why these exist: the suite was green while all three bugs were live, because
+// no test ever reached the state they live in. Each test below was verified to
+// FAIL on the pre-fix code — the concrete failure is recorded in each test.
+test.describe('A stalled install stops, stays gated and resumes itself (2026-07-27)', () => {
+
+  /**
+   * Reach the mandatory install gate. The file-level beforeEach presets
+   * ppp_purpose for every test here, which skips onboarding — and onboarding is
+   * what triggers the gate — so this init script (registered second, therefore
+   * running second) undoes it. Same trick as P16.
+   */
+  async function openGate(page) {
+    await page.addInitScript(() => {
+      try {
+        localStorage.removeItem('ppp_auto_install');
+        localStorage.removeItem('ppp_purpose');
+        localStorage.setItem('preferredLanguage', 'en');
+      } catch (e) {}
+    });
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader, { timeout: 30000 });
+  }
+
+  /** Language -> purpose -> the Download button of the mandatory prompt. */
+  async function pressDownload(page) {
+    await page.locator('button.onb-lang').first().click();   // English
+    await page.click('.onb-col-a .onb-go');                  // "Browse lectures"
+    await expect(page.locator('#installOfflineBtn')).toBeVisible({ timeout: 20000 });
+    await page.click('#installOfflineBtn');
+  }
+
+  test('P21. The stall watchdog ABORTS the download, and Try again waits for it to stop', async ({ page }) => {
+    // A1. The watchdog used to only drop its promise: the pool underneath kept
+    // downloading, so Try again ran a SECOND one over the same 342 MB — double
+    // data on exactly the weak connections that stall, two writers on the same
+    // `install` record, and the stuck download's result thrown away if it did
+    // finish. The 45 s silence window is the subject, hence the long timeout.
+    //
+    // NEGATIVE CHECK (verified against HEAD = 62336dd, pre-fix js/app.js):
+    // this test failed at the first assertion with
+    //   "Error: app.js must pass an abort signal into firstInstall
+    //    Expected: true / Received: false"
+    // because beginInstall called firstInstall(onProgress, langs, includeShards)
+    // with no fourth argument — there was no cancellation channel at all.
+    test.setTimeout(200000);
+    await openGate(page);
+
+    // An install that never settles by itself; the test settles call #1 by hand.
+    await page.evaluate(() => {
+      window.__calls = [];
+      PPP.downloader.firstInstall = function (onProgress, langs, shards, signal) {
+        const rec = { signal: signal, settle: null, sawAbortEvent: false };
+        if (signal && signal.addEventListener) {
+          signal.addEventListener('abort', () => { rec.sawAbortEvent = true; });
+        }
+        window.__calls.push(rec);
+        return new Promise((resolve, reject) => { rec.settle = () => reject({ aborted: true }); });
+      };
+    });
+
+    await pressDownload(page);
+    await expect(page.locator('#installStallRetryBtn')).toBeVisible({ timeout: 90000 });
+
+    // 1. The app handed the downloader a real cancellation channel...
+    expect(
+      await page.evaluate(() => !!(window.__calls[0] && window.__calls[0].signal)),
+      'app.js must pass an abort signal into firstInstall'
+    ).toBe(true);
+
+    // 2. ...and the watchdog actually pulled it.
+    expect(
+      await page.evaluate(() => !!(window.__calls[0].signal.aborted || window.__calls[0].sawAbortEvent)),
+      'the watchdog must abort the underlying download, not just drop the promise'
+    ).toBe(true);
+
+    // 3. Try again must not start a second pool while the first is still alive.
+    //    1.5 s is well inside the 5 s cancel bound, so this is not a race.
+    await page.click('#installStallRetryBtn');
+    await page.waitForTimeout(1500);
+    expect(
+      await page.evaluate(() => window.__calls.length),
+      'a second install started while the first had not stopped'
+    ).toBe(1);
+
+    // 4. Only once the cancelled work has unwound may attempt 2 begin.
+    await page.evaluate(() => window.__calls[0].settle());
+    await page.waitForFunction(() => window.__calls.length === 2, { timeout: 15000 });
+    expect(
+      await page.evaluate(() => window.__calls.length),
+      'exactly one retry, started only after the first stopped'
+    ).toBe(2);
+  });
+
+  test('P22. A partial install with no usable core stays gated instead of going online', async ({ page }) => {
+    // A3. The third way a failed install quietly turned the mandatory gate into
+    // an optional one. 28468a2 (point 1d) closed the other two; this one kept
+    // falling through to loadDataLegacy(), handing the user the half-app the
+    // all-or-nothing decision exists to prevent.
+    //
+    // NEGATIVE CHECK (verified against HEAD = 62336dd, pre-fix js/app.js):
+    //   "expect(locator).toBeVisible() failed — Locator: #installStallRetryBtn
+    //    Expected: visible / Timeout: 30000ms / element(s) not found"
+    // i.e. no error screen was ever rendered, because the app had already
+    // opened in online mode behind the gate.
+    await openGate(page);
+
+    await page.evaluate(() => {
+      PPP.downloader.firstInstall = function () {
+        return Promise.reject({ partial: true, totalBytes: 200000000, doneBytes: 1000, failedItems: [] });
+      };
+      PPP.downloader.isCoreReady = function () { return Promise.resolve(false); };
+    });
+
+    await pressDownload(page);
+
+    // The gate holds: the honest error screen, not the online app.
+    await expect(page.locator('#installStallRetryBtn')).toBeVisible({ timeout: 30000 });
+    await expect(page.locator('#progressBar')).toContainText('cannot continue');
+
+    // And the app itself is still unusable — the click guard answers instead of
+    // a dead Search button in front of no data.
+    await page.fill('#searchTerm', 'krishna');
+    await page.locator('button.search-button').first().click({ force: true });
+    await expect(page.locator('#uiToast')).toBeVisible({ timeout: 8000 });
+    expect(await page.locator('#resultsTable tbody tr').count()).toBeLessThan(2);
+  });
+
+  test('P23. The error screen keeps auto-resume: "online" retries by itself, tab switches do not burn the budget', async ({ page }) => {
+    // A4. The error paths used to remove the 'online'/'visibilitychange'
+    // listeners, so a network blip that would have healed itself turned into
+    // "the user must notice and press a button" — a regression aimed precisely
+    // at the bad connections that produce this screen.
+    //
+    // NEGATIVE CHECK (verified against HEAD = 62336dd, pre-fix js/app.js):
+    // the run died inside waitForFunction waiting for a second install attempt
+    // that never came ("page.waitForFunction: Test timeout of 200000ms
+    // exceeded") — no event reached anything, because _removeInstallListeners()
+    // had already run on the stalled path.
+    //
+    // The second half guards the fix's own follow-up defect: charging the retry
+    // budget at the TICK meant two tab switches exhausted AUTO_FAIL_MAX and
+    // disarmed the listeners, re-creating the same regression from the other
+    // side. The budget is now spent only by an automatic attempt that FAILS.
+    test.setTimeout(200000);
+    await openGate(page);
+
+    await page.evaluate(() => {
+      window.__calls = [];
+      PPP.downloader.firstInstall = function (onProgress, langs, shards, signal) {
+        const rec = { signal: signal, settle: null };
+        window.__calls.push(rec);
+        // Call #1 hangs (the stall). Later calls fail fast so the error screen
+        // returns and attempts stay countable.
+        if (window.__calls.length === 1) {
+          return new Promise((resolve, reject) => { rec.settle = () => reject({ aborted: true }); });
+        }
+        return Promise.reject(new Error('still failing'));
+      };
+    });
+
+    await pressDownload(page);
+    await expect(page.locator('#installStallRetryBtn')).toBeVisible({ timeout: 90000 });
+
+    // The stuck attempt was aborted; let it unwind so the (correct)
+    // single-flight wait is not what the next assertion measures.
+    await page.evaluate(() => window.__calls[0].settle && window.__calls[0].settle());
+    await page.waitForTimeout(300);
+
+    // Coming back to the tab is a genuine resume opportunity, so the FIRST one
+    // does start attempt 2 (which fails fast here).
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await page.waitForFunction(() => window.__calls.length === 2, { timeout: 15000 });
+
+    // The SECOND one, moments later, must not — otherwise flicking between
+    // tabs relaunches a failing install over and over.
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await page.waitForTimeout(1000);
+    expect(
+      await page.evaluate(() => window.__calls.length),
+      'a rapid second tab switch must not relaunch the install'
+    ).toBe(2);
+
+    // The decisive one: the network comes back, nobody touches the screen, and
+    // it resumes anyway. This is what proves a tab switch did NOT spend the
+    // retry budget — when the tick itself was charged, two visibility ticks
+    // exhausted AUTO_FAIL_MAX and this 'online' event reached nothing.
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await page.waitForFunction(() => window.__calls.length >= 3, { timeout: 15000 });
+    expect(
+      await page.evaluate(() => window.__calls.length),
+      'an online event on the error screen must resume the install'
+    ).toBeGreaterThanOrEqual(3);
   });
 
 });
