@@ -745,9 +745,21 @@ PPP.app = (function () {
     }
 
     /**
-     * Test/CI hook: ppp_install_shards === '1' opts the auto-install path into
-     * the sentence shards (offline text search). Real users choose via the
-     * "Offline text search" checkbox. Default OFF — shards are opt-in.
+     * TEST/CI HOOK ONLY — not a real-user path. `ppp_install_shards` is never
+     * set by any UI in js/ (grepped 2026-07-28: only tests/app.spec.js,
+     * tests/pwa.spec.js and bench/ set it). It exists so Playwright can drive
+     * startBackgroundInstall() with no explicit args (see the `auto` branch
+     * at line ~508 and startBackgroundInstall's `sel == null` branch below)
+     * and still choose whether that synthetic run includes shards.
+     *
+     * Real installs NEVER reach this function: every real entry point
+     * (_startMandatoryInstallGate / the language-selector widget built with
+     * shardsForced: true) passes includeShards explicitly as `true` — the
+     * sentence-shard index is mandatory (Rājan decision 2026-07-26,
+     * reaffirmed 2026-07-28: "Atteikties var tikai no valodām" — only the
+     * extra languages are opt-in, shards never are). So this default-OFF
+     * fallback has no user-facing effect and must NOT be "fixed" to true —
+     * doing so would just change what the test hook itself does.
      */
     function _autoInstallShards() {
         try { return localStorage.getItem('ppp_install_shards') === '1'; } catch (e) { return false; }
@@ -759,18 +771,16 @@ PPP.app = (function () {
      *   baseChecked — prepend a disabled, checked EN "base" row
      *   preselected — languages initially ticked
      *   sizeMode    — 'total' (core+EN+selected) | 'delta' (only selected packs)
-     *   shardToggle — add the opt-in "Offline text search" (sentence shards)
-     *                 checkbox (default unchecked); getIncludeShards() reads it
      *   shardsForced — the sentence shards are MANDATORY (Rājan decision
-     *                 2026-07-26: text search requires them) — no checkbox is
-     *                 rendered and getIncludeShards() always returns true.
-     *                 Mutually exclusive with shardToggle in practice (a
-     *                 caller passing both gets the forced/no-checkbox
-     *                 behaviour, since shardsForced short-circuits first).
+     *                 2026-07-26, reaffirmed 2026-07-28: "Atteikties var tikai
+     *                 no valodām" — the shards are never opt-in, only the
+     *                 extra languages are). Every caller of this selector
+     *                 must pass shardsForced: true; no checkbox is rendered
+     *                 and getIncludeShards() always returns true.
      * Returns { el, getLangs, getIncludeShards }. getLangs() reads the ticked
-     * opt-in langs; getIncludeShards() reads the shard checkbox (false when the
-     * toggle is absent, true when shardsForced). The live size label
-     * recomputes from BOTH the language selection and the shard state via
+     * opt-in langs; getIncludeShards() always returns true (shards are
+     * mandatory — see shardsForced above). The live size label recomputes
+     * from BOTH the language selection and the shard state via
      * computeInstallBytes.
      */
     function _buildLangSelector(manifest, opts) {
@@ -781,7 +791,6 @@ PPP.app = (function () {
 
         var wrap = document.createElement('div');
         wrap.className = 'offline-lang-select';
-        var shardCb = null;   // set when the shard toggle is rendered
         var sizeLabel = document.createElement('div');
         sizeLabel.className = 'offline-lang-size';
 
@@ -794,7 +803,7 @@ PPP.app = (function () {
             }
             return out;
         }
-        function includeShards() { return !!opts.shardsForced || !!(shardCb && shardCb.checked); }
+        function includeShards() { return !!opts.shardsForced; }
         function refreshSize() {
             var sel = selectedLangs();
             var bytes = PPP.downloader.computeInstallBytes(manifest, sel, includeShards());
@@ -818,24 +827,8 @@ PPP.app = (function () {
             wrap.appendChild(lbl);
         }
 
-        function addShardRow() {
-            var lbl = document.createElement('label');
-            lbl.className = 'offline-lang-row offline-shard-row';
-            shardCb = document.createElement('input');
-            shardCb.type = 'checkbox';
-            shardCb.setAttribute('data-shard', '1');
-            shardCb.checked = false;              // opt-in — unchecked by default
-            shardCb.onchange = refreshSize;
-            var span = document.createElement('span');
-            span.textContent = i18n.t('offlineTextSearch');
-            lbl.appendChild(shardCb);
-            lbl.appendChild(span);
-            wrap.appendChild(lbl);
-        }
-
         if (opts.baseChecked) addRow('en', true);
         langList.forEach(function (l) { addRow(l, false); });
-        if (opts.shardToggle && !opts.shardsForced) addShardRow();
         wrap.appendChild(sizeLabel);
         refreshSize();
         return { el: wrap, getLangs: selectedLangs, getIncludeShards: includeShards };
@@ -1800,23 +1793,24 @@ PPP.app = (function () {
         selHolder.id = 'offlineOfferLangs';
         panel.appendChild(selHolder);
 
-        // Selection is read at click time; defaults to EN-only + shards OFF
-        // until the manifest arrives and the checkboxes render.
+        // Selection is read at click time; defaults to EN-only, shards ON
+        // (mandatory — Rājan 2026-07-28: only languages are opt-out) until
+        // the manifest arrives and the checkboxes render.
         var getLangs = function () { return []; };
-        var getIncludeShards = function () { return false; };
+        var getIncludeShards = function () { return true; };
         // Set by the resume check below; both blocks are async, so the
         // from-scratch copy must never overwrite the resume copy.
         var hasResume = false;
         PPP.downloader.fetchManifest().then(function (manifest) {
             _cacheBaseMB(manifest);
             if (!document.body.contains(selHolder)) return;
-            var selector = _buildLangSelector(manifest, { baseChecked: true, sizeMode: 'total', shardToggle: true });
+            var selector = _buildLangSelector(manifest, { baseChecked: true, sizeMode: 'total', shardsForced: true });
             selHolder.innerHTML = '';
             selHolder.appendChild(selector.el);
             getLangs = selector.getLangs;
             getIncludeShards = selector.getIncludeShards;
             if (hasResume) { selHolder.style.display = 'none'; return; }
-            var mb = Math.round(PPP.downloader.computeInstallBytes(manifest, []) / 1048576);
+            var mb = Math.round(PPP.downloader.computeInstallBytes(manifest, [], true) / 1048576);
             text.textContent = i18n.t('offlineInfoText')
                 .replace('{size}', String(mb))
                 .replace('{min}', String(Math.max(1, Math.round(mb / 10))));
@@ -1889,8 +1883,12 @@ PPP.app = (function () {
 
         return PPP.downloader.fetchManifest().then(function (manifest) {
             _cacheBaseMB(manifest);
-            // Selection: explicit arg wins; otherwise the auto/CI hook installs
-            // the full library, and a real user with no arg gets the EN base.
+            // Selection: explicit arg wins. The `sel == null` branch below is
+            // a TEST/CI HOOK ONLY (ppp_auto_install) — every real caller
+            // (see grep 2026-07-28) passes langs/includeShards explicitly,
+            // with includeShards always true (shards are mandatory, see
+            // _autoInstallShards() comment above). No real user reaches the
+            // `false` default at the bottom of this branch.
             var sel = langs;
             var incShards = includeShards;
             if (sel == null) {

@@ -600,6 +600,21 @@ test.describe('PWA offline library', () => {
     });
 
     test('P4. Delta update: manifest diff -> download -> sha256 verify -> apply -> note', async ({ page, context }) => {
+      // This test budgets a 110 s real first install PLUS a second page's real
+      // reload/re-install PLUS a 30 s delta wait, all sequentially — that sum
+      // already exceeds the file-level default test.setTimeout(120000) from
+      // the top of this file (a margin sized for far smaller per-test waits
+      // elsewhere), independent of how large any one corpus generation is.
+      // Decoupling this test from the real install chain entirely was the
+      // other option (per-file precedent: P24/P29a stub in an "already
+      // installed" library instead of performing one), but P4 is explicitly
+      // an end-to-end proof that the real install -> real delta path works,
+      // which a stubbed-install version would no longer be. So: give the test
+      // its own generous ceiling instead — the same approach this file
+      // already uses for its other real-install tests (P15's 150000, and the
+      // 150000/130000 budgets a few hundred lines down), rather than inventing
+      // a bytes-per-second formula with no measured basis on this machine.
+      test.setTimeout(220000);
       await addAutoInstallHook(page);
       await page.goto('./');
       // startBackgroundInstall() (online-first UX) downloads into IDB without
@@ -631,7 +646,14 @@ test.describe('PWA offline library', () => {
         contentType: 'application/json',
         body: JSON.stringify(mutated),
       }));
-      await page2.route('**/data/ppp_lecture_extras.json.gz*', route => route.fulfill({
+      // The intercepted URL must be the path the MUTATED manifest actually
+      // declares, not a hardcoded '.gz' filename — the corpus is Brotli-coded
+      // as of 2026-07-27 so the real extras path already ends in '.br'. The
+      // fixture itself stays genuine gzip bytes (built above with
+      // zlib.gzipSync) since `mutated.core.extras` deliberately carries no
+      // `enc` field (a legacy/pre-Brotli manifest shape), which normalize()
+      // reads as gzip regardless of what the filename suggests.
+      await page2.route('**/' + mutated.core.extras.path + '*', route => route.fulfill({
         status: 200,
         contentType: 'application/gzip',
         body: fixtureGz,
@@ -834,13 +856,29 @@ test.describe('PWA offline language selection (Phase A)', () => {
     // No opt-in shard checkbox anymore — the shards are mandatory.
     await expect(page.locator('#installLangSelect input[data-shard]')).toHaveCount(0);
 
-    // The mandatory base (EN + core + sentence shards) is ≈ 330-360 MB —
-    // the old ~151 MB EN-only figure plus the ~200 MB of sentence shards,
-    // present from the very first render (no checkbox to tick).
+    // The mandatory base (EN + core + sentence shards) must match the
+    // manifest-derived EN+shards total exactly — NOT a hardcoded MB band.
+    // The corpus regenerates from time to time (different shard count, pack
+    // sizes), and a hardcoded band silently goes stale the moment a new
+    // generation lands outside it (this happened: the old 320-360 band was
+    // tuned for a ~343 MB corpus; the current one computes to ~225 MB).
+    // Same technique as PL1b below — compare against computeInstallBytes(),
+    // not a literal number.
     const baseTxt = await page.textContent('#installLangSelect .offline-lang-size');
     const baseMB = parseInt(String(baseTxt).replace(/[^0-9]/g, ''), 10);
-    expect(baseMB).toBeGreaterThan(320);
-    expect(baseMB).toBeLessThan(360);
+    const baseRefBytes = await page.evaluate(() => {
+      return PPP.downloader.fetchManifest().then(function (manifest) {
+        return {
+          enOnly: PPP.downloader.computeInstallBytes(manifest, [], false),
+          enPlusShards: PPP.downloader.computeInstallBytes(manifest, [], true)
+        };
+      });
+    });
+    const baseEnOnlyMB = Math.round(baseRefBytes.enOnly / 1048576);
+    const baseEnPlusShardsMB = Math.round(baseRefBytes.enPlusShards / 1048576);
+    expect(baseMB).toBe(baseEnPlusShardsMB);
+    // Sanity: shards must be adding real weight, not a no-op figure.
+    expect(baseEnPlusShardsMB).toBeGreaterThan(baseEnOnlyMB);
 
     // Tick LV + RU → displayed size grows further (prem-lv + prem-ru packs
     // on top of the already-mandatory shard-inclusive base).
@@ -849,6 +887,89 @@ test.describe('PWA offline language selection (Phase A)', () => {
     const fullTxt = await page.textContent('#installLangSelect .offline-lang-size');
     const fullMB = parseInt(String(fullTxt).replace(/[^0-9]/g, ''), 10);
     expect(fullMB).toBeGreaterThan(baseMB);
+  });
+
+  test('PL1b. "Work offline" panel (second install path, #offlineOfferLangs) also forces shards mandatory, no opt-in checkbox', async ({ page }) => {
+    // Rājan 2026-07-28 (direct): "Atteikties var tikai no valodām — tāds bija
+    // mans noteikums." The app has TWO install panels that build their
+    // checkbox row via _buildLangSelector(): the first-run gate (PL1, above,
+    // #installLangSelect) and this one — the online-first "Work offline"
+    // button's #offlineInfoPanel / #offlineOfferLangs, reached without ever
+    // touching the first-run gate. Before this fix the second panel passed
+    // shardToggle: true (opt-in, unchecked by default) instead of
+    // shardsForced: true, so a user landing here got a library with NO text
+    // search unless they found and ticked an extra checkbox.
+    await page.goto('./');
+
+    const searchInput = page.locator('#searchTerm');
+    await expect(searchInput).toBeVisible({ timeout: 20000 });
+    await expect(searchInput).toBeEnabled({ timeout: 20000 });
+
+    const workBtn = page.locator('#offlineWorkBtn');
+    await expect(workBtn).toBeVisible({ timeout: 20000 });
+    await workBtn.click();
+
+    const infoPanel = page.locator('#offlineInfoPanel');
+    await expect(infoPanel).toBeVisible();
+    await page.waitForSelector('#offlineOfferLangs input[data-lang="en"]', { timeout: 20000 });
+
+    // No opt-in shard checkbox in this panel either.
+    await expect(page.locator('#offlineOfferLangs input[data-shard]')).toHaveCount(0);
+
+    // Headline size must match the shards-INCLUDED computation, not the
+    // EN-only-no-shards figure. Computed from the manifest actually loaded by
+    // this worktree's data/ (its exact MB varies by dataset, so this compares
+    // against the real EN-only vs EN+shards split instead of a hardcoded MB
+    // band — robust either way, and still fails the moment includeShards()
+    // stops resolving to true for this panel).
+    const sizeTxt = await page.textContent('#offlineOfferLangs .offline-lang-size');
+    const sizeMB = parseInt(String(sizeTxt).replace(/[^0-9]/g, ''), 10);
+    const refBytes = await page.evaluate(() => {
+      return PPP.downloader.fetchManifest().then(function (manifest) {
+        return {
+          enOnly: PPP.downloader.computeInstallBytes(manifest, [], false),
+          enPlusShards: PPP.downloader.computeInstallBytes(manifest, [], true)
+        };
+      });
+    });
+    const enOnlyMB = Math.round(refBytes.enOnly / 1048576);
+    const enPlusShardsMB = Math.round(refBytes.enPlusShards / 1048576);
+    expect(enPlusShardsMB).toBeGreaterThan(enOnlyMB); // sanity: shards add real weight
+    expect(sizeMB).toBe(enPlusShardsMB);
+    expect(sizeMB).not.toBe(enOnlyMB);
+
+    // getIncludeShards() (read by the Download button's onclick) is the same
+    // function whose return value drives refreshSize() above — the size
+    // assertion already proves it resolved to true. Intercepting
+    // startBackgroundInstall itself is not viable here: the button's onclick
+    // closes over the module-local `startBackgroundInstall` variable directly,
+    // not the `PPP.app.startBackgroundInstall` property, so reassigning the
+    // latter from the test would not observe the real click.
+    //
+    // NEGATIVE CHECK (verified by actually reverting, not assumed): passing
+    // shardToggle: true instead of shardsForced: true at this call site
+    // (renderOfflineInfoPanel's _buildLangSelector) makes this test fail on
+    // the sizeMB == enPlusShardsMB assertion above with the REAL Playwright
+    // output from this worktree's dataset:
+    //   Error: expect(received).toBe(expected) // Object.is equality
+    //   Expected: 225
+    //   Received: 106
+    // (225 = enPlusShardsMB, 106 = the panel's displayed size once shards
+    // silently drop back to opt-in-and-unchecked; reverted locally, ran, then
+    // restored the fix before committing this comment.)
+
+    // NEGATIVE CHECK (do not ship commented out): temporarily reverting the
+    // fix — i.e. passing shardToggle: true instead of shardsForced: true at
+    // app.js's renderOfflineInfoPanel() call site — makes this test fail at
+    // the "no opt-in shard checkbox" assertion above with the REAL Playwright
+    // failure text:
+    //   Error: expect(locator).toHaveCount(expected)
+    //   Locator: locator('#offlineOfferLangs input[data-shard]')
+    //   Expected: 0
+    //   Received: 1
+    // (confirmed by reverting locally and re-running before writing this
+    // comment; the shard checkbox reappears because addShardRow() is called
+    // whenever shardToggle is set and shardsForced is not).
   });
 
   test.describe('deterministic network (SW blocked)', () => {
@@ -1419,16 +1540,17 @@ test.describe('core.sentences removed from the offline base', () => {
       // exercises the CORE work list in seconds instead of pulling the whole
       // ~151 MB EN base. Same page.route fixture technique as P4/PL3.
       //
-      // The fixture DELIBERATELY still advertises core.sentences: the point is
-      // that the client refuses a file the server is still offering, which is
-      // exactly the deploy ordering we will be in (client ships first, the
-      // build stops emitting the key later). A fixture with the key already
-      // removed would prove nothing.
+      // core.sentences was permanently removed from the manifest by B3
+      // (2026-07-27) — the transitional window where "server still offers
+      // it, client refuses it" was the scenario under test has closed for
+      // good. This fixture no longer REQUIRES the key to exist (it never
+      // will again); it defensively DELETES it if some future build fixture
+      // ever reintroduces it, so the test keeps meaning "never fetched,
+      // never stored" regardless of what the manifest currently contains.
       const coreOnly = JSON.parse(JSON.stringify(realManifest));
       coreOnly.packs = [];
       coreOnly.sentenceShards = [];
-      expect(coreOnly.core.sentences,
-        'fixture is vacuous — the manifest no longer offers core.sentences').toBeTruthy();
+      delete coreOnly.core.sentences;
 
       await page.route('**/data/manifest.json*', route => route.fulfill({
         status: 200, contentType: 'application/json', body: JSON.stringify(coreOnly),
@@ -1444,15 +1566,19 @@ test.describe('core.sentences removed from the offline base', () => {
       await page.goto('./');
       await waitForLocalManifestSet(page, 150000);
 
-      // (a) Not one byte of the sentence DB was requested.
+      // (a) Not one byte of the sentence DB was requested. The literal
+      // filename pattern (not a manifest-derived path) is intentional: the
+      // manifest no longer carries this key at all, so there is nothing to
+      // derive it from — this is asserting the ABSENCE of a well-known,
+      // permanently-retired file, not a size or path the build controls.
       //
       // NEGATIVE CHECK RUN (CORE_KEYS reverted to include 'sentences'):
       //   Error: expect(received).toBe(expected) // Object.is equality
-      //     the 18.9 MB sentence DB was downloaded again
+      //     the sentence DB was downloaded again
       //     Expected: false
       //     Received: true
-      expect(coreReqs.some(u => u.includes(realManifest.core.sentences.path)),
-        'the 18.9 MB sentence DB was downloaded again').toBe(false);
+      expect(coreReqs.some(u => /ppp_sentences_en/.test(u)),
+        'the sentence DB was downloaded again').toBe(false);
 
       // (b) Nothing under the key db.js used to open ('core:sentences').
       const stored = await page.evaluate(async () => {
@@ -2424,9 +2550,9 @@ test.describe('An installed library searches its OWN shard list, not the server\
   // shard COUNT, so between "server published" and "delta finished" a perfectly
   // healthy library is measured against shards it does not have yet — the size
   // gate fails, the installed-fence fires, and the user is told the library is
-  // damaged while nothing is wrong. The next corpus generation (dedup removal +
-  // Brotli) changes all 21 shards and adds a 22nd, so it would have hit every
-  // installed user at once.
+  // damaged while nothing is wrong. The 2026-07-27 corpus generation (dedup
+  // removal + Brotli) changed every existing shard and added one more, so it
+  // would have hit every installed user at once.
   //
   // No real install is needed: the fence and the list both read
   // PPP.offlineStore, so the store is stubbed as an installed one-shard library
@@ -2442,15 +2568,32 @@ test.describe('An installed library searches its OWN shard list, not the server\
     await page.goto('./');
     await page.waitForFunction(() => window.PPP && PPP.db && PPP.offlineStore, { timeout: 30000 });
 
-    // Stand-in for the copy an install wrote to IndexedDB: the real shard bytes,
-    // fetched BEFORE the network watch below so the fixture's own download is
-    // not mistaken for db.js going behind the user's back.
-    await page.evaluate(async (p) => {
-      window.__shardGz = await (await fetch(p)).arrayBuffer();
-    }, installedShard.path);
+    // Stand-in for the copy an install wrote to IndexedDB: fetched BEFORE the
+    // network watch below so the fixture's own download is not mistaken for
+    // db.js going behind the user's back. The stub below labels these bytes
+    // `enc: 'gzip'` (a pre-Brotli install record) — so they must ACTUALLY be
+    // gzip, not whatever codec the real on-disk shard currently uses (the
+    // corpus is Brotli-encoded as of 2026-07-27). Decode the real shard
+    // through the real codec, then re-encode it with the browser's native
+    // CompressionStream('gzip') — synthesizing a genuine gzip fixture from
+    // real content, rather than assuming the on-disk file already is gzip.
+    const shardGzLen = await page.evaluate(async (o) => {
+      const raw = await (await fetch(o.p)).arrayBuffer();
+      const decoded = await PPP.codec.toArrayBuffer(raw, o.enc, 'P24 fixture source');
+      window.__shardGz = await new Response(
+        new Blob([decoded]).stream().pipeThrough(new CompressionStream('gzip'))
+      ).arrayBuffer();
+      return window.__shardGz.byteLength;
+    }, { p: installedShard.path, enc: installedShard.enc || 'gzip' });
+    // The localManifest entry below must declare the SYNTHESIZED gzip size,
+    // not the real (Brotli) manifest size — otherwise the size gate this test
+    // is not exercising (that is P24's whole point: an installed shard must
+    // look healthy against ITS OWN recorded size) fails for an unrelated
+    // reason: a re-encoded fixture is legitimately a different byte length.
+    const installedShardLocal = Object.assign({}, installedShard, { size: shardGzLen });
 
     // The server publishes the next corpus generation: every shard re-hashed and
-    // re-sized, and a 22nd shard appears. Exactly the shape of the pending
+    // re-sized, and one more shard appears. Exactly the shape of the pending
     // dedup+Brotli rebuild.
     const mutated = JSON.parse(JSON.stringify(realManifest));
     mutated.sentenceShards = (realManifest.sentenceShards || []).map(s => Object.assign({}, s, {
@@ -2503,7 +2646,7 @@ test.describe('An installed library searches its OWN shard list, not the server\
       }, function (e) {
         return { threw: true, repair: !!(e && e.shardRepairNeeded), rows: 0, msg: String(e && e.message) };
       });
-    }, installedShard);
+    }, installedShardLocal);
 
     expect(res.repair,
       'a healthy installed library was told to repair itself because the SERVER changed: ' + res.msg
@@ -2942,7 +3085,17 @@ test.describe('A manifest that dropped everything cannot delete the library (202
   function seedInstalled(page, localMf, shard) {
     return page.evaluate(async (args) => {
       const lm = args.lm;
-      const shardBytes = await (await fetch(args.shard.path)).arrayBuffer();
+      // The stored record below carries no `enc` field, so offline-store's
+      // getEncoded() reads it back as gzip (PPP.codec.normalize(undefined) ===
+      // 'gzip'). The real shard on disk is Brotli-encoded as of 2026-07-27
+      // (declared enc: 'br'), so the raw fetched bytes must be decoded through
+      // the real codec and then genuinely re-encoded as gzip — not stored
+      // as-is under a label that no longer matches what they are.
+      const rawShard = await (await fetch(args.shard.path)).arrayBuffer();
+      const decodedShard = await PPP.codec.toArrayBuffer(rawShard, args.shard.enc || 'gzip', 'P29a seed shard');
+      const shardBytes = await new Response(
+        new Blob([decodedShard]).stream().pipeThrough(new CompressionStream('gzip'))
+      ).arrayBuffer();
       function blobOf(n, byte) {
         const a = new Uint8Array(n);
         a.fill(byte);
@@ -2957,6 +3110,13 @@ test.describe('A manifest that dropped everything cannot delete the library (202
       await put('t:b1', 'tst-en-b', blobOf(args.b1, 5), args.b1);
       await put('shard:' + args.shard.id, 'shard:' + args.shard.id,
         new Blob([shardBytes], { type: 'application/gzip' }), shardBytes.byteLength);
+      // localManifest must declare the SYNTHESIZED gzip size, not the real
+      // (Brotli) manifest size passed in via args.shard/lm — otherwise the
+      // size gate fails for an unrelated reason: a re-encoded fixture is
+      // legitimately a different byte length than the real .br file.
+      (lm.sentenceShards || []).forEach(function (s) {
+        if (s.id === args.shard.id) s.size = shardBytes.byteLength;
+      });
       await PPP.offlineStore.setState('localManifest', lm);
       await PPP.offlineStore.setState('langs', []);
       await PPP.offlineStore.setState('shards', true);
@@ -3128,10 +3288,13 @@ test.describe('A manifest that dropped everything cannot delete the library (202
 // the app ships one (js/vendor/brotli-dec.wasm) and picks the codec from the
 // artefact's declared `enc`.
 //
-// Fixtures are built HERE, from the real gzip artefacts, rather than committed:
-// Node has Brotli built in, decoding is quality-independent, and q11 costs 84 s
-// per shard against ~2 s at q5. What is under test is the DECODER and the
-// plumbing that tells it which codec to use — not the encoder's ratio.
+// Fixtures are built HERE, from the real on-disk artefacts (decoded via
+// THEIR OWN declared codec — the corpus itself has been all-Brotli since
+// 2026-07-27, so these fixtures no longer assume gzip going in), rather than
+// committed: Node has Brotli built in, decoding is quality-independent, and
+// q11 costs 84 s per shard against ~2 s at q5. What is under test is the
+// DECODER and the plumbing that tells it which codec to use — not the
+// encoder's ratio.
 const BROTLI_FIXTURE_QUALITY = 5;
 
 function toBrotli(buf) {
@@ -3144,8 +3307,46 @@ function readArtefact(relPath) {
   return fs.readFileSync(path.join(__dirname, '..', relPath));
 }
 
+/**
+ * Decode a real on-disk artefact using its OWN declared codec (from the
+ * manifest entry it belongs to), not an assumption that it is gzip. The
+ * corpus generation as of 2026-07-27 is entirely Brotli (`enc: 'br'` on
+ * every core/pack/shard entry) — a decoder that always tried gzip first
+ * would fail on every single real artefact this suite has to re-encode.
+ */
+function decodeArtefact(bytes, enc) {
+  return (enc === 'br' || enc === 'brotli')
+    ? zlib.brotliDecompressSync(bytes)
+    : zlib.gunzipSync(bytes);
+}
+
 function sha256Hex(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+/**
+ * The reverse of reencodeEntryToBrotli: re-encode a real on-disk artefact
+ * (decoded via its OWN declared codec) as genuine gzip. Needed for BR4,
+ * which must prove a "gzip-only generation" never touches the Brotli
+ * decoder — but the corpus is entirely `br` as of 2026-07-27, including
+ * core.meta/core.extras that a plain page load fetches regardless of which
+ * shard is under test, so those two have to be forced to real gzip as well
+ * or the boot itself would drag the decoder in for an unrelated reason.
+ */
+function reencodeEntryToGzip(entry) {
+  const raw = decodeArtefact(readArtefact(entry.path), entry.enc);
+  const bytes = zlib.gzipSync(raw);
+  const newEntry = Object.assign({}, entry, {
+    path: entry.path.replace(/\.(gz|br)$/, '') + '.regz.gz',
+    sha256: sha256Hex(bytes),
+    hash: sha256Hex(bytes).slice(0, 10),
+    size: bytes.length,
+    raw: raw.length,
+  });
+  // No `enc` field on the returned entry — absence means gzip, exactly the
+  // legacy shape this test is about.
+  delete newEntry.enc;
+  return { bytes, entry: newEntry };
 }
 
 /**
@@ -3155,12 +3356,19 @@ function sha256Hex(buf) {
  * build_sentence_shards.py --encoding br emits.
  */
 function reencodeEntryToBrotli(entry) {
-  const raw = zlib.gunzipSync(readArtefact(entry.path));
+  const raw = decodeArtefact(readArtefact(entry.path), entry.enc);
   const bytes = toBrotli(raw);
   return {
     bytes,
+    // The fixture path is DELIBERATELY made distinct from `entry.path`, even
+    // when the real entry is already `.br` (true for the whole corpus as of
+    // 2026-07-27): several tests (BR2) run this fixture ALONGSIDE the real,
+    // unmodified entry in the same page — if both resolved to the same URL,
+    // page.route would intercept the real fetch too, serving the re-encoded
+    // (different size/hash) fixture where a genuine untouched read was
+    // expected.
     entry: Object.assign({}, entry, {
-      path: entry.path.replace(/\.gz$/, '.br'),
+      path: entry.path.replace(/\.(gz|br)$/, '') + '.rebr.br',
       enc: 'br',
       sha256: sha256Hex(bytes),
       size: bytes.length,
@@ -3187,7 +3395,7 @@ function reencodePackToBrotli(pack) {
   let off = 0;
   for (const m of index) {
     const member = buf.slice(blobStart + m.off, blobStart + m.off + m.len);
-    const br = toBrotli(zlib.gunzipSync(member));
+    const br = toBrotli(decodeArtefact(member, pack.enc));
     newIndex.push({ nr: m.nr, off, len: br.length, raw: m.raw });
     blobs.push(br);
     off += br.length;
@@ -3422,18 +3630,46 @@ test.describe('Brotli artefacts (enc, 2026-07-27)', () => {
     // pre-Brotli install. Both must keep working, and neither may drag the
     // Brotli decoder in — that is what makes the gzip generation cost nothing.
     test.setTimeout(120000);
-    const gzShard = (realManifest.sentenceShards || [])[0];
-    expect(gzShard).toBeTruthy();
+    const realShard = (realManifest.sentenceShards || [])[0];
+    expect(realShard).toBeTruthy();
 
-    const legacyEntry = Object.assign({}, gzShard);
+    // This test needs a GENUINELY gzip shard to prove "no `enc` field means
+    // gzip" — the real corpus is entirely Brotli as of 2026-07-27, so simply
+    // stripping `enc` from the real (br) entry would declare-as-gzip bytes
+    // that are actually br, which is the exact bug this rework removes
+    // elsewhere (BR1/BR3/P24/P29a). Decode the real shard via its real codec,
+    // re-encode it as genuine gzip, and serve THAT at a legacy-shaped path.
+    const rawShard = decodeArtefact(readArtefact(realShard.path), realShard.enc);
+    const gzBytes = zlib.gzipSync(rawShard);
+    const legacyEntry = Object.assign({}, realShard, {
+      path: realShard.path.replace(/\.br$/, '.gz'),
+      sha256: sha256Hex(gzBytes),
+      hash: sha256Hex(gzBytes).slice(0, 10),
+      size: gzBytes.length,
+    });
     delete legacyEntry.enc;                     // pre-Brotli manifest shape
     expect('enc' in legacyEntry).toBe(false);
 
+    // The rest of the generation must ALSO be genuinely gzip: a plain page
+    // load fetches core.meta (search index) over the network regardless of
+    // which shard is under test, and the real manifest's core is `br` as of
+    // 2026-07-27 — leaving it untouched would drag the Brotli decoder in for
+    // a reason that has nothing to do with the enc-less shard this test is
+    // actually about. Packs are left out entirely: a sentence-shard text
+    // search never opens one.
+    const gzMeta = reencodeEntryToGzip(realManifest.core.meta);
+    const gzExtras = reencodeEntryToGzip(realManifest.core.extras);
+
     const mf = JSON.parse(JSON.stringify(realManifest));
+    mf.core = { meta: gzMeta.entry, extras: gzExtras.entry };
+    mf.packs = [];
     mf.sentenceShards = [legacyEntry];
     await page.route('**/data/manifest.json*', route => route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify(mf),
     }));
+    await serveBytes(page, legacyEntry.path, gzBytes);
+    await serveBytes(page, gzMeta.entry.path, gzMeta.bytes);
+    await serveBytes(page, gzExtras.entry.path, gzExtras.bytes);
 
     let wasmRequests = 0;
     page.on('request', r => {
@@ -3702,7 +3938,40 @@ test.describe('A failed send leaves nothing behind (Codex LOW, 2026-07-27)', () 
     // It is reachable the moment anyone adds buffer reuse — which is exactly
     // the optimisation the transfer-based hot path invites — so the invariant
     // is pinned here rather than left as a comment.
+    // MEASURED AGAINST A QUIET SYSTEM, NOT A DELTA.
+    //
+    // The first version of this test sampled the count immediately, subtracted
+    // it from the count afterwards, and asserted the difference was 0. That
+    // measured a RACE: boot still has worker calls in flight, so a startup call
+    // completing mid-test made the difference NEGATIVE and the test failed with
+    // `Received: -1` in a full-suite run — a direction the leak it guards can
+    // never produce. A test that can fail downwards is not measuring the thing.
+    //
+    // So: wait for the pending map to DRAIN first, then assert absolutely. Zero
+    // is the floor, so the assertion can now only be broken in the direction it
+    // exists to catch. The post-probe wait is a drain too, not a snapshot, so a
+    // legitimately in-flight call is given time to clear while a LEAKED entry —
+    // which nothing will ever clear — still fails.
     test.setTimeout(120000);
+
+    /** Poll from Node until no worker call is outstanding, and stay there for a
+     *  few consecutive samples so a lull between two boot calls is not mistaken
+     *  for quiet. Returns the last count seen (0 on success). */
+    async function drainPendingWorkerCalls(page, timeout) {
+      const deadline = Date.now() + timeout;
+      let quiet = 0;
+      let last = -1;
+      for (;;) {
+        last = await page.evaluate(() => PPP.db._pendingWorkerCalls());
+        if (last === 0) {
+          if (++quiet >= 3) return 0;
+        } else {
+          quiet = 0;
+        }
+        if (Date.now() > deadline) return last;
+        await page.waitForTimeout(200);
+      }
+    }
 
     await page.goto('./');
     await expect(page.locator('#searchTerm')).toBeEnabled({ timeout: 60000 });
@@ -3710,9 +3979,13 @@ test.describe('A failed send leaves nothing behind (Codex LOW, 2026-07-27)', () 
       () => window.PPP && PPP.db && PPP.db.isWorkerMode && PPP.db.isWorkerMode(),
       { timeout: 60000 });
 
-    const out = await page.evaluate(async () => {
-      const before = PPP.db._pendingWorkerCalls();
+    // Baseline: the system must be at rest BEFORE the probe, or nothing after
+    // it means anything.
+    expect(await drainPendingWorkerCalls(page, 60000),
+      'worker calls never went quiet, so the probe below would measure boot traffic'
+    ).toBe(0);
 
+    const out = await page.evaluate(async () => {
       // Detach a buffer by transferring it away, then hand the husk to the
       // worker call: postMessage throws DataCloneError synchronously.
       const buf = new ArrayBuffer(1024);
@@ -3727,27 +4000,22 @@ test.describe('A failed send leaves nothing behind (Codex LOW, 2026-07-27)', () 
       let normalOk = false;
       try { normalOk = (await PPP.db.getStatsAsync()) != null; } catch (e) {}
 
-      return {
-        detached: buf.byteLength === 0,
-        threw: threw,
-        normalOk: normalOk,
-        before: before,
-        after: PPP.db._pendingWorkerCalls(),
-      };
+      return { detached: buf.byteLength === 0, threw: threw, normalOk: normalOk };
     });
 
     // The fixture has to actually reach the throw, or the rest proves nothing.
     expect(out.detached, 'the probe buffer was not detached').toBe(true);
     expect(out.threw, 'postMessage did not fail — the leak path was not exercised')
       .toBe('DataCloneError');
+    expect(out.normalOk, 'the worker stopped answering after a failed send').toBe(true);
 
     // NEGATIVE CHECK RUN (js/db.js workerCall reverted to posting without the
-    // try/catch, i.e. the pre-audit code):
+    // try/catch, i.e. the pre-audit code). The leaked entry never clears, so
+    // the drain runs out its budget and reports what is stuck:
     //   Error: a failed send left a pending worker call behind
     //     Expected: 0
     //     Received: 1
-    expect(out.after - out.before,
+    expect(await drainPendingWorkerCalls(page, 10000),
       'a failed send left a pending worker call behind').toBe(0);
-    expect(out.normalOk, 'the worker stopped answering after a failed send').toBe(true);
   });
 });

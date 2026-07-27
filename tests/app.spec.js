@@ -1,5 +1,15 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
+const fs = require('fs');
+const path = require('path');
+
+// Real manifest from disk — the shard count and per-shard encoding/path are
+// generation-dependent (regenerates with every DB build; see pwa.spec.js's
+// identically-named constant), so tests must read them here instead of
+// hardcoding a number that only matched one particular corpus generation.
+const MANIFEST_PATH = path.join(__dirname, '..', 'data', 'manifest.json');
+const realManifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+const REAL_SHARD_COUNT = (realManifest.sentenceShards || []).length;
 
 // Helper: wait for SQLite to load (progress bar disappears, search input enabled)
 async function waitForAppReady(page) {
@@ -1454,9 +1464,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(await page.locator('#searchTerm').inputValue()).toBe('');
   });
 
-  test('31f. Phase B chunked sentence search — 21 shards, premium+raw, sorted, progress fired', async ({ page }) => {
-    // The chunked engine fetches 21 gz shards over the network (one resident
-    // at a time) — allow generous time on a cold static server.
+  test('31f. Phase B chunked sentence search — all manifest shards, premium+raw, sorted, progress fired', async ({ page }) => {
+    // The chunked engine fetches every shard over the network (one resident
+    // at a time, count and encoding from the manifest) — allow generous
+    // time on a cold static server.
     test.setTimeout(180000);
 
     await page.goto('./');
@@ -1506,9 +1517,11 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       };
     });
 
-    // Progress callback fired once per shard, for all 21 shards.
-    expect(out.progressLen).toBe(21);
-    expect(out.lastProgress).toEqual([21, 21]);
+    // Progress callback fired once per shard, for every shard in the
+    // manifest (was hardcoded to 21 — broke the moment the corpus
+    // regenerated with a different shard count).
+    expect(out.progressLen).toBe(REAL_SHARD_COUNT);
+    expect(out.lastProgress).toEqual([REAL_SHARD_COUNT, REAL_SHARD_COUNT]);
 
     // Merged result is capped to the 500 default limit.
     expect(out.rowCount).toBe(500);

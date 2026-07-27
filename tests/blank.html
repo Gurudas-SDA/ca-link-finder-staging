@@ -3,4 +3,9 @@
 <title>test harness (blank)</title>
 <!-- Same-origin blank page for specs that only need a JS context and a Worker,
      with none of the app's DB downloads. Used by shard-memory.spec.js. -->
+<!-- codec.js loaded so the harness can decode BOTH gzip and Brotli shards the
+     same way production does (window.PPP.codec) instead of hardcoding
+     DecompressionStream('gzip') for a codec the corpus may not even use
+     anymore — see __rawShard in shard-memory.spec.js. -->
+<script src="/js/codec.js"></script>
 <body></body>

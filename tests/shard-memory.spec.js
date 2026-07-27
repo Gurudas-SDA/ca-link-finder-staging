@@ -117,9 +117,22 @@
            db-worker.js than this test just checked.
    =========================================================================== */
 const { test, expect } = require('@playwright/test');
+const fs = require('fs');
+const path = require('path');
 
-const SHARD_0 = '/data/shards/ppp_sentences_shard_000.db.gz';
-const SHARD_COUNT = 21;
+// Real manifest from disk — shard COUNT, PATH and ENCODING are all
+// generation-dependent (the corpus regenerated 2026-07-27: 21 gzip shards ->
+// 22 Brotli shards). Hardcoding any of the three here is exactly the defect
+// this rework removes: re-generating the corpus must not require editing this
+// file, only the golden match-count below (which is corpus CONTENT, not
+// corpus FORM, and is called out on its own as intentionally coupled).
+const MANIFEST_PATH = path.join(__dirname, '..', 'data', 'manifest.json');
+const realManifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+const REAL_SHARDS = realManifest.sentenceShards || [];
+const SHARD_COUNT = REAL_SHARDS.length;
+const SHARD_0_ENTRY = REAL_SHARDS[0];
+const SHARD_0 = '/' + SHARD_0_ENTRY.path.replace(/^\/?/, '');
+const SHARD_0_ENC = SHARD_0_ENTRY.enc || 'gzip';
 
 // Anchored on the assignment itself, not on any comment, so re-wording the
 // explanation above queryCloseBuffer cannot silently disarm the control.
@@ -150,6 +163,23 @@ async function installHarness(page) {
             return new URL(u, __BASE).href;
           });
           return __origImport.apply(self, abs);
+        };
+        // codec.js lazy-loads the Brotli decoder with a PLAIN relative fetch
+        // ('vendor/brotli-dec.wasm', resolved against the worker's own URL —
+        // exactly like WASM_CDN below, and fine in a real production worker
+        // whose URL is a real 'js/db-worker.js?v=...' path). A blob: worker's
+        // location cannot resolve a bare relative path at all ("Failed to
+        // parse URL from vendor/brotli-dec.wasm"), so rewrite any relative
+        // fetch() the same way importScripts already is above. Absolute
+        // (leading '/') requests — the actual shard/data fetches this spec
+        // makes — resolve unchanged: new URL('/x', base) keeps the origin
+        // and ignores base's path.
+        var __origFetch = fetch;
+        fetch = function (input, init) {
+          if (typeof input === 'string' && !/^[a-z]+:/i.test(input)) {
+            input = new URL(input, __BASE).href;
+          }
+          return __origFetch(input, init);
         };
         var __bigSlices = [];
         var __origSlice = Uint8Array.prototype.slice;
@@ -301,12 +331,15 @@ async function installHarness(page) {
                unguardedLen: unguarded.length, workerUrl };
     };
 
-    /** gz URL -> decompressed ArrayBuffer, in the page (as db.js does). */
-    window.__rawShard = async function (url) {
-      const gz = await (await fetch(url)).arrayBuffer();
-      return await new Response(
-        new Blob([gz]).stream().pipeThrough(new DecompressionStream('gzip'))
-      ).arrayBuffer();
+    /** compressed shard URL -> decompressed ArrayBuffer, in the page.
+        Goes through window.PPP.codec (codec.js, loaded by tests/blank.html)
+        so it decodes whichever codec the manifest actually declares for this
+        entry — gzip or Brotli — the same way production does, instead of
+        hardcoding DecompressionStream('gzip') for a codec the corpus may not
+        even be using anymore. */
+    window.__rawShard = async function (url, enc) {
+      const compressed = await (await fetch(url)).arrayBuffer();
+      return await window.PPP.codec.toArrayBuffer(compressed, enc || 'gzip', 'test shard');
     };
   });
 }
@@ -333,7 +366,7 @@ test.describe('shard open does not copy the database (db-worker queryCloseBuffer
     await openHarness(page);
 
     const out = await page.evaluate(async (o) => {
-      const raw = await window.__rawShard(o.shard);
+      const raw = await window.__rawShard(o.shard, o.enc);
       const rawLen = raw.byteLength;
       const fixed = window['__w_fixed'];
       await fixed.call({ cmd: '__reset' });
@@ -342,7 +375,7 @@ test.describe('shard open does not copy the database (db-worker queryCloseBuffer
         [raw]);
       const slices = await fixed.call({ cmd: '__slices' });
       return { rawLen, slices, rows: res.rows.length, n: res.count[0].n };
-    }, { shard: SHARD_0, sql: SQL_TEXT, countSql: COUNT_TEXT, params: PARAMS });
+    }, { shard: SHARD_0, enc: SHARD_0_ENC, sql: SQL_TEXT, countSql: COUNT_TEXT, params: PARAMS });
 
     // Sanity: we really did hand it a full-size shard and it really answered.
     expect(out.rawLen).toBeGreaterThan(20 * 1024 * 1024);
@@ -358,7 +391,7 @@ test.describe('shard open does not copy the database (db-worker queryCloseBuffer
     await openHarness(page);
 
     const out = await page.evaluate(async (o) => {
-      const raw = await window.__rawShard(o.shard);
+      const raw = await window.__rawShard(o.shard, o.enc);
       const rawLen = raw.byteLength;
       const control = window['__w_control'];
       await control.call({ cmd: '__reset' });
@@ -367,7 +400,7 @@ test.describe('shard open does not copy the database (db-worker queryCloseBuffer
         [raw]);
       const slices = await control.call({ cmd: '__slices' });
       return { rawLen, slices, rows: res.rows.length, n: res.count[0].n };
-    }, { shard: SHARD_0, sql: SQL_TEXT, countSql: COUNT_TEXT, params: PARAMS });
+    }, { shard: SHARD_0, enc: SHARD_0_ENC, sql: SQL_TEXT, countSql: COUNT_TEXT, params: PARAMS });
 
     // Exactly one allocation, exactly the size of the shard: that is the
     // MEMFS `buf.slice(0, len)` the fix removes. If this ever stops firing the
@@ -378,25 +411,33 @@ test.describe('shard open does not copy the database (db-worker queryCloseBuffer
     expect(out.rows).toBeGreaterThan(0);
   });
 
-  test('results are bit-identical with and without the fix, across all 21 shards',
+  test('results are bit-identical with and without the fix, across all manifest shards',
     async ({ page }) => {
-      test.setTimeout(180000);   // 21 shards x 2 workers, ~28 MB each
+      test.setTimeout(180000);   // N shards x 2 workers, ~28 MB each
       await openHarness(page);
+
+      // Path AND encoding come from the manifest per shard, not a
+      // reconstructed filename with a hardcoded '.db.gz' suffix — the corpus
+      // regenerated 2026-07-27 from 21 gzip shards to 22 Brotli ones, and a
+      // rebuilt filename would 404 the moment either the count or the codec
+      // changes again.
+      const shardList = REAL_SHARDS.map(function (s) {
+        return { url: '/' + String(s.path).replace(/^\/?/, ''), enc: s.enc || 'gzip' };
+      });
 
       const out = await page.evaluate(async (o) => {
         async function sweep(which) {
           const w = window['__w_' + which];
           let n = 0, lectures = 0, rows = 0;
           const perShard = [];
-          for (let i = 0; i < o.count; i++) {
-            const url = '/data/shards/ppp_sentences_shard_' +
-              String(i).padStart(3, '0') + '.db.gz';
-            const gz = await (await fetch(url)).arrayBuffer();
+          for (const shard of o.shards) {
+            const buf = await (await fetch(shard.url)).arrayBuffer();
             // openQueryClose = the real production entry point: the worker
-            // decompresses through PPPCodec and calls queryCloseBuffer itself.
+            // decompresses through PPPCodec (gzip or Brotli, per shard.enc)
+            // and calls queryCloseBuffer itself.
             const res = await w.call(
-              { cmd: 'openQueryClose', buffer: gz, sql: o.sql, countSql: o.countSql,
-                params: o.params, enc: 'gzip' }, [gz]);
+              { cmd: 'openQueryClose', buffer: buf, sql: o.sql, countSql: o.countSql,
+                params: o.params, enc: shard.enc }, [buf]);
             n += res.count[0].n;
             lectures += res.count[0].lectures;
             rows += res.rows.length;
@@ -405,7 +446,7 @@ test.describe('shard open does not copy the database (db-worker queryCloseBuffer
           return { n, lectures, rows, perShard };
         }
         return { fixed: await sweep('fixed'), control: await sweep('control') };
-      }, { count: SHARD_COUNT, sql: SQL_TEXT, countSql: COUNT_TEXT, params: PARAMS });
+      }, { shards: shardList, sql: SQL_TEXT, countSql: COUNT_TEXT, params: PARAMS });
 
       // Invariant — true for any corpus: removing the copy changes nothing.
       expect(out.fixed.perShard).toEqual(out.control.perShard);
@@ -413,13 +454,15 @@ test.describe('shard open does not copy the database (db-worker queryCloseBuffer
       expect(out.fixed.lectures).toEqual(out.control.lectures);
       expect(out.fixed.rows).toEqual(out.control.rows);
 
-      // Golden value for the corpus as built on 2026-07-27. This one line is
+      // Golden value for the corpus generation currently in staging/data/
+      // (re-measured 2026-07-28 against the 22-shard Brotli generation —
+      // was 416028 for the prior 21-shard gzip one). This one line is
       // corpus-coupled ON PURPOSE — a silent change in shard content should
       // stop the gate. Rebuilt the sentence shards? Re-measure and update HERE,
       // and nowhere else in this file.
       expect(out.fixed.n,
         'total matches for "% krishna%" changed — corpus rebuilt, or the shard ' +
-        'search regressed').toBe(416028);
+        'search regressed').toBe(421417);
     });
 });
 
@@ -436,7 +479,7 @@ test.describe('the zero-copy shard open cannot be turned into a write', () => {
     await openHarness(page);
 
     const out = await page.evaluate(async (o) => {
-      const raw = await window.__rawShard(o.shard);
+      const raw = await window.__rawShard(o.shard, o.enc);
       const before = new Uint8Array(raw.slice(0, 4096));   // header snapshot
       const fixed = window['__w_fixed'];
       const attempts = [
@@ -466,7 +509,7 @@ test.describe('the zero-copy shard open cannot be turned into a write', () => {
       const ok = await fixed.call({ cmd: 'queryCloseBuffer', buffer: raw,
         sql: o.sql, countSql: o.countSql, params: o.params });
       return { errors, identical, okRows: ok.rows.length, okN: ok.count[0].n };
-    }, { shard: SHARD_0, sql: SQL_TEXT, countSql: COUNT_TEXT, params: PARAMS });
+    }, { shard: SHARD_0, enc: SHARD_0_ENC, sql: SQL_TEXT, countSql: COUNT_TEXT, params: PARAMS });
 
     for (const err of out.errors) {
       expect(err, 'a write statement reached a zero-copy shard').not.toBeNull();
@@ -483,13 +526,13 @@ test.describe('the zero-copy shard open cannot be turned into a write', () => {
   test('countSql is guarded too, not just sql', async ({ page }) => {
     await openHarness(page);
     const err = await page.evaluate(async (o) => {
-      const raw = await window.__rawShard(o.shard);
+      const raw = await window.__rawShard(o.shard, o.enc);
       try {
         await window['__w_fixed'].call({ cmd: 'queryCloseBuffer', buffer: raw,
           sql: o.sql, countSql: 'DELETE FROM sentences', params: o.params });
         return null;
       } catch (e) { return String(e.message); }
-    }, { shard: SHARD_0, sql: SQL_TEXT, params: PARAMS });
+    }, { shard: SHARD_0, enc: SHARD_0_ENC, sql: SQL_TEXT, params: PARAMS });
     expect(err, 'countSql bypassed the read-only guard').not.toBeNull();
     expect(err).toMatch(/non-read-only countSql/);
   });
@@ -518,11 +561,11 @@ test.describe('the zero-copy shard open cannot be turned into a write', () => {
       const out = await page.evaluate(async (o) => {
         const results = {};
         for (const [name, sql] of Object.entries(o.writes)) {
-          const raw = await window.__rawShard(o.shard);
+          const raw = await window.__rawShard(o.shard, o.enc);
           results[name] = await window['__w_fixed'].call({ cmd: '__writeProbe', buffer: raw, sql });
         }
         return results;
-      }, { shard: SHARD_0, writes: { WITH_DELETE, WITH_UPDATE, WITH_INSERT } });
+      }, { shard: SHARD_0, enc: SHARD_0_ENC, writes: { WITH_DELETE, WITH_UPDATE, WITH_INSERT } });
 
       for (const [name, r] of Object.entries(out)) {
         expect(r.err, `${name} was NOT refused — a write reached a zero-copy shard`)
@@ -539,9 +582,9 @@ test.describe('the zero-copy shard open cannot be turned into a write', () => {
       await openHarness(page);
 
       const out = await page.evaluate(async (o) => {
-        const raw = await window.__rawShard(o.shard);
+        const raw = await window.__rawShard(o.shard, o.enc);
         return await window['__w_unguarded'].call({ cmd: '__writeProbe', buffer: raw, sql: o.sql });
-      }, { shard: SHARD_0, sql: WITH_DELETE });
+      }, { shard: SHARD_0, enc: SHARD_0_ENC, sql: WITH_DELETE });
 
       // This is the whole argument for the guard: strip it and the write goes
       // through the alias into memory the caller still owns.
