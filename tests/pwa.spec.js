@@ -2486,6 +2486,14 @@ test.describe('An installed library searches its OWN shard list, not the server\
       PPP.offlineStore.getGz = function (key) {
         return Promise.resolve(key === 'shard:' + shard.id ? window.__shardGz : undefined);
       };
+      // Since the Brotli work (2026-07-27) db.js reads shards through
+      // getEncoded(), which returns the bytes AND the codec recorded with
+      // them. This stub stands for a record written by a pre-Brotli install:
+      // gzip bytes, no `enc` field, which normalize() reads as 'gzip'.
+      PPP.offlineStore.getEncoded = function (key) {
+        if (key !== 'shard:' + shard.id) return Promise.resolve(null);
+        return Promise.resolve({ buf: window.__shardGz, enc: PPP.codec.normalize(undefined) });
+      };
       PPP.db.resetLibraryInstalledCache();   // memos must not hide the answer
       PPP.db.resetSentenceShards();
       return PPP.db.searchSentencesChunked(
@@ -3107,4 +3115,639 @@ test.describe('A manifest that dropped everything cannot delete the library (202
     expect(after.shardIds).toEqual([REAL_SHARD.id]);
   });
 
+});
+
+// ===========================================================================
+// Brotli artefacts (`enc`, 2026-07-27)
+// ===========================================================================
+// The build scripts can now publish the corpus as Brotli
+// (build_sentence_shards.py / build_offline_packs.py --encoding br), which is
+// ~29 % smaller than gzip on a real shard (9.14 MB -> 6.46 MB at q11). The
+// browser has no native Brotli decoder — Chrome 145 answers
+// `new DecompressionStream('br')` with "Unsupported compression format" — so
+// the app ships one (js/vendor/brotli-dec.wasm) and picks the codec from the
+// artefact's declared `enc`.
+//
+// Fixtures are built HERE, from the real gzip artefacts, rather than committed:
+// Node has Brotli built in, decoding is quality-independent, and q11 costs 84 s
+// per shard against ~2 s at q5. What is under test is the DECODER and the
+// plumbing that tells it which codec to use — not the encoder's ratio.
+const BROTLI_FIXTURE_QUALITY = 5;
+
+function toBrotli(buf) {
+  return zlib.brotliCompressSync(buf, {
+    params: { [zlib.constants.BROTLI_PARAM_QUALITY]: BROTLI_FIXTURE_QUALITY },
+  });
+}
+
+function readArtefact(relPath) {
+  return fs.readFileSync(path.join(__dirname, '..', relPath));
+}
+
+function sha256Hex(buf) {
+  return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+/**
+ * Re-encode a manifest entry's artefact from gzip to Brotli.
+ * Returns { entry, bytes } where `entry` is a manifest entry with the `.br`
+ * path, `enc: 'br'` and the new sha256/size — i.e. exactly the shape
+ * build_sentence_shards.py --encoding br emits.
+ */
+function reencodeEntryToBrotli(entry) {
+  const raw = zlib.gunzipSync(readArtefact(entry.path));
+  const bytes = toBrotli(raw);
+  return {
+    bytes,
+    entry: Object.assign({}, entry, {
+      path: entry.path.replace(/\.gz$/, '.br'),
+      enc: 'br',
+      sha256: sha256Hex(bytes),
+      size: bytes.length,
+      hash: sha256Hex(bytes).slice(0, 10),
+      raw: raw.length,
+    }),
+  };
+}
+
+/**
+ * Rebuild a CAP1 pack with Brotli members. The container is byte-identical
+ * between codecs — magic, index JSON, offsets — and ONLY the member blobs
+ * change, which is exactly why the codec cannot be read out of the file and
+ * has to come from the pack's manifest `enc`.
+ */
+function reencodePackToBrotli(pack) {
+  const buf = readArtefact(pack.path);
+  const indexLen = buf.readUInt32LE(4);
+  const index = JSON.parse(buf.slice(8, 8 + indexLen).toString('utf8'));
+  const blobStart = 8 + indexLen;
+
+  const newIndex = [];
+  const blobs = [];
+  let off = 0;
+  for (const m of index) {
+    const member = buf.slice(blobStart + m.off, blobStart + m.off + m.len);
+    const br = toBrotli(zlib.gunzipSync(member));
+    newIndex.push({ nr: m.nr, off, len: br.length, raw: m.raw });
+    blobs.push(br);
+    off += br.length;
+  }
+  const indexJson = Buffer.from(JSON.stringify(newIndex), 'utf8');
+  const header = Buffer.alloc(8);
+  header.write('CAP1', 0, 'ascii');
+  header.writeUInt32LE(indexJson.length, 4);
+  const bytes = Buffer.concat([header, indexJson, ...blobs]);
+  return {
+    bytes,
+    entry: Object.assign({}, pack, {
+      enc: 'br',
+      sha256: sha256Hex(bytes),
+      size: bytes.length,
+      hash: sha256Hex(bytes).slice(0, 10),
+    }),
+    nrs: index.map(m => String(m.nr)),
+  };
+}
+
+/** Serve fixture bytes at the manifest path they claim to live at. */
+function serveBytes(page, relPath, bytes) {
+  return page.route('**/' + relPath + '*', route => route.fulfill({
+    status: 200,
+    contentType: 'application/octet-stream',
+    body: Buffer.from(bytes),
+  }));
+}
+
+/** Run the standard sentence search and report rows/count. */
+function runSentenceSearch(page, term) {
+  return page.evaluate(async (t) => {
+    const parsed = PPP.search.parseSearchQuery(t);
+    const q = PPP.search.buildTranscriptSQL(parsed);
+    try {
+      const res = await PPP.db.searchSentencesChunked(q.sql, q.countSql, q.params);
+      return {
+        ok: true,
+        rows: res.rows.length,
+        count: res.count,
+        sample: res.rows.length ? String(res.rows[0].sentence || '') : '',
+      };
+    } catch (e) {
+      return { ok: false, rows: 0, count: 0, sample: '', msg: String((e && e.message) || e) };
+    }
+  }, term);
+}
+
+test.describe('Brotli artefacts (enc, 2026-07-27)', () => {
+  test.use({ serviceWorkers: 'block' });
+
+  test('BR1. A `br` sentence shard is decoded and searched like a gzip one', async ({ page }) => {
+    test.setTimeout(120000);
+    const gzShard = (realManifest.sentenceShards || [])[0];
+    expect(gzShard, 'manifest.json has no sentenceShards to test with').toBeTruthy();
+
+    const br = reencodeEntryToBrotli(gzShard);
+    const mf = JSON.parse(JSON.stringify(realManifest));
+    mf.sentenceShards = [br.entry];
+
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(mf),
+    }));
+    await serveBytes(page, br.entry.path, br.bytes);
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.db && PPP.search && PPP.offlineStore);
+
+    // Not installed: the shard comes over the network, decoded by `enc`.
+    const out = await runSentenceSearch(page, 'guru');
+
+    // NEGATIVE CHECK RUN (js/db.js reverted to the pre-Brotli shard path: `enc`
+    // dropped from the openQueryClose worker payload AND from the main-thread
+    // fallback, so the worker falls back to normalize(undefined) === 'gzip'):
+    //   Error: a `br` shard failed to decode: Declared gzip but bytes are not
+    //   gzip — first bytes 0xcb 0xff
+    //     Expected: true
+    //     Received: false
+    // (The codec-plausibility guard names the fault. Without it the same run
+    // fails as sql.js choking on 6 MB of undecoded bytes.)
+    expect(out.ok, 'a `br` shard failed to decode: ' + out.msg).toBe(true);
+    expect(out.rows, 'a `br` shard produced no sentence rows').toBeGreaterThan(0);
+    expect(out.count).toBeGreaterThan(0);
+    expect(out.sample.toLowerCase()).toContain('guru');
+  });
+
+  test('BR2. A MIXED generation (one gzip shard + one `br` shard) searches as one corpus', async ({ page }) => {
+    // The state a delta guarantees: shards are replaced one at a time, so
+    // between the first and the last write the device legitimately holds both
+    // codecs. A search in that window must return the SAME corpus it would
+    // return once the delta finished — not half of it, and not an error.
+    test.setTimeout(120000);
+    const shards = realManifest.sentenceShards || [];
+    expect(shards.length, 'need two shards for a mixed-generation fixture').toBeGreaterThan(1);
+    const gzShard = shards[0];
+    const br = reencodeEntryToBrotli(shards[1]);
+
+    let manifestBody = '{}';
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: manifestBody,
+    }));
+    await serveBytes(page, br.entry.path, br.bytes);
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.db && PPP.search);
+
+    const withShards = async (list) => {
+      const mf = JSON.parse(JSON.stringify(realManifest));
+      mf.sentenceShards = list;
+      manifestBody = JSON.stringify(mf);
+      await page.evaluate(() => PPP.db.resetSentenceShards());
+    };
+
+    // 1. gzip shard alone — the floor.
+    await withShards([gzShard]);
+    const onlyGz = await runSentenceSearch(page, 'guru');
+    expect(onlyGz.ok, 'baseline gzip-only search failed: ' + onlyGz.msg).toBe(true);
+
+    // 2. both shards, both gzip — the reference total.
+    await withShards([gzShard, shards[1]]);
+    const bothGz = await runSentenceSearch(page, 'guru');
+    expect(bothGz.ok, 'baseline all-gzip search failed: ' + bothGz.msg).toBe(true);
+    expect(bothGz.count,
+      'fixture is vacuous — the second shard contributes nothing'
+    ).toBeGreaterThan(onlyGz.count);
+
+    // 3. the same two shards, the second one Brotli — the mixed generation.
+    await withShards([gzShard, br.entry]);
+    const mixed = await runSentenceSearch(page, 'guru');
+
+    // NEGATIVE CHECK RUN (js/db.js searchSentencesChunked made to resolve ONE
+    // codec for the whole loop from the first shard —
+    // `PPP.codec.normalize(shards[0] && shards[0].enc)` in place of `rec.enc` —
+    // i.e. the "a generation has one codec" assumption this design rejects):
+    //   Error: a mixed gz+br generation failed to search: Declared gzip but
+    //   bytes are not gzip — first bytes 0xcb 0xff
+    //     Expected: true
+    //     Received: false
+    // Steps 1 and 2 stay green in that run, so the failure is specifically the
+    // mixed generation and not the fixture.
+    expect(mixed.ok, 'a mixed gz+br generation failed to search: ' + mixed.msg).toBe(true);
+    expect(mixed.count,
+      'the mixed generation returned a different corpus than the all-gzip one'
+    ).toBe(bothGz.count);
+    expect(mixed.rows).toBe(bothGz.rows);
+  });
+
+  test('BR3. `br` core file and `br` pack members install, decode and open', async ({ page }) => {
+    // Covers the install path end to end for Brotli: a core DB (opened by
+    // sql.js) and pack members (read as text). core.extras stays gzip on
+    // purpose — a generation is allowed to be mixed at the core level too, and
+    // the codec is read per entry.
+    test.setTimeout(120000);
+    const smallPack = (realManifest.packs || [])
+      .filter(p => p.lang === 'en')
+      .sort((a, b) => (a.size || 0) - (b.size || 0))[0];
+    expect(smallPack, 'manifest.json has no EN packs').toBeTruthy();
+
+    const brMeta = reencodeEntryToBrotli(realManifest.core.meta);
+    const brPack = reencodePackToBrotli(smallPack);
+
+    const mf = JSON.parse(JSON.stringify(realManifest));
+    mf.core = { meta: brMeta.entry, extras: realManifest.core.extras };
+    mf.packs = [brPack.entry];
+    mf.sentenceShards = [];
+
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(mf),
+    }));
+    await serveBytes(page, brMeta.entry.path, brMeta.bytes);
+    await serveBytes(page, brPack.entry.path, brPack.bytes);
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.codec);
+
+    // Lazy load: nothing Brotli has been decoded yet on this thread, so the
+    // ~208 KB WASM decoder must not have been instantiated at boot.
+    expect(
+      await page.evaluate(() => PPP.codec.brotliReady()),
+      'the Brotli decoder was instantiated at boot instead of on first use'
+    ).toBe(false);
+
+    const out = await page.evaluate(async (nr) => {
+      await PPP.downloader.firstInstall(null, [], false);
+      const idb = await PPP.offlineStore.open();
+      const rec = await new Promise((resolve, reject) => {
+        const tx = idb.transaction('files', 'readonly');
+        const req = tx.objectStore('files').get('core:meta');
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      });
+      const reopened = await PPP.db.reloadMetaFromStore();
+      const rows = await PPP.db.queryMetaAsync('SELECT COUNT(*) AS n FROM lectures');
+      // The smallest EN pack may be premium or raw, and getText RESOLVES with
+      // null for a key that is not there (it does not reject), so try both.
+      let text = await PPP.offlineStore.getText('t:en:' + nr);
+      if (!text) text = await PPP.offlineStore.getText('raw:en:' + nr);
+      const extras = await PPP.offlineStore.getText('core:extras');
+      let extrasParses = false;
+      try { extrasParses = !!JSON.parse(extras); } catch (e) { extrasParses = false; }
+      return {
+        storedEnc: rec && rec.enc,
+        reopened: reopened,
+        lectures: rows && rows[0] ? rows[0].n : 0,
+        memberLen: text ? text.length : 0,
+        extrasParses: extrasParses,
+        brotliLoaded: PPP.codec.brotliReady(),
+      };
+    }, brPack.nrs[0]);
+
+    // NEGATIVE CHECK RUN (js/downloader.js _processItem reverted to the
+    // pre-Brotli installer: no `enc` on the core/shard record and
+    // parsePack(buf, keyFn) without the pack's codec):
+    //   Error: page.evaluate: Error: Declared gzip but bytes are not gzip —
+    //   first bytes 0xcb 0xff
+    // The run dies inside the evaluate — at reloadMetaFromStore, reading back
+    // the record whose codec was never written — so it never reaches the
+    // storedEnc assertion below. It detects the breakage; it just reports it
+    // as a failed read rather than as a missing field.
+    expect(out.storedEnc, 'the installer did not record the artefact codec').toBe('br');
+    expect(out.reopened, 'a `br` core DB could not be reopened from the store').toBe(true);
+    expect(out.lectures, 'the `br` core DB opened but has no rows').toBeGreaterThan(0);
+    expect(out.memberLen, 'a `br` pack member decoded to nothing').toBeGreaterThan(100);
+    expect(out.extrasParses, 'the gzip core file next to the `br` one stopped decoding').toBe(true);
+    expect(out.brotliLoaded, 'the decoder never loaded, so nothing was really Brotli').toBe(true);
+  });
+
+  test('BR4. An entry / record with NO `enc` is gzip, and never loads the decoder', async ({ page }) => {
+    // The compatibility rule, from both directions: a manifest entry written
+    // before the option existed, and an IndexedDB record written by a
+    // pre-Brotli install. Both must keep working, and neither may drag the
+    // Brotli decoder in — that is what makes the gzip generation cost nothing.
+    test.setTimeout(120000);
+    const gzShard = (realManifest.sentenceShards || [])[0];
+    expect(gzShard).toBeTruthy();
+
+    const legacyEntry = Object.assign({}, gzShard);
+    delete legacyEntry.enc;                     // pre-Brotli manifest shape
+    expect('enc' in legacyEntry).toBe(false);
+
+    const mf = JSON.parse(JSON.stringify(realManifest));
+    mf.sentenceShards = [legacyEntry];
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(mf),
+    }));
+
+    let wasmRequests = 0;
+    page.on('request', r => {
+      if (r.url().indexOf('brotli-dec') !== -1) wasmRequests++;
+    });
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.db && PPP.search && PPP.codec);
+
+    // NEGATIVE CHECK RUN (js/codec.js normalize() flipped to
+    // `return (enc === GZIP) ? GZIP : BR` — "absence means the new thing",
+    // the default this compatibility rule exists to reject):
+    //   Error: a missing enc must mean gzip
+    //     Expected: "gzip"
+    //     Received: "br"
+    expect(
+      await page.evaluate(() => PPP.codec.normalize(undefined)),
+      'a missing enc must mean gzip'
+    ).toBe('gzip');
+
+    const search = await runSentenceSearch(page, 'guru');
+    expect(search.ok, 'an enc-less (legacy) shard entry stopped decoding: ' + search.msg).toBe(true);
+    expect(search.rows).toBeGreaterThan(0);
+
+    // A record written by a pre-Brotli install: gzip bytes, no `enc` field.
+    const stored = await page.evaluate(async () => {
+      const text = 'legacy gzip record ' + 'x'.repeat(2000);
+      const gz = await new Response(
+        new Blob([new TextEncoder().encode(text)]).stream()
+          .pipeThrough(new CompressionStream('gzip'))
+      ).arrayBuffer();
+      await PPP.offlineStore.putFile({
+        key: 'test:legacy', packId: 'test:legacy',
+        gz: new Blob([gz]), raw: text.length,        // deliberately no `enc`
+      });
+      const back = await PPP.offlineStore.getText('test:legacy');
+      const rec = await PPP.offlineStore.getEncoded('test:legacy');
+      return { matches: back === text, encRead: rec && rec.enc };
+    });
+
+    expect(stored.matches, 'a pre-Brotli IndexedDB record stopped decoding').toBe(true);
+    expect(stored.encRead, 'a record with no enc must read back as gzip').toBe('gzip');
+    expect(wasmRequests,
+      'a gzip-only generation fetched the Brotli decoder for nothing'
+    ).toBe(0);
+  });
+});
+
+test.describe('Brotli decoder is a HARD service-worker install requirement (Codex HIGH-2, 2026-07-27)', () => {
+  // The precache loop was tolerant by design: a 404 or a network hiccup on any
+  // shell file bumped `missing`, warned, and called skipWaiting() anyway —
+  // after which activate deleted the PREVIOUS (working) shell cache.
+  //
+  // For a font or a guide page that is correct. For the Brotli decoder it is
+  // not recoverable: once a `br` generation is published, a device whose shell
+  // lacks the decoder and whose library is offline has no network left to fetch
+  // one, and every shard it owns becomes permanently undecodable while sitting
+  // right there in IndexedDB.
+  //
+  // So the install must FAIL instead, leaving the previous worker in charge.
+
+  // Explicit, not inherited: this is the one test in the file that needs a REAL
+  // service worker, and context.route only reaches a WORKER's own fetches when
+  // the context was created with service workers allowed.
+  test.use({ serviceWorkers: 'allow' });
+
+  const WASM_URL = '**/js/vendor/brotli-dec.wasm*';
+
+  /**
+   * Settled service-worker state, read AFTER an install has had time to finish
+   * or fail.
+   *
+   * Deliberately NOT "does a ca-shell-* cache name exist". The install opens
+   * its cache as its FIRST act, so that name appears within milliseconds of
+   * registration — long before the decoder is fetched, and long before the
+   * install can succeed or abort. A poll that returned on the first sighting
+   * measured "an install started", which is true in both the healthy and the
+   * broken case; the first version of this test did exactly that and reported
+   * a failure with `aborts=0`, i.e. it had judged the outcome before the
+   * decoder had even been requested.
+   *
+   * `controller` is the honest signal for "a worker took charge", and the
+   * cache list is only meaningful once things have settled.
+   */
+  function swState(page) {
+    return page.evaluate(async () => {
+      const names = await caches.keys();
+      return {
+        shell: names.filter(n => n.indexOf('ca-shell-') === 0),
+        controlled: !!navigator.serviceWorker.controller,
+      };
+    });
+  }
+
+  /** Wait until a worker actually controls the page (the healthy outcome). */
+  async function waitForControlled(page, timeout) {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      const s = await swState(page);
+      if (s.controlled) return s;
+      if (Date.now() > deadline) return s;
+      await page.waitForTimeout(500);
+    }
+  }
+
+  test('BR5. A precache miss on the decoder aborts the SW install instead of activating a shell that cannot decode', async ({ page, context }) => {
+    test.setTimeout(120000);
+
+    // context.route, not page.route: the precache fetches are issued by the
+    // SERVICE WORKER, and page.route never sees those.
+    let aborts = 0;
+    await context.route(WASM_URL, route => { aborts++; route.abort(); });
+
+    await page.goto('./');
+    // The page itself must stay usable — a refused SW update is not an outage.
+    await expect(page.locator('#searchTerm')).toBeEnabled({ timeout: 30000 });
+
+    // The list sw.js enforces is GENERATED by scripts/build_sw_precache.py, so
+    // assert the generated CONTRACT rather than a constant in sw.js — a rename
+    // that silently emptied it would disarm everything below.
+    const required = await page.evaluate(async () => {
+      const txt = await (await fetch('sw-precache.js')).text();
+      const m = txt.match(/self\.REQUIRED_SHELL\s*=\s*\[([\s\S]*?)\]/);
+      if (!m) return null;
+      return m[1].split(',').map(s => s.trim().replace(/^'|'$/g, '')).filter(Boolean);
+    });
+    // An EMPTY list must FAIL this test, not quietly satisfy it: [] is truthy
+    // in JS, so the membership loop is what actually carries the assertion.
+    // VERIFIED by emptying self.REQUIRED_SHELL in the generated sw-precache.js
+    // and re-running:
+    //   Error: REQUIRED_SHELL no longer covers js/codec.js
+    //     Expected value: "js/codec.js"
+    //     Received array: []
+    expect(required, 'sw-precache.js declares no REQUIRED_SHELL').toBeTruthy();
+    for (const f of ['js/codec.js', 'js/vendor/brotli-dec.js', 'js/vendor/brotli-dec.wasm',
+                     'js/vendor/sql-wasm.js', 'js/vendor/sql-wasm.wasm']) {
+      expect(required, 'REQUIRED_SHELL no longer covers ' + f).toContain(f);
+    }
+
+    // Wait for the install to actually REACH the decoder. Until this fires,
+    // nothing about the outcome is known and any assertion would be vacuous.
+    await expect.poll(() => aborts, {
+      timeout: 40000,
+      message: 'the service worker never tried to precache the decoder — ' +
+        'nothing below would be testing anything',
+    }).toBeGreaterThan(0);
+
+    // Let the install finish failing and clean up after itself.
+    await page.waitForTimeout(3000);
+    const blocked = await swState(page);
+
+    // NEGATIVE CHECK RUN (sw.js reverted to the tolerant install — the
+    // `missingRequired` collection, the caches.delete(CACHE) and the throw
+    // removed, so a miss on the decoder only bumps `missing` and skipWaiting()
+    // runs anyway):
+    //   Error: a shell that cannot decode Brotli was published anyway
+    //     - Expected  - 1
+    //     + Received  + 3
+    //     - Array []
+    //     + Array [ "ca-shell-ce5e147f4cf5" ]
+    // The run stops on this first assertion, so the `controlled` one below is
+    // never reached in it — that line is a second, independent statement of
+    // the same fault, not something that run demonstrated.
+    expect(blocked.shell,
+      'a shell that cannot decode Brotli was published anyway').toEqual([]);
+    expect(blocked.controlled,
+      'a worker that failed to precache the decoder took control').toBe(false);
+
+    // POSITIVE CONTROL, same page: with the decoder reachable the very same
+    // install must succeed. Without this the test would also "pass" if the
+    // service worker had simply never run here for an unrelated reason.
+    await context.unroute(WASM_URL);
+    await page.reload();
+    await expect(page.locator('#searchTerm')).toBeEnabled({ timeout: 30000 });
+    const healthy = await waitForControlled(page, 60000);
+    expect(healthy.controlled,
+      'control failed: the SW never activates even with the decoder reachable — ' +
+      'the assertions above would prove nothing').toBe(true);
+    expect(healthy.shell.length).toBeGreaterThan(0);
+
+    // ...and the decoder really is in the shell that got published.
+    const hasWasm = await page.evaluate(async () => {
+      const names = await caches.keys();
+      const shell = names.find(n => n.indexOf('ca-shell-') === 0);
+      if (!shell) return false;
+      const cache = await caches.open(shell);
+      const hit = await cache.match(
+        new URL('js/vendor/brotli-dec.wasm', location.href).toString(), { ignoreSearch: true });
+      return !!hit;
+    });
+    expect(hasWasm, 'the decoder is not in the shell the SW published').toBe(true);
+  });
+});
+
+test.describe('Worker hands the source bytes back on failure (Codex MEDIUM, 2026-07-27)', () => {
+  test.use({ serviceWorkers: 'block' });
+
+  test('BR6. A failed worker decode still reaches the main-thread fallback, without a pre-emptive copy', async ({ page }) => {
+    // db.js used to send `gzArrayBuffer.slice(0)` to the worker and keep the
+    // original purely so this fallback would still have bytes after the
+    // transfer — a whole extra copy of every compressed artefact, 21 times per
+    // search. Now the original is TRANSFERRED and the worker returns it when it
+    // fails (db-worker.js failWithBuffer).
+    //
+    // The risk that change introduces is precisely here: if the bytes did NOT
+    // come back, the main thread would hold a detached husk and the fallback
+    // would silently stop existing. So the thing to assert is that the fallback
+    // still RUNS — which it can only do with bytes in hand.
+    //
+    // Forcing it: a shard of the right SIZE (so the manifest's size gate lets it
+    // through) but corrupt content. The worker's decode throws, hands the bytes
+    // back, and the main thread retries the decode itself — logging as it goes.
+    // That retry also fails, of course; the search failing is not the point, the
+    // fallback having been reachable at all is.
+    test.setTimeout(120000);
+    const shard = (realManifest.sentenceShards || [])[0];
+    expect(shard, 'manifest.json has no sentenceShards').toBeTruthy();
+
+    const corrupt = Buffer.alloc(shard.size);      // right length, not gzip
+    corrupt.fill(0x41);
+
+    const mf = JSON.parse(JSON.stringify(realManifest));
+    mf.sentenceShards = [shard];
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(mf),
+    }));
+    await serveBytes(page, shard.path, corrupt);
+
+    const warnings = [];
+    page.on('console', m => {
+      const t = m.text();
+      if (t.indexOf('decompressing on main thread') !== -1) warnings.push(t);
+    });
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.db && PPP.search);
+
+    const out = await runSentenceSearch(page, 'guru');
+    expect(out.ok, 'a corrupt shard should not have decoded').toBe(false);
+
+    // NEGATIVE CHECK RUN (db-worker.js failWithBuffer reverted to a plain
+    // postMessage without the buffer, i.e. the worker keeps/loses the bytes —
+    // exactly the regression the copy removal could have introduced):
+    //   Error: the worker did not return the source bytes, so the main-thread
+    //   fallback was unreachable
+    //     Expected: > 0
+    //     Received:   0
+    expect(warnings.length,
+      'the worker did not return the source bytes, so the main-thread fallback ' +
+      'was unreachable').toBeGreaterThan(0);
+  });
+});
+
+test.describe('A failed send leaves nothing behind (Codex LOW, 2026-07-27)', () => {
+  test.use({ serviceWorkers: 'block' });
+
+  test('BR7. A synchronous postMessage failure rejects without leaking a pending worker call', async ({ page }) => {
+    // workerCall registers its pendingCallbacks entry BEFORE posting. If
+    // postMessage throws synchronously — a detached or already-transferred
+    // ArrayBuffer, an uncloneable payload — the promise rejects correctly, but
+    // the entry would sit in the map forever: no reply carrying that id can
+    // ever arrive to clear it.
+    //
+    // Not reachable on today's paths (every shard read builds a fresh buffer
+    // via getEncoded() -> Blob.arrayBuffer(), so nothing is transferred twice).
+    // It is reachable the moment anyone adds buffer reuse — which is exactly
+    // the optimisation the transfer-based hot path invites — so the invariant
+    // is pinned here rather than left as a comment.
+    test.setTimeout(120000);
+
+    await page.goto('./');
+    await expect(page.locator('#searchTerm')).toBeEnabled({ timeout: 60000 });
+    await page.waitForFunction(
+      () => window.PPP && PPP.db && PPP.db.isWorkerMode && PPP.db.isWorkerMode(),
+      { timeout: 60000 });
+
+    const out = await page.evaluate(async () => {
+      const before = PPP.db._pendingWorkerCalls();
+
+      // Detach a buffer by transferring it away, then hand the husk to the
+      // worker call: postMessage throws DataCloneError synchronously.
+      const buf = new ArrayBuffer(1024);
+      new MessageChannel().port1.postMessage(buf, [buf]);
+
+      let threw = null;
+      try { await PPP.db.openDBFromGz('leakprobe', buf, 'gzip'); }
+      catch (e) { threw = String((e && e.name) || e); }
+
+      // The worker must still be usable afterwards — a rejected send is not a
+      // dead worker.
+      let normalOk = false;
+      try { normalOk = (await PPP.db.getStatsAsync()) != null; } catch (e) {}
+
+      return {
+        detached: buf.byteLength === 0,
+        threw: threw,
+        normalOk: normalOk,
+        before: before,
+        after: PPP.db._pendingWorkerCalls(),
+      };
+    });
+
+    // The fixture has to actually reach the throw, or the rest proves nothing.
+    expect(out.detached, 'the probe buffer was not detached').toBe(true);
+    expect(out.threw, 'postMessage did not fail — the leak path was not exercised')
+      .toBe('DataCloneError');
+
+    // NEGATIVE CHECK RUN (js/db.js workerCall reverted to posting without the
+    // try/catch, i.e. the pre-audit code):
+    //   Error: a failed send left a pending worker call behind
+    //     Expected: 0
+    //     Received: 1
+    expect(out.after - out.before,
+      'a failed send left a pending worker call behind').toBe(0);
+    expect(out.normalOk, 'the worker stopped answering after a failed send').toBe(true);
+  });
 });

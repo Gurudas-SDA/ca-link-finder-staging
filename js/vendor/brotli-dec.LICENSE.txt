@@ -1,0 +1,42 @@
+brotli-dec.wasm — provenance and licence
+========================================
+
+File     : brotli-dec.wasm  (208 439 bytes)
+sha256   : 79b29cb1790560f0a0f32b4a31d935e2782875e4a367fde23c81d986b327ec3f
+Upstream : brotli-dec-wasm@2.3.2, file pkg/brotli_dec_wasm_bg.wasm
+           https://www.npmjs.com/package/brotli-dec-wasm
+           https://github.com/ustclug-dev/brotli-dec-wasm
+           npm tarball sha512-5H+k8eVLIJY6B4olN2HP9QzJAxcplf0jV7mWnkpxvOSeUE9Npg3dQ2pgLn30a9MUFHNro1iSmtdu6VNdlb+TIw==
+Contents : a Rust `brotli-decompressor` build, compiled with wasm-pack.
+           DECOMPRESSION ONLY — the module exports no compressor.
+Vendored : 2026-07-27. The bytes are byte-identical to the upstream package;
+           only the file NAME was changed. The upstream JS glue was NOT
+           vendored (minified ESM, unusable from a classic Worker) — the glue
+           in brotli-dec.js is written by this project.
+Licence  : Apache-2.0 OR MIT, at the user's option. The MIT text is
+           reproduced below; the Apache-2.0 text is the standard one at
+           https://www.apache.org/licenses/LICENSE-2.0
+
+-------------------------------------------------------------------------------
+MIT License
+
+Copyright (C) 2026 Yulong Ming <i@myl7.org>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+-------------------------------------------------------------------------------

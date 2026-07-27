@@ -1,5 +1,17 @@
 // Service Worker v10 — offline app shell (precache + cache-first)
-// Versija: 2026-07-27
+// Versija: 2026-07-27c
+//
+// 2026-07-27c: REQUIRED_SHELL — a precache miss on the Brotli decoder now
+// FAILS the install instead of activating a shell that cannot read the
+// device's own library. Rationale at the constant. (Codex audit HIGH-2.)
+//
+// 2026-07-27b: shell gained js/codec.js, js/vendor/brotli-dec.js and
+// js/vendor/brotli-dec.wasm (Brotli decoding for the next corpus generation).
+// The .wasm MUST be precached even though codec.js loads it lazily: a device
+// that is already installed and offline receives a Brotli delta with no
+// network left to fetch a decoder from. Both vendor files are referenced
+// without ?v= (codec.js injects them at runtime), so they ride the same
+// loose-match path as js/vendor/sql-wasm.{js,wasm}.
 //
 // 2026-07-27: shell files changed (js/db.js) and the last two hand-written
 // '?v=' labels became content hashes — see the static-asset section below.
@@ -54,6 +66,48 @@ const V8_MARKER_PREFIX = 'sw-marker-'; // v8 left marker caches with this prefix
 // installed the library.
 const PASSTHROUGH_PREFIXES = ['packs/', 'transcripts/', 'data/shards/'];
 
+// Shell files whose absence is UNRECOVERABLE, so a precache miss on them must
+// FAIL the install instead of activating a crippled worker.
+//
+// Everything else in PRECACHE degrades: a missing font renders in a fallback
+// face, a missing guide page is one dead link, and the network heals it on the
+// next online visit. The Brotli decoder does not degrade. Once a `br`
+// generation is published, a device that installed the library has NO network
+// left when it goes offline, and every shard it owns becomes undecodable —
+// "Brotli decoder failed to load", permanently, with the data sitting right
+// there in IndexedDB. The install path tolerated exactly that: a transient
+// failure on this one file bumped `missing`, warned, and called skipWaiting()
+// anyway, and activate then deleted the previous WORKING shell cache.
+// (Codex audit HIGH-2, 2026-07-27.)
+//
+// Failing the install is the safe direction: the event rejects, the browser
+// discards this worker, the previous worker and its shell cache keep serving,
+// and the update is retried on a later visit. Never a half shell.
+//
+// The list is GENERATED into sw-precache.js by scripts/build_sw_precache.py,
+// from the SAME scan that produces PRECACHE — never hand-maintained here. A
+// hand-kept copy stops matching the first time a file is renamed, and since a
+// miss on these is fatal to the install, a stale name would either block every
+// device's updates forever or quietly stop protecting anything. The build
+// script fails outright if a listed path is not in the shell scan.
+//
+// It covers js/codec.js + js/vendor/brotli-dec.* (no Brotli decode = an
+// installed offline device cannot read shards it already owns) and
+// js/vendor/sql-wasm.* (no sql.js = no database opens at all — Rājan,
+// 2026-07-27).
+const REQUIRED_SHELL = self.REQUIRED_SHELL || [];
+if (!self.REQUIRED_SHELL) {
+    // Only reachable if this sw.js is deployed beside a sw-precache.js
+    // generated before the list existed. Degrade to the old tolerant behaviour
+    // rather than brick installs — but say so, it is a build/deploy mismatch.
+    console.error('[SW] sw-precache.js has no REQUIRED_SHELL — ' +
+        'regenerate it with scripts/build_sw_precache.py');
+}
+
+function isRequiredShell(precacheUrl) {
+    return REQUIRED_SHELL.indexOf(String(precacheUrl).split('?')[0]) !== -1;
+}
+
 // data/ files with no ?v= hash of their own — must always be read fresh.
 const NETWORK_FIRST_DATA = ['data/manifest.json', 'data/db-versions.json'];
 
@@ -75,25 +129,39 @@ self.addEventListener('install', function (event) {
         const cache = await caches.open(CACHE);
         const CHUNK = 50;
         let missing = 0;
+        const missingRequired = [];
         for (let i = 0; i < self.PRECACHE.length; i += CHUNK) {
             const chunk = self.PRECACHE.slice(i, i + CHUNK);
             await Promise.all(chunk.map(async function (url) {
                 // Individual fetch instead of addAll: a single 404/network
-                // hiccup must not brick the whole install.
+                // hiccup must not brick the whole install — EXCEPT for
+                // REQUIRED_SHELL, which is collected and re-raised below.
                 try {
                     const resp = await fetch(url, { cache: 'no-cache' });
                     if (resp.ok) {
                         await cache.put(url, resp);
                     } else {
                         missing++;
+                        if (isRequiredShell(url)) missingRequired.push(url);
                         console.warn('[SW ' + SW_VERSION + '] Precache skip (' +
                             resp.status + '): ' + url);
                     }
                 } catch (err) {
                     missing++;
+                    if (isRequiredShell(url)) missingRequired.push(url);
                     console.warn('[SW ' + SW_VERSION + '] Precache skip (fetch failed): ' + url);
                 }
             }));
+        }
+        if (missingRequired.length) {
+            // Leave NOTHING behind: this cache name is derived from
+            // SHELL_VERSION, so a half-filled copy of it would be adopted
+            // wholesale by the next install of the same shell and its holes
+            // would look precached forever.
+            await caches.delete(CACHE);
+            throw new Error('[SW ' + SW_VERSION + '] Install ABORTED — required shell file(s) ' +
+                'could not be precached: ' + missingRequired.join(', ') +
+                '. Keeping the previous worker; the update will be retried.');
         }
         if (missing) {
             console.warn('[SW ' + SW_VERSION + '] Install done with ' + missing + ' missing files');

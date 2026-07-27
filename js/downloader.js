@@ -433,6 +433,12 @@ PPP.downloader = (function () {
         return Promise.resolve(buffer);
     }
 
+    /** Blob MIME for a codec — cosmetic, but keeps DevTools honest about what
+     *  is actually stored once a generation is Brotli. */
+    function _blobType(enc) {
+        return enc === 'br' ? 'application/x-brotli' : 'application/gzip';
+    }
+
     function _packKeyFn(pack) {
         if (pack.kind === 'raw') {
             return function (nr) { return 'raw:' + pack.lang + ':' + nr; };
@@ -532,12 +538,17 @@ PPP.downloader = (function () {
                     // that window made the resume skip B forever — a silently
                     // missing pack. Inside the apply callback the flag and the
                     // records commit in the SAME transaction.
+                    // The manifest entry's `enc` is written onto the stored
+                    // record: the bytes leave their manifest behind the moment
+                    // they land in IndexedDB, and Brotli cannot be recognised
+                    // from the bytes (see js/codec.js). Missing -> gzip.
+                    var itemEnc = PPP.codec.normalize(entry.enc);
                     if (item.type === 'core') {
                         var key = 'core:' + item.coreKey;
                         return _enqueueApply(function () {
                             install.completedCore[item.coreKey] = { hash: entry.hash, size: entry.size };
                             return store.putFile(
-                                { key: key, packId: key, gz: new Blob([buf], { type: 'application/gzip' }), raw: entry.raw },
+                                { key: key, packId: key, gz: new Blob([buf], { type: _blobType(itemEnc) }), raw: entry.raw, enc: itemEnc },
                                 install._track ? { key: 'install', value: install } : null
                             );
                         });
@@ -547,13 +558,13 @@ PPP.downloader = (function () {
                         return _enqueueApply(function () {
                             install.completedShards[entry.id] = { sha256: entry.sha256, size: entry.size };
                             return store.putFile(
-                                { key: skey, packId: skey, gz: new Blob([buf], { type: 'application/gzip' }), raw: entry.raw },
+                                { key: skey, packId: skey, gz: new Blob([buf], { type: _blobType(itemEnc) }), raw: entry.raw, enc: itemEnc },
                                 install._track ? { key: 'install', value: install } : null
                             );
                         });
                     }
                     // Pack: parse + slice fully BEFORE the transaction opens.
-                    var entries = store.parsePack(buf, _packKeyFn(entry));
+                    var entries = store.parsePack(buf, _packKeyFn(entry), itemEnc);
                     return _enqueueApply(function () {
                         install.completedPacks[entry.id] = { hash: entry.hash, size: entry.size };
                         return store.applyPack(entry.id, entries,

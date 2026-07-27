@@ -1,10 +1,24 @@
 /* ===========================================================================
    PPP Link Finder — Offline store (IndexedDB `ca-offline`)
    Single on-device data store for the full offline library. Everything is
-   kept gzipped (as Blobs) and decompressed on demand with the native
-   DecompressionStream. Two object stores:
-     files : { key, packId, gz (Blob), raw }   — keyPath 'key', index 'byPack'
-     state : out-of-line keys                  — localManifest, install, ...
+   kept COMPRESSED (as Blobs) and decompressed on demand through PPP.codec.
+   Two object stores:
+     files : { key, packId, gz (Blob), raw, enc }  — keyPath 'key', index 'byPack'
+     state : out-of-line keys                      — localManifest, install, ...
+
+   `enc` ("gzip" | "br") is the codec of THAT record's bytes, copied from the
+   manifest entry the record came from and stored ALONGSIDE the bytes. It has
+   to live on the record, not be inferred:
+     - a stored blob has no manifest context at read time, and
+     - Brotli carries no magic prefix, so the bytes cannot be sniffed
+       (see js/codec.js for why "not 1f 8b therefore Brotli" is unsound).
+   A record written before this field existed has `enc === undefined`, which
+   PPP.codec.normalize() reads as "gzip" — correct, because every artefact
+   published up to 2026-07-27 was gzip. The field is additive and needs no
+   IndexedDB version bump (object stores are schemaless), so an installed
+   library keeps working untouched and a delta simply writes the new field on
+   the records it replaces — which is also what makes a MIXED generation
+   (some shards gzip, some Brotli mid-delta) decode correctly.
    Keys: 't:{lang}:{nr}' premium transcript, 'raw:en:{nr}' raw transcript,
          'core:meta' / 'core:extras' core files, 'shard:{id}' sentence shards.
          ('core:sentences' existed until 2026-07-27 — the 18.9 MB whole-file
@@ -69,7 +83,10 @@ PPP.offlineStore = (function () {
     }
 
     /**
-     * Raw gzipped bytes for a key → ArrayBuffer|null.
+     * Raw compressed bytes for a key → ArrayBuffer|null.
+     * Kept for presence probes (downloader.isCoreReady). Anything that has to
+     * DECODE the bytes must use getEncoded(), which also returns the codec —
+     * bytes alone are not enough to decode them.
      */
     function getGz(key) {
         return _getRecord(key).then(function (rec) {
@@ -79,14 +96,27 @@ PPP.offlineStore = (function () {
     }
 
     /**
+     * Compressed bytes PLUS the codec that produced them:
+     *   { buf: ArrayBuffer, enc: 'gzip'|'br' }  |  null
+     * One IndexedDB read for both — the codec is a field on the same record,
+     * so asking for it separately would double every read on the hot path.
+     */
+    function getEncoded(key) {
+        return _getRecord(key).then(function (rec) {
+            if (!rec || !rec.gz) return null;
+            return rec.gz.arrayBuffer().then(function (buf) {
+                return { buf: buf, enc: PPP.codec.normalize(rec.enc) };
+            });
+        });
+    }
+
+    /**
      * Decompressed text content for a key → string|null.
      */
     function getText(key) {
         return _getRecord(key).then(function (rec) {
             if (!rec || !rec.gz) return null;
-            return new Response(
-                rec.gz.stream().pipeThrough(new DecompressionStream('gzip'))
-            ).text();
+            return PPP.codec.toText(rec.gz, rec.enc, key);
         });
     }
 
@@ -136,7 +166,8 @@ PPP.offlineStore = (function () {
                                 key: entries[i].key,
                                 packId: packId,
                                 gz: entries[i].gz,
-                                raw: entries[i].raw
+                                raw: entries[i].raw,
+                                enc: entries[i].enc
                             });
                         }
                         if (state) tx.objectStore('state').put(state.value, state.key);
@@ -215,12 +246,18 @@ PPP.offlineStore = (function () {
      * Parse a CAP1 pack: "CAP1" magic (bytes 0-3), uint32 LE index-JSON
      * length (bytes 4-7), index JSON array [{nr, off, len, raw}] sorted by nr,
      * then the blob area (off relative to blob start; each member is a
-     * standalone gzip stream). Bounds are validated BEFORE any member Blob is
-     * produced — a corrupt pack throws and nothing gets applied.
+     * standalone compressed stream). Bounds are validated BEFORE any member
+     * Blob is produced — a corrupt pack throws and nothing gets applied.
      * keyFn(nr, member) maps a member to its IDB key.
-     * Returns [{ key, gz: Blob, raw }].
+     *
+     * `enc` is the pack ENTRY's codec (manifest `enc`, missing -> gzip). The
+     * CAP1 container is byte-identical for both codecs — only the member blobs
+     * change — so it is deliberately NOT discoverable from the file, and every
+     * member inherits the codec its pack declared.
+     * Returns [{ key, gz: Blob, raw, enc }].
      */
-    function parsePack(arrayBuffer, keyFn) {
+    function parsePack(arrayBuffer, keyFn, enc) {
+        var memberEnc = PPP.codec.normalize(enc);
         var view = new DataView(arrayBuffer);
         if (arrayBuffer.byteLength < 8) throw new Error('Pack too small');
         var magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
@@ -254,8 +291,11 @@ PPP.offlineStore = (function () {
             var memberBytes = new Uint8Array(arrayBuffer, blobStart + m.off, m.len);
             entries.push({
                 key: keyFn(m.nr, m),
-                gz: new Blob([memberBytes], { type: 'application/gzip' }),
-                raw: m.raw
+                gz: new Blob([memberBytes], {
+                    type: memberEnc === 'br' ? 'application/x-brotli' : 'application/gzip'
+                }),
+                raw: m.raw,
+                enc: memberEnc
             });
         }
         return entries;
@@ -277,6 +317,7 @@ PPP.offlineStore = (function () {
         supported: supported,
         open: open,
         getGz: getGz,
+        getEncoded: getEncoded,
         getText: getText,
         putFile: putFile,
         applyPack: applyPack,

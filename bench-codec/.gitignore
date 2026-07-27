@@ -1,0 +1,8 @@
+# Derived, never committed: ~15.6 MB of re-encoded shard bytes that
+# `node bench-codec/codec-bench.cjs --fixtures` regenerates from
+# data/shards/ppp_sentences_shard_000.db.gz, which is already in the repo.
+#
+# This repo lost a working push to a 655 MB blob in its unpublished history on
+# 2026-07-24 and the pack is still 525 MB. Committing a regenerable binary is
+# exactly how that happens again.
+fixtures/

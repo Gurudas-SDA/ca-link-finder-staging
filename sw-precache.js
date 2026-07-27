@@ -29,21 +29,24 @@ self.PRECACHE = [
   'guide/ru/index.html?v=eb6fe36b',
   'icon-192.png?v=fab41429',
   'icon-512.png?v=88196aa7',
-  'index.html?v=a73aff50',
-  'js/app.js?v=b49b4ad6',
+  'index.html?v=a6525bbe',
+  'js/app.js?v=4e4ab62a',
   'js/auth-modal.js?v=2ba0f1fc',
   'js/auth.js?v=a4f11a49',
+  'js/codec.js?v=c4091679',
   'js/config.js?v=c1fb3b66',
-  'js/db-worker.js?v=4ec9266d',
-  'js/db.js?v=10b32611',
-  'js/downloader.js?v=f60c89c0',
+  'js/db-worker.js?v=4ffdf156',
+  'js/db.js?v=4c4bd6de',
+  'js/downloader.js?v=fdf18fe8',
   'js/favorites.js?v=92275512',
   'js/firebase-config.js?v=3db6511a',
-  'js/i18n.js?v=6321dfb5',
-  'js/offline-store.js?v=18e05985',
-  'js/search.js?v=daa5e10e',
+  'js/i18n.js?v=fb89453d',
+  'js/offline-store.js?v=5d35de25',
+  'js/search.js?v=92203832',
   'js/ui.js?v=df6d4799',
   'js/utils.js?v=aa1a3ba8',
+  'js/vendor/brotli-dec.js?v=423f2d10',
+  'js/vendor/brotli-dec.wasm?v=79b29cb1',
   'js/vendor/jszip.min.js?v=acc7e414',
   'js/vendor/papaparse.min.js?v=b8e870c5',
   'js/vendor/sql-wasm.js?v=43a1f4a4',
@@ -51,4 +54,13 @@ self.PRECACHE = [
   'js/vendor/xlsx.full.min.js?v=cc015130',
   'manifest.json?v=abe52cf2',
 ];
-self.SHELL_VERSION = '0c728ed4dba9';
+// Shell files whose absence is unrecoverable: sw.js FAILS the install
+// rather than activate a worker that cannot read the device's library.
+self.REQUIRED_SHELL = [
+  'js/codec.js',
+  'js/vendor/brotli-dec.js',
+  'js/vendor/brotli-dec.wasm',
+  'js/vendor/sql-wasm.js',
+  'js/vendor/sql-wasm.wasm',
+];
+self.SHELL_VERSION = '7ffc8197c5b1';

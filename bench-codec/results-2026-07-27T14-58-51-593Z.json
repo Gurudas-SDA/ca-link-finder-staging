@@ -1,0 +1,38 @@
+{
+  "identical": true,
+  "rawBytes": 29564928,
+  "gzBytes": 9141594,
+  "brBytes": 6456985,
+  "gzip_view": {
+    "medianMs": 114,
+    "totalMs": 2424,
+    "wasmHeapMB": 8.75,
+    "wasmInputAllocMB": 0
+  },
+  "gzip_blob": {
+    "medianMs": 130,
+    "totalMs": 2767,
+    "wasmHeapMB": 8.75,
+    "wasmInputAllocMB": 0
+  },
+  "br_view": {
+    "medianMs": 225,
+    "totalMs": 5346,
+    "wasmHeapMB": 8.75,
+    "wasmInputAllocMB": 132.63
+  },
+  "br_blob": {
+    "medianMs": 252,
+    "totalMs": 5542,
+    "wasmHeapMB": 12.75,
+    "wasmInputAllocMB": 443.4
+  },
+  "wasmHeapAfterOneShotMB": 77.19,
+  "meta": {
+    "when": "2026-07-27T14:58:51.593Z",
+    "repeats": 21,
+    "brotliQuality": 11,
+    "shard": "ppp_sentences_shard_000.db.gz",
+    "note": "*_view = js/codec.js as shipped; *_blob = the pre-2026-07-27 full-copy source"
+  }
+}
