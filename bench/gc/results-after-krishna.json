@@ -1,0 +1,231 @@
+{
+  "term": "krishna",
+  "lang": "en",
+  "levels": [
+    "none",
+    "prod"
+  ],
+  "repeat": 3,
+  "results": {
+    "none": [
+      {
+        "level": "none",
+        "rep": 0,
+        "mutation": {
+          "kind": "none"
+        },
+        "probeEcho": {
+          "entries": 0,
+          "otherLangKeys": 0,
+          "extrasReady": false,
+          "scopeVersion": "lang-scope-1",
+          "ballastCopies": 0,
+          "ballastEntries": 0,
+          "swController": false
+        },
+        "baselineMB": 242.9,
+        "peakMB": 419.5,
+        "deltaPeakMB": 176.6,
+        "settledMB": 347.9,
+        "idlePageUsed": 50210228,
+        "idlePageTotal": 54259712,
+        "idleWorkerUsed": 718004,
+        "idleWorkerTotal": 1310720,
+        "postPageUsed": 50685792,
+        "postWorkerUsed": 808628,
+        "isoPeakPageUsed": 54619840,
+        "isoPeakPageTotal": 63434752,
+        "isoPeakWorkerUsed": 4850348,
+        "isoPeakWorkerTotal": 8388608,
+        "isoSamples": 66,
+        "searchMs": 11474.90000000596,
+        "searchRows": 504,
+        "searchInfo": "Found 416028 sentences in 7999 lectures — showing first 500 Download Excel",
+        "searchTimeout": false,
+        "procSamples": 76
+      },
+      {
+        "level": "none",
+        "rep": 1,
+        "mutation": {
+          "kind": "none"
+        },
+        "probeEcho": {
+          "entries": 0,
+          "otherLangKeys": 0,
+          "extrasReady": false,
+          "scopeVersion": "lang-scope-1",
+          "ballastCopies": 0,
+          "ballastEntries": 0,
+          "swController": false
+        },
+        "baselineMB": 244.6,
+        "peakMB": 417.2,
+        "deltaPeakMB": 172.6,
+        "settledMB": 348.5,
+        "idlePageUsed": 50207136,
+        "idlePageTotal": 53997568,
+        "idleWorkerUsed": 718004,
+        "idleWorkerTotal": 1310720,
+        "postPageUsed": 50711320,
+        "postWorkerUsed": 808628,
+        "isoPeakPageUsed": 54326916,
+        "isoPeakPageTotal": 60026880,
+        "isoPeakWorkerUsed": 3019884,
+        "isoPeakWorkerTotal": 7340032,
+        "isoSamples": 65,
+        "searchMs": 10977.199999988079,
+        "searchRows": 504,
+        "searchInfo": "Found 416028 sentences in 7999 lectures — showing first 500 Download Excel",
+        "searchTimeout": false,
+        "procSamples": 76
+      },
+      {
+        "level": "none",
+        "rep": 2,
+        "mutation": {
+          "kind": "none"
+        },
+        "probeEcho": {
+          "entries": 0,
+          "otherLangKeys": 0,
+          "extrasReady": false,
+          "scopeVersion": "lang-scope-1",
+          "ballastCopies": 0,
+          "ballastEntries": 0,
+          "swController": false
+        },
+        "baselineMB": 246.9,
+        "peakMB": 421.4,
+        "deltaPeakMB": 174.49999999999997,
+        "settledMB": 351.9,
+        "idlePageUsed": 50210276,
+        "idlePageTotal": 54259712,
+        "idleWorkerUsed": 717996,
+        "idleWorkerTotal": 1310720,
+        "postPageUsed": 50684752,
+        "postWorkerUsed": 808620,
+        "isoPeakPageUsed": 54640984,
+        "isoPeakPageTotal": 62910464,
+        "isoPeakWorkerUsed": 3019660,
+        "isoPeakWorkerTotal": 7602176,
+        "isoSamples": 69,
+        "searchMs": 11888.40000000596,
+        "searchRows": 504,
+        "searchInfo": "Found 416028 sentences in 7999 lectures — showing first 500 Download Excel",
+        "searchTimeout": false,
+        "procSamples": 78
+      }
+    ],
+    "prod": [
+      {
+        "level": "prod",
+        "rep": 0,
+        "mutation": {
+          "kind": "prod"
+        },
+        "probeEcho": {
+          "entries": 9800,
+          "otherLangKeys": 0,
+          "extrasReady": true,
+          "scopeVersion": "lang-scope-1",
+          "ballastCopies": 0,
+          "ballastEntries": 0,
+          "swController": false
+        },
+        "baselineMB": 255.7,
+        "peakMB": 428.8,
+        "deltaPeakMB": 173.10000000000002,
+        "settledMB": 361.6,
+        "idlePageUsed": 61462164,
+        "idlePageTotal": 65269760,
+        "idleWorkerUsed": 717996,
+        "idleWorkerTotal": 1310720,
+        "postPageUsed": 61728800,
+        "postWorkerUsed": 808620,
+        "isoPeakPageUsed": 65557820,
+        "isoPeakPageTotal": 72347648,
+        "isoPeakWorkerUsed": 3019652,
+        "isoPeakWorkerTotal": 7340032,
+        "isoSamples": 62,
+        "searchMs": 10542.60000000894,
+        "searchRows": 504,
+        "searchInfo": "Found 416028 sentences in 7999 lectures — showing first 500 Download Excel",
+        "searchTimeout": false,
+        "procSamples": 75
+      },
+      {
+        "level": "prod",
+        "rep": 1,
+        "mutation": {
+          "kind": "prod"
+        },
+        "probeEcho": {
+          "entries": 9800,
+          "otherLangKeys": 0,
+          "extrasReady": true,
+          "scopeVersion": "lang-scope-1",
+          "ballastCopies": 0,
+          "ballastEntries": 0,
+          "swController": false
+        },
+        "baselineMB": 258.5,
+        "peakMB": 427.5,
+        "deltaPeakMB": 169,
+        "settledMB": 360.2,
+        "idlePageUsed": 61462048,
+        "idlePageTotal": 65007616,
+        "idleWorkerUsed": 718004,
+        "idleWorkerTotal": 1310720,
+        "postPageUsed": 61796080,
+        "postWorkerUsed": 808652,
+        "isoPeakPageUsed": 65530252,
+        "isoPeakPageTotal": 72085504,
+        "isoPeakWorkerUsed": 2914912,
+        "isoPeakWorkerTotal": 7340032,
+        "isoSamples": 76,
+        "searchMs": 13188.09999999404,
+        "searchRows": 504,
+        "searchInfo": "Found 416028 sentences in 7999 lectures — showing first 500 Download Excel",
+        "searchTimeout": false,
+        "procSamples": 82
+      },
+      {
+        "level": "prod",
+        "rep": 2,
+        "mutation": {
+          "kind": "prod"
+        },
+        "probeEcho": {
+          "entries": 9800,
+          "otherLangKeys": 0,
+          "extrasReady": true,
+          "scopeVersion": "lang-scope-1",
+          "ballastCopies": 0,
+          "ballastEntries": 0,
+          "swController": false
+        },
+        "baselineMB": 257.8,
+        "peakMB": 435.5,
+        "deltaPeakMB": 177.7,
+        "settledMB": 364.7,
+        "idlePageUsed": 61462008,
+        "idlePageTotal": 65007616,
+        "idleWorkerUsed": 718004,
+        "idleWorkerTotal": 1310720,
+        "postPageUsed": 61749860,
+        "postWorkerUsed": 808628,
+        "isoPeakPageUsed": 65645536,
+        "isoPeakPageTotal": 74969088,
+        "isoPeakWorkerUsed": 4548880,
+        "isoPeakWorkerTotal": 8650752,
+        "isoSamples": 62,
+        "searchMs": 10456.89999999106,
+        "searchRows": 504,
+        "searchInfo": "Found 416028 sentences in 7999 lectures — showing first 500 Download Excel",
+        "searchTimeout": false,
+        "procSamples": 72
+      }
+    ]
+  }
+}

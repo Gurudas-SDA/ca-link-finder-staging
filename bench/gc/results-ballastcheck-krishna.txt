@@ -1,0 +1,8 @@
+GC-THRESHOLD SWEEP — term "krishna", lang en, 1 reps, one browser, interleaved
+
+level        n  idlePageUsed  baseRSS   peakRSS  deltaPeak  settled  wkrPeakTotal  pagePeakTotal  searchS
+ballastx1    1         176.7    362.1     541.6      179.5    456.4           8.4          188.0     10.7
+ballastx2    1         239.9    428.8     635.9      207.1    526.7           6.8          254.0      9.7
+
+Hypothesis reads: if the peak scales with the live heap, deltaPeak (and peakRSS)
+must fall monotonically as idlePageUsed falls, and rise under ballast.

@@ -1,0 +1,54 @@
+GC-THRESHOLD SWEEP — term "krishna", lang en, 3 reps, one browser, interleaved
+
+level        n  idlePageUsed  baseRSS   peakRSS  deltaPeak  settled  wkrPeakTotal  pagePeakTotal  searchS
+none         3          50.1    257.6     430.5      171.5    359.0           8.4           62.1     14.8
+active       3          65.5    268.8     442.5      173.5    376.8           7.1           75.2     11.5
+prod         3         113.5    319.5     486.1      167.6    421.0           7.3          123.5     17.3
+ballastx1    3         176.7    376.6     554.7      175.9    482.8           7.3          187.7     11.4
+ballastx2    3         239.9    442.4     613.3      170.9    535.2           7.3          250.1     11.8
+
+Hypothesis reads: if the peak scales with the live heap, deltaPeak (and peakRSS)
+must fall monotonically as idlePageUsed falls, and rise under ballast.
+
+================== VERDICT: HYPOTHESIS FALLS ==================
+Live-heap ladder spans 190 MB (50.1 -> 239.9 MB idle page heap, 5 levels x 3 reps,
+one browser launch, interleaved, all numbers after HeapProfiler.collectGarbage on
+BOTH the page and the db-worker isolate).
+
+  deltaPeak vs live heap   slope = +0.003 MB/MB   (167.6 .. 175.9, no trend)
+  peakRSS   vs live heap   slope = +0.978 MB/MB   (the peak is baseline + a constant)
+
+WHY it cannot work — the search transient is not JS-heap garbage:
+
+  level      idleUsed  idlePageTotal  pagePeakTotal  wkrPeakTotal  JS-heap grow  RSS delta
+  none          50.1           54.0           62.1           8.4          14.9      171.5
+  active        65.5           69.7           75.2           7.1          11.3      173.5
+  prod         113.5          117.7          123.5           7.3          11.8      167.6
+  ballastx1    176.7          180.1          187.7           7.3          13.6      175.9
+  ballastx2    239.9          243.0          250.1           7.3          13.1      170.9
+
+Committed JS heap (page + worker) grows only 11-15 MB during a 21-shard search,
+at EVERY live-heap level, while renderer RSS grows ~170 MB. ~155 MB of the
+transient is therefore outside the V8 JS heap entirely (gunzip output buffers +
+sql.js wasm linear memory + ArrayBuffers). The V8 allocation limit does not
+govern it, so no amount of live-heap reduction can move it. The db-worker JS
+heap peaks at 7-8 MB regardless.
+
+WHAT IS STILL TRUE: absolute peak falls 1:1 with the live heap (0.978 MB/MB).
+Dropping the 63 MB extras cache lowers peakRSS by ~56 MB and baseline by ~62 MB.
+That is the SAME 63 MB counted once in two places, not a second independent win,
+and it leaves deltaPeak — the failing bar — exactly where it was.
+
+METHOD NOTE (why the ballast is extras copies, not synthetic strings):
+60 x 1 Mchar two-byte strings ('x'.repeat(1<<20)) = 120 MB of characters raised
+Runtime.getHeapUsage.usedSize by only 2.1 MB (measured in isolation). A synthetic
+string ballast would have produced a flat ladder for the wrong reason. Copying
+the extras cache reproduces the exact allocation profile the proposed fix removes
+and is fully accounted for (176.7 / 239.9 MB rungs above).
+
+MODE ECHO: every level asserts measured facts before it is allowed to run —
+service workers blocked and navigator.serviceWorker.controller === null,
+extrasReady(), 9800 reachable entries, non-active-language key count
+(active: 0 required, prod: >1000 required), retained ballast copies.
+Sample echoes: active {entries:9800, otherLangKeys:0, swController:false},
+ballastx2 {entries:9800, otherLangKeys:138985, ballastCopies:2}.

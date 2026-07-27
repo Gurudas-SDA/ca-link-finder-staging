@@ -1,0 +1,42 @@
+GC-THRESHOLD SWEEP — term "krishna", lang en, 3 reps, one browser, interleaved
+
+level        n  idlePageUsed  baseRSS   peakRSS  deltaPeak  settled  wkrPeakTotal  pagePeakTotal  searchS
+none         3          50.2    244.6     419.5      174.5    348.5           7.6           62.9     11.5
+prod         3          61.5    257.8     428.8      173.1    361.6           7.3           72.3     10.5
+
+Hypothesis reads: if the peak scales with the live heap, deltaPeak (and peakRSS)
+must fall monotonically as idlePageUsed falls, and rise under ballast.
+
+============ BEFORE / AFTER — extras cache language scoping ============
+Two separate browser launches, so the no-extras floor ("none", unaffected by
+the fix) is carried in both runs as a drift anchor. Raw launch-to-launch drift
+was -13 MB, so the anchored deltas below are the honest ones.
+
+                        idlePageUsed   baseRSS   peakRSS   deltaPeak  searchS
+  before  none                 50.1     257.6     430.5       171.5     14.8
+  before  prod (6 languages)  113.5     315.7     486.1       167.6     10.2
+  after   none                 50.2     244.6     419.5       174.5     11.5
+  after   prod (1 language)    61.5     257.8     428.8       173.1     10.5
+
+  extras cost above the "none" floor:
+                        idle heap    baseRSS    peakRSS
+  before                    63.4       58.1       55.6
+  after                     11.3       13.2        9.3
+  ---------------------------------------------------------------
+  saved                    -52.0      -44.9      -46.3
+
+  deltaPeak                167.6 -> 173.1   UNCHANGED (ladder noise band was
+  167.6 .. 175.9). The fix buys nothing on the peak DELTA and was never
+  expected to — see the hypothesis verdict above. It buys resident PSS, and
+  1:1 with it the ABSOLUTE peak, which is what Android's LMK reads.
+
+  search time              10.2 -> 10.5 s   unchanged.
+
+MODE ECHO, after the fix (bench/gc/run-gc.cjs --expect-scoped):
+  {"swController":false,"extrasReady":true,"scopeVersion":"lang-scope-1",
+   "entries":9800,"keys":{"e":9048,"s":9048},"otherLangKeys":0}
+Only the EN base survives; all five other languages are gone. The guard was
+itself verified by running --expect-unscoped against the fixed code, which
+correctly refused:
+  MODE ECHO FAILED [prod]: unscoped (pre-fix) ui.js expected but
+  __extrasScopeVersion is present

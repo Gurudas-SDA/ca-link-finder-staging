@@ -3090,3 +3090,156 @@ test.describe('First visit (no presets — audit 2026-07-26)', () => {
   });
 
 });
+
+// Extras cache language scoping (2026-07-27). The extras payload carries
+// summary/essence/title for six languages; keeping all six resident cost
+// 63.1 MB of a 114.3 MB idle heap while only one is ever read. ui.js now keeps
+// the active language (plus the EN base, which getSummary()/getEssence() fall
+// back to) and re-reads core:extras on a language switch.
+//
+// This is a RESIDENT-memory change, so the only real regression path is the
+// language switch — hence M2 asserts the rendered text actually follows the
+// language, both ways, repeatedly.
+test.describe('Extras cache is scoped to the active language', () => {
+
+  // Read the cache through loadExtras() — the same door the app uses. Returns
+  // counts only; the cache itself must never cross the CDP boundary.
+  async function extrasScope(page) {
+    return page.evaluate(async () => {
+      const ex = await PPP.ui.loadExtras();
+      const out = { entries: 0, base: 0, byLang: { lv: 0, ru: 0, es: 0, it: 0, fr: 0 } };
+      for (const nr in ex) {
+        const e = ex[nr];
+        if (!e || typeof e !== 'object') continue;
+        out.entries++;
+        for (const k in e) {
+          if (k === 's' || k === 'e') { out.base++; continue; }
+          const m = /^([set])(lv|ru|es|it|fr)$/.exec(k);
+          if (m) out.byLang[m[2]]++;
+        }
+      }
+      return out;
+    });
+  }
+
+  // NOTE: the rendered essence line carries a language-dependent prefix
+  // ("Essence: " / "Būtība: " / "Суть: ") that comes from the UI language, not
+  // from extras — M2 strips it before comparing, otherwise a switch that
+  // changed nothing but the prefix would look like a passing content change.
+
+  test('M1. Only the active language is resident; the other five are dropped', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.waitForFunction(() => window.PPP && PPP.ui && PPP.ui.extrasReady(), { timeout: 60000 });
+
+    // The fix must actually be the code under test, not a cached older copy.
+    expect(await page.evaluate(() => PPP.ui.__extrasScopeVersion)).toBe('lang-scope-1');
+
+    const scope = await extrasScope(page);
+    // Sanity: this is the real cache, not an empty object.
+    expect(scope.entries).toBeGreaterThan(9000);
+    expect(scope.base).toBeGreaterThan(9000);
+    // Active language is 'en', so NO suffixed language key may be resident.
+    // NEGATIVE CHECK (verified 2026-07-27): with `_extrasCache = data || {}`
+    // restored in js/ui.js loadExtras() (i.e. the scoping removed) this line
+    // fails — real failure output:
+    //   Error: expect(received).toBe(expected) // Object.is equality
+    //   Expected: 0
+    //   Received: 138985
+    //     at tests\app.spec.js:3150  expect(total).toBe(0)
+    const total = Object.values(scope.byLang).reduce((a, n) => a + n, 0);
+    expect(total).toBe(0);
+  });
+
+  test('M2. Language switch re-reads extras: content follows, and never two languages at once', async ({ page }) => {
+    test.setTimeout(150000);
+    await page.goto('./');
+    await waitForAppReady(page);
+    await page.waitForFunction(() => window.PPP && PPP.ui && PPP.ui.extrasReady(), { timeout: 60000 });
+
+    await page.fill('#searchTerm', 'krishna');
+    await page.click('button.search-button');
+    await expect(page.locator('#resultsTable tbody tr').first()).toBeVisible({ timeout: 20000 });
+    await expect(page.locator('.essence-hint').first()).toBeVisible({ timeout: 20000 });
+
+    // Pick the assertion target from the DATA, not from row order: the first
+    // rendered lecture that actually has three DIFFERENT essences. Comparing
+    // "did the text change" against an arbitrary first row is not a test —
+    // ~750 lectures have no `eru` at all and correctly fall back to English,
+    // which is exactly how the first attempt at this test failed.
+    const target = await page.evaluate(async () => {
+      const nrs = Array.from(document.querySelectorAll('#resultsTable tbody .fav-star[data-nr]'))
+        .map(el => el.getAttribute('data-nr'));
+      const raw = await (await fetch('data/ppp_lecture_extras.json', { cache: 'no-store' })).json();
+      for (const nr of nrs) {
+        const x = raw[nr];
+        if (!x || !x.e || !x.elv || !x.eru) continue;
+        if (x.e === x.elv || x.e === x.eru || x.elv === x.eru) continue;
+        return { nr: nr, e: x.e, elv: x.elv, eru: x.eru, tlv: x.tlv || '' };
+      }
+      return null;
+    });
+    expect(target, 'no rendered lecture has three distinct essences').not.toBeNull();
+
+    const essenceOf = (nr) => page.locator('#resultsTable tbody tr')
+      .filter({ has: page.locator(`.fav-star[data-nr="${nr}"]`) })
+      .locator('.essence-hint').first();
+    const bodyOf = async (nr) => {
+      const raw = await essenceOf(nr).textContent();
+      const i = (raw || '').indexOf(': ');
+      return i >= 0 ? raw.slice(i + 2).trim() : (raw || '').trim();
+    };
+
+    // Baseline: English, and no translated-title hint is rendered at all.
+    expect(await bodyOf(target.nr)).toBe(target.e);
+    expect(await page.locator('.translated-title').count()).toBe(0);
+
+    // --- en -> lv ----------------------------------------------------------
+    // NEGATIVE CHECK (verified 2026-07-27): with the _syncExtrasLang() hook
+    // deleted from renderResults() in js/ui.js, the cache stays scoped to
+    // English and this poll never converges — real failure output:
+    //   Error: expect(received).toBe(expected) // Object.is equality
+    //   Expected: "Prema-pratiyogitā dinamika starp Rādhārāṇī karaļo mīlestību
+    //              un Candrāvalī ghṛta-mīlestību Gaurī-tīrtha-vihāra līlā
+    //              septītajā Vidagdha-mādhava darbā."
+    //   Received: "The dynamics of prema-pratiyogitā between Rādhārāṇī's
+    //              warrior-like love and Candrāvalī's ghṛta-sneha within the
+    //              Gaurī-tīrtha-vihāra lila of the seventh act of
+    //              Vidagdha-mādhava."
+    //   Call Log: - Timeout 30000ms exceeded while waiting on the predicate
+    //     at tests\app.spec.js:3205  expect.poll(...).toBe(target.elv)
+    // (the quoted lecture varies with the search result order; the shape —
+    // English text where the Latvian was expected — does not)
+    await switchLanguage(page, 'lv');
+    await expect.poll(() => bodyOf(target.nr), { timeout: 30000 }).toBe(target.elv);
+    if (target.tlv) await expect(page.locator('.translated-title').first()).toBeVisible({ timeout: 15000 });
+
+    let scope = await extrasScope(page);
+    expect(scope.byLang.lv).toBeGreaterThan(9000);
+    expect(scope.byLang.ru + scope.byLang.es + scope.byLang.it + scope.byLang.fr).toBe(0);
+
+    // --- lv -> ru: the previous language must be GONE, not merely joined ----
+    await switchLanguage(page, 'ru');
+    await expect.poll(() => bodyOf(target.nr), { timeout: 30000 }).toBe(target.eru);
+
+    scope = await extrasScope(page);
+    expect(scope.byLang.ru).toBeGreaterThan(9000);
+    expect(scope.byLang.lv).toBe(0);
+    expect(scope.byLang.es + scope.byLang.it + scope.byLang.fr).toBe(0);
+
+    // --- back to lv: repeated switching must be stable, not one-way ---------
+    await switchLanguage(page, 'lv');
+    await expect.poll(() => bodyOf(target.nr), { timeout: 30000 }).toBe(target.elv);
+    scope = await extrasScope(page);
+    expect(scope.byLang.lv).toBeGreaterThan(9000);
+    expect(scope.byLang.ru).toBe(0);
+
+    // --- and back to en: the base is still readable after three re-reads ----
+    await switchLanguage(page, 'en');
+    await expect.poll(() => bodyOf(target.nr), { timeout: 30000 }).toBe(target.e);
+    scope = await extrasScope(page);
+    expect(Object.values(scope.byLang).reduce((a, n) => a + n, 0)).toBe(0);
+    expect(await page.locator('.translated-title').count()).toBe(0);
+  });
+
+});

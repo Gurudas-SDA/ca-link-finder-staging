@@ -303,6 +303,13 @@ PPP.ui = (function () {
      * Render results table rows.
      */
     function renderResults(rows, searchTermStr, startIndex, endIndex, matchHints) {
+        // Language switch: the extras cache holds only the previously active
+        // language, so re-scope it from core:extras and render again when it
+        // lands. Rendering continues immediately with what is cached (EN
+        // fallback) rather than blanking the essence/summary column.
+        _syncExtrasLang(function () {
+            renderResults(rows, searchTermStr, startIndex, endIndex, matchHints);
+        });
         var table = document.getElementById('resultsTable');
         table.innerHTML = '';
         // S94: mobile card layout hook — CSS (≤640px) turns rows of THIS
@@ -598,6 +605,7 @@ PPP.ui = (function () {
      * mode 'sentences') — the unified full column set.
      */
     function renderEmptySentenceTable() {
+        _syncExtrasLang();   // nothing to re-render, just warm the next search
         var table = document.getElementById('resultsTable');
         table.innerHTML = '';
         table.classList.remove('lecture-cards');
@@ -627,6 +635,11 @@ PPP.ui = (function () {
      * totals: { total, lectures, shown }
      */
     function renderSentenceResults(rows, searchTermStr, totals, foldedWords) {
+        // See renderResults(): re-scope extras to the newly active language
+        // and render again once it lands.
+        _syncExtrasLang(function () {
+            renderSentenceResults(rows, searchTermStr, totals, foldedWords);
+        });
         totals = totals || {};
         foldedWords = foldedWords || [];
 
@@ -748,6 +761,7 @@ PPP.ui = (function () {
      * Render the empty table with header.
      */
     function renderEmptyTable() {
+        _syncExtrasLang();   // nothing to re-render, just warm the next search
         var table = document.getElementById('resultsTable');
         table.innerHTML = '';
         table.classList.add('lecture-cards'); // S94: keep card layout hook on empty state too
@@ -1182,8 +1196,59 @@ PPP.ui = (function () {
         stars.forEach(function (s) { s.classList.toggle('active', isFav); });
     }
 
+    // ===== EXTRAS CACHE — language-scoped =====
+    // The extras payload carries summary/essence/title for SIX languages
+    // (s|e|t × en,lv,ru,es,it,fr). Holding all six resident cost 63.1 MB of a
+    // 114.3 MB idle heap while only ONE language is ever read. The cache now
+    // keeps the active language only — plus the EN base (`s`/`e`), which
+    // getSummary()/getEssence() use as their documented fallback — and a
+    // language switch re-reads core:extras from the offline store.
+    //
+    // Scope note, so this is not later re-sold as something it is not: this is
+    // a RESIDENT-memory fix, not a search-peak fix. Measured across a 190 MB
+    // live-heap ladder, the search peak is baseline + a constant, and that
+    // constant is ~155 MB of NON-JS-heap decode buffers (gunzip output +
+    // sql.js wasm memory) that no heap reduction can touch — the peak DELTA
+    // slope came out at +0.003 MB per MB of live heap, i.e. zero
+    // (bench/gc/results-hypothesis-krishna.txt). What this DOES buy is idle
+    // PSS and, 1:1 with it, the ABSOLUTE peak — which is what Android's
+    // low-memory killer reads.
     var _extrasCache = null;
     var _extrasLoading = null;
+    var _extrasLoadingLang = null;
+    var _extrasLang = null;         // language _extrasCache is scoped to
+    var _extrasLangPending = null;  // language whose re-scope is in flight
+    var _extrasLangFailed = null;   // language whose re-scope failed (no retry loop)
+
+    // ONLY these keys are language-owned. Anything else in an entry is copied
+    // through untouched, so a field added upstream can never be silently lost.
+    var _EXTRAS_LANG_KEY = /^([set])(lv|ru|es|it|fr)$/;
+
+    function _extrasCurrentLang() {
+        return localStorage.getItem('preferredLanguage') || 'en';
+    }
+
+    /**
+     * Project freshly parsed extras onto ONE language. Values are copied by
+     * reference, so the surviving strings are the very same string objects —
+     * this allocates ~9 800 small entry objects and lets everything else go.
+     */
+    function _scopeExtras(data, lang) {
+        var out = {};
+        if (!data) return out;
+        for (var nr in data) {
+            var src = data[nr];
+            if (!src || typeof src !== 'object') { out[nr] = src; continue; }
+            var dst = {};
+            for (var k in src) {
+                var m = _EXTRAS_LANG_KEY.exec(k);
+                if (m && m[2] !== lang) continue;
+                dst[k] = src[k];
+            }
+            out[nr] = dst;
+        }
+        return out;
+    }
 
     function _loadExtrasNetwork() {
         var versionsP = (window.PPP && PPP.db && PPP.db.getDbVersions)
@@ -1201,34 +1266,79 @@ PPP.ui = (function () {
             });
     }
 
-    function loadExtras() {
-        if (_extrasCache) return Promise.resolve(_extrasCache);
-        if (_extrasLoading) return _extrasLoading;
-        // Offline-first: the installed library keeps extras gzipped in the
-        // IndexedDB store (core:extras). Network stays as the fallback for
-        // unsupported browsers / not-yet-installed state.
+    /**
+     * Read the FULL extras payload. Offline-first: the installed library keeps
+     * extras gzipped in the IndexedDB store (core:extras). Network stays as
+     * the fallback for unsupported browsers / not-yet-installed state.
+     * Unchanged from before the language scoping — how the data is READ is the
+     * same; only how much of it is KEPT changed.
+     */
+    function _fetchExtrasSource() {
         var offlineP = (window.PPP && PPP.offlineStore && PPP.offlineStore.supported())
             ? PPP.offlineStore.getText('core:extras').catch(function () { return null; })
             : Promise.resolve(null);
-        _extrasLoading = offlineP
-            .then(function (txt) {
-                if (txt) return JSON.parse(txt);
-                return _loadExtrasNetwork();
-            })
+        return offlineP.then(function (txt) {
+            if (txt) return JSON.parse(txt);
+            return _loadExtrasNetwork();
+        });
+    }
+
+    function loadExtras() {
+        var lang = _extrasCurrentLang();
+        if (_extrasCache && _extrasLang === lang) return Promise.resolve(_extrasCache);
+        if (_extrasLoading && _extrasLoadingLang === lang) return _extrasLoading;
+        _extrasLoadingLang = lang;
+        _extrasLoading = _fetchExtrasSource()
             .then(function (data) {
-                _extrasCache = data || {};
+                _extrasCache = _scopeExtras(data, lang);
+                _extrasLang = lang;
+                _extrasLangFailed = null;
                 _extrasLoading = null;
+                _extrasLoadingLang = null;
                 return _extrasCache;
             })
             .catch(function () {
-                // Do NOT cache the failure (S95 fix): leave _extrasCache null
-                // so extrasReady() stays false and the NEXT loadExtras() call
-                // (app.js scheduled retry, or openSummaryModal on demand)
-                // fetches again. Return {} only as this call's result.
+                // Do NOT cache the failure (S95 fix): on a FIRST load
+                // _extrasCache stays null so extrasReady() stays false and the
+                // next call (app.js scheduled retry, or openSummaryModal on
+                // demand) fetches again. On a LANGUAGE SWITCH the previous
+                // language's cache survives on purpose — an English fallback
+                // line beats a blank one.
                 _extrasLoading = null;
-                return {};
+                _extrasLoadingLang = null;
+                return _extrasCache || {};
             });
         return _extrasLoading;
+    }
+
+    /**
+     * Re-scope the cache when the active language no longer matches the one it
+     * was built for, then hand control back so the caller can re-render.
+     *
+     * app.js switches language and immediately re-renders through one of the
+     * render entry points below, so hooking those keeps the whole mechanism
+     * inside ui.js — no new export, no new call site for app.js to forget.
+     * `rerender` is optional; the empty-table paths only need the cache warmed
+     * for the next search.
+     */
+    function _syncExtrasLang(rerender) {
+        var lang = _extrasCurrentLang();
+        if (!_extrasCache) return;              // first load is app.js's job
+        if (_extrasLang === lang) return;
+        if (_extrasLangPending === lang) return;
+        if (_extrasLangFailed === lang) return; // failed once — do not spin
+        _extrasLangPending = lang;
+        loadExtras().then(function () {
+            _extrasLangPending = null;
+            if (_extrasLang === lang) {
+                if (rerender) rerender();
+            } else {
+                _extrasLangFailed = lang;
+            }
+        }, function () {
+            _extrasLangPending = null;
+            _extrasLangFailed = lang;
+        });
     }
 
     /**
@@ -1238,6 +1348,10 @@ PPP.ui = (function () {
     function clearExtrasCache() {
         _extrasCache = null;
         _extrasLoading = null;
+        _extrasLoadingLang = null;
+        _extrasLang = null;
+        _extrasLangPending = null;
+        _extrasLangFailed = null;
     }
 
     function getExtras(nr) {
@@ -1368,6 +1482,11 @@ PPP.ui = (function () {
         loadExtras: loadExtras,
         extrasReady: extrasReady,
         clearExtrasCache: clearExtrasCache,
+        // Build marker for the memory bench's mode echo: a run that expects the
+        // language-scoped cache fails loudly if it is served a pre-fix copy.
+        // Deliberately NOT a data door — tests read the cache through
+        // loadExtras(), the same path the app uses.
+        __extrasScopeVersion: 'lang-scope-1',
         toast: toast,
         showUpdateNote: showUpdateNote,
         getColumnHeader: getColumnHeader,
