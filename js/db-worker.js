@@ -207,14 +207,99 @@ function runQuery(dbName, sql, params) {
 }
 
 /**
+ * Cheap FIRST SIEVE over the SQL a zero-copy shard query may carry.
+ *
+ * Deliberately NOT the real guard. This is a regex against a grammar, and that
+ * is a race we lose: `WITH` may legally be followed by nested CTEs, comments
+ * and string literals full of keywords, and SQLite accepts
+ * `WITH x AS (...) DELETE ... RETURNING` — a write that sails straight through
+ * any prefix test. The guarantee lives in the ENGINE instead: queryCloseBuffer
+ * sets `PRAGMA query_only = 1` on the handle before running anything (see
+ * there). This function stays because it is free, it catches the obvious
+ * mistake at the call site, and it names the invariant instead of leaving the
+ * caller with SQLite's generic "attempt to write a readonly database".
+ *
+ * It runs BEFORE the shadow is installed, so a rejected call leaves the
+ * caller's buffer exactly as it found it.
+ */
+var READ_ONLY_SQL_RE = /^\s*(?:\/\*[\s\S]*?\*\/\s*|--[^\n]*\n\s*)*(?:SELECT|WITH)\b/i;
+
+function assertReadOnlySql(sql, which) {
+    if (typeof sql !== 'string' || !READ_ONLY_SQL_RE.test(sql)) {
+        throw new Error('queryCloseBuffer refuses a non-read-only ' + which +
+            ': the shard is opened zero-copy, so any write would corrupt the ' +
+            "caller's buffer. Only SELECT / WITH are allowed here.");
+    }
+}
+
+/**
  * Build a SQL.Database from an already-decompressed buffer, run the query
  * (and optional count query), dispose the handle, and return the rows.
  * The handle is NEVER stored in `databases` — so no shard leaks across calls;
  * peak memory stays at one shard. Returns { rows, count }.
  */
 function queryCloseBuffer(buffer, sql, countSql, params) {
-    var db = new SQL.Database(new Uint8Array(buffer));
+    assertReadOnlySql(sql, 'sql');
+    if (countSql) assertReadOnlySql(countSql, 'countSql');
+
+    var bytes = new Uint8Array(buffer);
+
+    // --- Why this shadow exists (measured 2026-07-27) ----------------------
+    // `new SQL.Database(bytes)` does NOT keep `bytes`. Inside the vendored
+    // sql-wasm.js the Database constructor inlines FS.createDataFile and ends
+    // in a five-argument FS.write — `oa(n,g,0,g.length,0)` — and FS.write in
+    // turn calls the MEMFS backend as `a.Ga.write(a,b,c,d,e,void 0)`: the
+    // `canOwn` flag is hard-wired to `undefined` in this build, so no caller
+    // can reach the zero-copy branch. MEMFS therefore takes the other one:
+    //     canOwn  -> node.contents = buf.subarray(off, off+len)   (view)
+    //     !canOwn -> node.contents = buf.slice(off, off+len)      (FULL COPY)
+    // That is a SECOND ~28 MB allocation per shard, and `db.close()` does not
+    // release it — it merely becomes garbage and waits for a GC.
+    //
+    // Shadowing `.slice` with an OWN property on this one array makes the
+    // !canOwn branch return exactly the subarray the canOwn branch would have
+    // returned. No vendored file is patched and no global prototype is
+    // touched — the override lives and dies with this single object.
+    // Measured over the 21-shard sentence search: peak renderer working set
+    // 217.4 -> 186.8 MB, settled 210.7 -> 184.5 MB, results bit-identical.
+    //
+    // LIMIT — do NOT carry this into openGz / openBuffer or any other caller.
+    // It is safe here only because MEMFS ends up holding a VIEW into `buffer`,
+    // so (a) `buffer` must outlive the handle — it does, db.close() runs in
+    // the finally below while `bytes` is still on this frame — and (b) any
+    // SQLite WRITE to the file would mutate the caller's buffer underneath it.
+    // Both hold for this read-only, dispose-immediately shard path and for
+    // nothing else in this worker: openGz/openBuffer park the handle in
+    // `databases` long after their caller has dropped the buffer.
+    //
+    // Guards in tests/shard-memory.spec.js hold this together: the copy must
+    // stay gone, the engine must refuse every write (including WITH-prefixed
+    // ones), and this shadow must not appear in any other function here.
+    var wholeLength = bytes.byteLength;
+    bytes.slice = function (begin, end) {
+        return (((begin | 0) === 0) && (end === undefined || end === wholeLength))
+            ? this.subarray(0, wholeLength)
+            : Uint8Array.prototype.slice.call(this, begin, end);
+    };
+
+    var db = new SQL.Database(bytes);
     try {
+        // THE guard. Because MEMFS aliases `buffer`, a SQLite write does not
+        // just corrupt a scratch copy — it writes through into memory the
+        // caller still owns, and the symptom is silently wrong rows rather
+        // than a crash. `query_only` makes the ENGINE refuse every write,
+        // whatever shape the SQL takes, so the invariant no longer depends on
+        // parsing SQL correctly (see assertReadOnlySql for why parsing loses:
+        // `WITH x AS (...) DELETE ... RETURNING` is a legal write that begins
+        // with WITH).
+        // Verified against this exact sql.js build, not assumed: the pragma
+        // reads back 0 -> 1 (so it is accepted, not silently ignored) and then
+        // DELETE / INSERT / UPDATE / CREATE / DROP and the WITH-prefixed
+        // DELETE, INSERT and UPDATE forms all fail with "attempt to write a
+        // readonly database". SELECT is unaffected in results and timing.
+        // Set inside the try so a throw still reaches db.close() below.
+        db.run('PRAGMA query_only = 1');
+
         var out = { rows: runQueryOn(db, sql, params) };
         out.count = countSql ? runQueryOn(db, countSql, params) : null;
         return out;
