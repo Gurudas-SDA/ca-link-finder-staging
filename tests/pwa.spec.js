@@ -2892,3 +2892,219 @@ test.describe('A delta in one tab is visible to the others (2026-07-27)', () => 
   });
 
 });
+
+// ===========================================================================
+// P29 — a manifest that lost its contents cannot wipe the device (2026-07-27)
+//
+// checkForUpdates reads "recorded locally, absent remotely" as "delete it", and
+// fetchManifest validates nothing past HTTP 200 + JSON.parse. So a manifest
+// whose `packs` / `sentenceShards` arrive EMPTY — a build that published the
+// skeleton before the arrays were filled, a half-finished deploy, a manifest
+// generated from a query that returned nothing — used to read as "the server
+// removed every pack and every shard", costing the device ~200 MB it then has
+// to pull down again. Recoverable, but on a metered connection expensive, and
+// set off by a file nobody looked at.
+//
+// The two tests are deliberately a PAIR: P29a proves the wipe is refused, P29b
+// proves the guard did not buy that by making legitimate removal impossible.
+// Either one alone would pass for a guard that is wrong in the other direction.
+// ===========================================================================
+test.describe('A manifest that dropped everything cannot delete the library (2026-07-27)', () => {
+  test.use({ serviceWorkers: 'block' });
+
+  // ONE real shard, taken from the live manifest: the "the library still works"
+  // half of P29a is a real chunked sentence query against the real bytes in
+  // IndexedDB, not a byte count standing in for one. Packs are synthetic (this
+  // tests the delta bookkeeping, not transcript content) but their sizes are
+  // distinct, so before/after is a real measurement rather than a boolean.
+  const REAL_SHARD = (realManifest.sentenceShards || [])[0];
+
+  const CORE = {
+    meta: { path: 'data/ppp_meta.db.gz', hash: 'h-meta-1', size: 4096, raw: 4096 },
+    extras: { path: 'data/ppp_lecture_extras.json.gz', hash: 'h-extras-1', size: 2048, raw: 2048 },
+  };
+  // Two EN packs so that P29b can remove exactly one and leave the other: a
+  // single-pack fixture cannot tell "removed the right one" from "removed all".
+  const PACK_A = { id: 'tst-en-a', kind: 'prem', lang: 'en', path: 'packs/tst-en-a.pack', hash: 'ha-1', size: 3072, count: 2 };
+  const PACK_B = { id: 'tst-en-b', kind: 'prem', lang: 'en', path: 'packs/tst-en-b.pack', hash: 'hb-1', size: 1024, count: 1 };
+  const A1 = 1500, A2 = 1572, B1 = 1024;
+
+  /** An installed, shard-holding device: core + both packs' members + the real
+   *  shard in IndexedDB, and a localManifest that records all of it. */
+  function seedInstalled(page, localMf, shard) {
+    return page.evaluate(async (args) => {
+      const lm = args.lm;
+      const shardBytes = await (await fetch(args.shard.path)).arrayBuffer();
+      function blobOf(n, byte) {
+        const a = new Uint8Array(n);
+        a.fill(byte);
+        return new Blob([a], { type: 'application/gzip' });
+      }
+      const put = (key, packId, gz, raw) =>
+        PPP.offlineStore.putFile({ key: key, packId: packId, gz: gz, raw: raw });
+      await put('core:meta', 'core:meta', blobOf(4096, 1), 4096);
+      await put('core:extras', 'core:extras', blobOf(2048, 2), 2048);
+      await put('t:a1', 'tst-en-a', blobOf(args.a1, 3), args.a1);
+      await put('t:a2', 'tst-en-a', blobOf(args.a2, 4), args.a2);
+      await put('t:b1', 'tst-en-b', blobOf(args.b1, 5), args.b1);
+      await put('shard:' + args.shard.id, 'shard:' + args.shard.id,
+        new Blob([shardBytes], { type: 'application/gzip' }), shardBytes.byteLength);
+      await PPP.offlineStore.setState('localManifest', lm);
+      await PPP.offlineStore.setState('langs', []);
+      await PPP.offlineStore.setState('shards', true);
+    }, { lm: localMf, shard: shard, a1: A1, a2: A2, b1: B1 });
+  }
+
+  /** Both halves of "installed": the bytes in IDB and what localManifest claims. */
+  function readState(page, shardId) {
+    return page.evaluate(async (sid) => {
+      const size = async (k) => {
+        const gz = await PPP.offlineStore.getGz(k);
+        return gz ? gz.byteLength : 0;
+      };
+      const lm = await PPP.offlineStore.getState('localManifest');
+      return {
+        a1: await size('t:a1'),
+        a2: await size('t:a2'),
+        b1: await size('t:b1'),
+        shard: await size('shard:' + sid),
+        packIds: (lm && lm.packs || []).map(p => p.id).sort(),
+        shardIds: (lm && lm.sentenceShards || []).map(s => s.id).sort(),
+      };
+    }, shardId);
+  }
+
+  test('P29a. A manifest with empty packs/shards is refused, and the installed library survives intact', async ({ page }) => {
+    test.setTimeout(180000);
+    expect(REAL_SHARD, 'manifest.json has no sentenceShards to test with').toBeTruthy();
+
+    // The corrupt publish: valid JSON, HTTP 200, core untouched (same hashes,
+    // so nothing downloads and the ONLY thing this delta could do is delete),
+    // both list sections empty.
+    const truncated = { core: CORE, packs: [], sentenceShards: [] };
+    const localMf = { core: CORE, packs: [PACK_A, PACK_B], sentenceShards: [REAL_SHARD] };
+
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(truncated),
+    }));
+
+    const warnings = [];
+    page.on('console', m => warnings.push(m.text()));
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.db,
+      { timeout: 60000 });
+    // Seeded AFTER load, as in P14e: at boot there is no localManifest, so the
+    // app's own boot-time update check cannot race the explicit call below.
+    await seedInstalled(page, localMf, REAL_SHARD);
+
+    const before = await readState(page, REAL_SHARD.id);
+    expect(before.b1).toBe(B1);
+    expect(before.shard).toBeGreaterThan(0);
+
+    const res = await page.evaluate(() => PPP.downloader.checkForUpdates());
+
+    // (1) The delta was refused, not merely uneventful — and it says why.
+    //
+    // NEGATIVE CHECK RUN (the `_manifestWipesSection` call and its `if` block
+    // removed from checkForUpdates, everything else untouched):
+    //   Error: expect(received).toBeTruthy()
+    //     the wipe was not refused
+    //     Received: undefined
+    expect(res.refused, 'the wipe was not refused').toBeTruthy();
+    expect(res.changedItems).toBe(0);
+    expect(res.error).toBeUndefined();
+
+    // (2) Nothing was deleted. This is the assertion that costs 200 MB when it
+    // fails, and it fails on its OWN (negative check re-run with assertion (1)
+    // temporarily removed, so it is not merely shadowed by it):
+    //   Error: a pack was deleted on the word of an empty manifest
+    //     Expected: 1500
+    //     Received: 0
+    //   (t:a1, the first member of the first pack; the run stops at the first
+    //   failed assertion, so this is where the wipe becomes visible.)
+    const after = await readState(page, REAL_SHARD.id);
+    expect(after.a1, 'a pack was deleted on the word of an empty manifest').toBe(A1);
+    expect(after.a2, 'a pack was deleted on the word of an empty manifest').toBe(A2);
+    expect(after.b1, 'a pack was deleted on the word of an empty manifest').toBe(B1);
+    expect(after.shard, 'a sentence shard was deleted on the word of an empty manifest')
+      .toBe(before.shard);
+
+    // (3) And localManifest still records them, so the device does not start
+    // lying about what it holds in either direction.
+    expect(after.packIds).toEqual([PACK_A.id, PACK_B.id].sort());
+    expect(after.shardIds).toEqual([REAL_SHARD.id]);
+
+    // (4) The library is not just byte-identical, it still WORKS: a real
+    // chunked sentence query over the installed shard returns rows, from
+    // IndexedDB (SW blocked, no shard request goes out).
+    const shardReqs = [];
+    page.on('request', r => {
+      if (r.url().indexOf('/data/shards/') !== -1) shardReqs.push(r.url());
+    });
+    const search = await page.evaluate(() => {
+      PPP.db.resetLibraryInstalledCache();
+      PPP.db.resetSentenceShards();
+      return PPP.db.searchSentencesChunked(
+        'SELECT 1 AS n FROM sentences LIMIT 3', null, { $limit: 10 }
+      ).then(
+        out => ({ rows: (out && out.rows || []).length, msg: '' }),
+        e => ({ rows: -1, msg: String(e && e.message) })
+      );
+    });
+    expect(search.rows, 'sentence search broke after the refused delta: ' + search.msg).toBe(3);
+    expect(shardReqs, 'the search had to re-fetch a shard from the network').toEqual([]);
+
+    // (5) Refusing must not be SILENT — otherwise a broken publish looks
+    // exactly like "no updates available", forever. The warning carries both
+    // counts, which is what makes it diagnosable from a user's console.
+    const refusal = warnings.filter(w => w.indexOf('Offline update refused') !== -1);
+    expect(refusal.length, 'the guard refused the manifest without saying so').toBeGreaterThan(0);
+    expect(refusal[0]).toContain('pack (local 2, remote 0)');
+    expect(refusal[0]).toContain('sentence shard (local 1, remote 0)');
+  });
+
+  test('P29b. A legitimate, gradual removal is still carried out', async ({ page }) => {
+    test.setTimeout(180000);
+    expect(REAL_SHARD, 'manifest.json has no sentenceShards to test with').toBeTruthy();
+
+    // The other side of the guard, and the reason its threshold is "the whole
+    // section" rather than a percentage: one of two packs is genuinely retired
+    // — a 50 % fall, which any ratio-based guard would have blocked — and it
+    // must still be reclaimed from the device.
+    const remoteMf = { core: CORE, packs: [PACK_A], sentenceShards: [REAL_SHARD] };
+    const localMf = { core: CORE, packs: [PACK_A, PACK_B], sentenceShards: [REAL_SHARD] };
+
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(remoteMf),
+    }));
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore,
+      { timeout: 60000 });
+    await seedInstalled(page, localMf, REAL_SHARD);
+
+    const res = await page.evaluate(() => PPP.downloader.checkForUpdates());
+
+    // NEGATIVE CHECK RUN (guard widened to fire whenever a section merely
+    // SHRANK — `remoteN < localN` instead of `localN > 0 && remoteN === 0`,
+    // i.e. the ratio-style guard this design rejects):
+    //   Error: expect(received).toBeUndefined()
+    //     a legitimate pack removal was blocked by the guard
+    //     Received: "pack (local 2, remote 1)"
+    expect(res.refused, 'a legitimate pack removal was blocked by the guard').toBeUndefined();
+    expect(res.error).toBeUndefined();
+    expect(res.changedItems).toBe(PACK_B.count);
+
+    const after = await readState(page, REAL_SHARD.id);
+    expect(after.b1, 'the retired pack was not reclaimed').toBe(0);
+    // Surgical: the pack that stayed, and the shard, are untouched.
+    expect(after.a1).toBe(A1);
+    expect(after.a2).toBe(A2);
+    expect(after.shard).toBeGreaterThan(0);
+    // The fence advanced, so the device stops claiming the retired pack.
+    expect(after.packIds).toEqual([PACK_A.id]);
+    expect(after.shardIds).toEqual([REAL_SHARD.id]);
+  });
+
+});

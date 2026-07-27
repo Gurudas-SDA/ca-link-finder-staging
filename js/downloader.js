@@ -214,6 +214,73 @@ PPP.downloader = (function () {
         });
     }
 
+    /** Length of a manifest list section, 0 for missing/not-a-list. */
+    function _sectionCount(mf, key) {
+        var v = mf && mf[key];
+        return (v && typeof v.length === 'number') ? v.length : 0;
+    }
+
+    /**
+     * Would acting on this remote manifest be a mass deletion that no real
+     * release could have produced? Returns a description (with the counts) when
+     * the manifest must be refused, or null when the delta may proceed.
+     *
+     * WHY THIS EXISTS. fetchManifest validates nothing past HTTP 200 +
+     * JSON.parse, and checkForUpdates reads "recorded locally, absent remotely"
+     * as "delete it" — that IS the delta, and packs/shards have had that path
+     * since they were written. So a manifest whose `packs` or `sentenceShards`
+     * arrives EMPTY — a build script that published the skeleton before the
+     * arrays were filled, a half-finished deploy, a manifest generated from a
+     * query that came back with nothing — is read as "the server removed every
+     * pack and every shard" and costs the device ~200 MB it must then pull
+     * again, on exactly the metered connections the rest of this work protects.
+     * Recoverable, but expensive, and triggered by a file nobody inspected.
+     *
+     * WHY THE THRESHOLD IS "THE WHOLE SECTION" AND NOT A PERCENTAGE. The guard
+     * must not make legitimate removal impossible: B3 drops a core key on
+     * purpose, and a pack or a shard may be retired later for good reasons.
+     * Any NON-ZERO remote count is a shape a real release can have — dropping
+     * one of two packs is a 50 % fall — so any ratio threshold would sooner or
+     * later refuse a genuine release, which is the failure this guard is not
+     * allowed to introduce. Zero is the one count no real release produces:
+     * the packs ARE the library, so a manifest offering none of them does not
+     * describe any version of this app. Hence the narrowest rule that still
+     * catches the wipe: refuse only when a section this device records as
+     * non-empty comes back with nothing at all. 100 packs -> 99 still deletes
+     * one; 100 -> 0 is refused.
+     *
+     * WHY IT COMPARES AGAINST localManifest AND NOT AGAINST "EMPTY IS BAD".
+     * An empty array is a legitimate state, never evidence on its own: a user
+     * who installed English only never held the LV/RU packs, and an install
+     * that opted out of sentence search records `sentenceShards: []`
+     * (_manifestForStore). For those devices empty is simply empty on both
+     * sides and the guard stays silent. Only local-says-N / remote-says-0 is
+     * suspicious.
+     *
+     * `core` is deliberately NOT checked here. It already has a stronger,
+     * narrower guard — CORE_KEYS, see checkForUpdates and P14f — which keeps
+     * every mandatory file whatever the manifest says while still allowing a
+     * key this build has dropped to be reclaimed from a `core: {}` manifest.
+     * An emptiness check on top would only block that reclaim.
+     *
+     * Lives next to fetchManifest because its subject is the fetched document,
+     * but is CALLED from checkForUpdates: the comparison needs localManifest,
+     * which fetchManifest has no business reading on every call, and
+     * checkForUpdates is the only caller that deletes anything. The size
+     * estimates and offer panels in app.js must not start failing over this.
+     */
+    function _manifestWipesSection(remote, local) {
+        var bad = [];
+        [['packs', 'pack'], ['sentenceShards', 'sentence shard']].forEach(function (sec) {
+            var localN = _sectionCount(local, sec[0]);
+            var remoteN = _sectionCount(remote, sec[0]);
+            if (localN > 0 && remoteN === 0) {
+                bad.push(sec[1] + ' (local ' + localN + ', remote ' + remoteN + ')');
+            }
+        });
+        return bad.length ? bad.join('; ') : null;
+    }
+
     /**
      * Normalize a selected-language list into the canonical "opt-in" form:
      * an array of language codes to install IN ADDITION to the mandatory EN
@@ -772,6 +839,28 @@ PPP.downloader = (function () {
         return fetchManifest().then(function (remote) {
             return store.getState('localManifest').then(function (local) {
                 if (!local) return { changedItems: 0, coreChanged: coreChanged };
+                // Truncation guard (see _manifestWipesSection for the rule and
+                // why the threshold is "the whole section"). Refusing means the
+                // delta simply does not run: the device keeps the previous
+                // healthy generation — the same property the fence gives an
+                // interrupted delta — and the next check tries again, so a
+                // manifest fixed on the server heals this by itself.
+                //
+                // Nothing is shown to the user, on purpose: the library works,
+                // nothing was lost, and there is no action for them to take. A
+                // warning here would only report a server-side mistake to the
+                // one person who cannot fix it.
+                //
+                // But it must not be a SILENT refusal either, or a manifest
+                // publishing error looks exactly like "no updates available"
+                // forever. Hence the warn with both counts — that line is the
+                // only way to tell the two apart from a user's console.
+                var wipes = _manifestWipesSection(remote, local);
+                if (wipes) {
+                    console.warn('Offline update refused: manifest drops every ' +
+                        wipes + ' — keeping the installed library');
+                    return { changedItems: 0, coreChanged: coreChanged, refused: wipes };
+                }
                 return store.getState('langs').then(function (savedLangs) {
                 return store.getState('shards').then(function (savedShards) {
                 var sel = _normLangs(savedLangs);
