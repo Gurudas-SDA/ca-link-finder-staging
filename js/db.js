@@ -478,22 +478,103 @@ PPP.db = (function () {
     // (shard nr-ranges are disjoint, so DISTINCT-lecture counts also sum).
 
     var _shardsPromise = null;
+
+    // The LIVE shard list: what the server is publishing right now. Correct for
+    // a device with no installed shards — that device fetches shards over the
+    // network, so the newest list is exactly the right one.
+    function _liveShardList() {
+        return fetch('data/manifest.json', { cache: 'no-store' })
+            .then(function (r) { return r.ok ? r.json() : {}; })
+            .then(function (m) { return (m && m.sentenceShards) || []; })
+            .catch(function () { return []; });
+    }
+
+    // Is a delta rewriting the shards right now? While it is, the shards in IDB
+    // and the list in `localManifest` legitimately disagree, so neither a
+    // "damaged" verdict nor a quietly incomplete result set is honest — say the
+    // library is updating instead. See downloader.js isUpdatingShards.
+    function _shardUpdateInFlight() {
+        try {
+            return !!(window.PPP && PPP.downloader && PPP.downloader.isUpdatingShards &&
+                PPP.downloader.isUpdatingShards());
+        } catch (e) { return false; }
+    }
+
+    function _libraryUpdatingError() {
+        var e = new Error('The offline library is being updated');
+        e.libraryUpdating = true;
+        return e;
+    }
+
+    // The INSTALLED shard list: what was actually written to this device, kept
+    // in the `localManifest` state record by the installer (downloader.js
+    // firstInstall / addShards / checkForUpdates, all of which advance it only
+    // AFTER every shard is applied). Resolves null when it cannot be read — see
+    // _getSentenceShards, which treats that as a damaged library rather than as
+    // a reason to go to the network.
+    function _localShardList() {
+        if (!_offlineStoreUsable() || !PPP.offlineStore.getState) return Promise.resolve(null);
+        try {
+            return Promise.resolve(PPP.offlineStore.getState('localManifest')).then(
+                function (lm) { return lm ? (lm.sentenceShards || []) : null; },
+                function () { return null; }
+            );
+        } catch (e) { return Promise.resolve(null); }
+    }
+
+    // A7: on an INSTALLED device the shard list must come from `localManifest`,
+    // not from the live data/manifest.json.
+    //
+    // The two lists agree only between updates. Every corpus regeneration on the
+    // server opens a window where the device still holds the OLD shards while
+    // the live manifest already describes the NEW ones: sizes differ, sha256s
+    // differ, shard ids can appear or vanish. Read against the live list, the
+    // installed-and-perfectly-healthy library then fails _shardSizeOk / has "no
+    // record" for a new id, the fence above sees state 'shards' === true, and
+    // the user is told their library is damaged while the delta that fixes
+    // nothing-was-ever-broken is still downloading. The next corpus generation
+    // (dedup removal + Brotli) changes EVERY shard and their count (21 -> 22),
+    // so without this every installed user would see that message.
+    //
+    // The fence is state 'shards' === true — the same one _getShardGz uses, and
+    // deliberately NOT `localManifest`, which only means "an install finished"
+    // and says nothing about the shards being present (that conflation was
+    // yesterday's bug; see the note on _shardsInstalled below).
+    //
+    // What does NOT change: a device with no installed shards keeps reading the
+    // live manifest (its shards come from the network, newest is right), and
+    // downloader.checkForUpdates keeps diffing remote-vs-local on its own — it
+    // fetches the manifest itself and never goes through here.
     function _getSentenceShards() {
         if (!_shardsPromise) {
-            _shardsPromise = fetch('data/manifest.json', { cache: 'no-store' })
-                .then(function (r) { return r.ok ? r.json() : {}; })
-                .then(function (m) { return (m && m.sentenceShards) || []; })
-                .catch(function () { return []; });
+            _shardsPromise = _shardsInstalled().then(function (installed) {
+                if (!installed) return _liveShardList();
+                return _localShardList().then(function (list) {
+                    if (list) return list;
+                    // FAIL CLOSED. `state 'shards' === true` but the record
+                    // saying WHICH shards is gone or unreadable: that is a
+                    // damaged library, not a reason to read the live manifest.
+                    // Falling back would put a device that believes everything
+                    // is local onto the network without a word — exactly the
+                    // class A2 closed. The installer's atomic commitState makes
+                    // this state practically impossible, which is an argument
+                    // FOR failing closed: if it happens anyway, something is
+                    // genuinely broken and we want to see it, not route around
+                    // it (Fable, 2026-07-27).
+                    console.warn('Installed shards but no readable localManifest — library damaged');
+                    throw _shardRecordMissingError();
+                });
+            });
         }
         return _shardsPromise;
     }
 
     /**
-     * Drop the memoized shard list so the next chunked search re-reads
-     * data/manifest.json. Same staleness shape as the core DBs: a delta
-     * update can add/remove/re-version shards while this session holds the
-     * boot-time list. Cost of being wrong the other way is one small
-     * manifest.json fetch, so the caller may reset on any applied update.
+     * Drop the memoized shard list so the next chunked search re-resolves it.
+     * A delta update can add/remove/re-version shards while this session holds
+     * the boot-time list. Cost of being wrong the other way is one small
+     * manifest.json fetch (or one IDB state read), so the caller may reset on
+     * any applied update.
      */
     function resetSentenceShards() {
         _shardsPromise = null;
@@ -619,13 +700,35 @@ PPP.db = (function () {
         });
         return _shardsInstalledMemo;
     }
-    /** Forget the cached answer — call after an install or a repair. */
-    function resetLibraryInstalledCache() { _shardsInstalledMemo = null; }
+    /** Forget the cached answer — call after an install or a repair.
+     *  Also drops the memoized shard list: since A7 that list's SOURCE depends
+     *  on this very answer (localManifest when installed, live manifest when
+     *  not), so a stale list would otherwise survive the moment an install
+     *  flips the answer to true. */
+    function resetLibraryInstalledCache() {
+        _shardsInstalledMemo = null;
+        _shardsPromise = null;
+    }
 
     function _shardRepairError(shard) {
+        // A delta is replacing these very shards right now: the mismatch IS the
+        // update, not damage. Never accuse a healthy library of being broken
+        // because the update it is receiving has not landed yet.
+        if (_shardUpdateInFlight()) return _libraryUpdatingError();
         var e = new Error('Shard ' + shard.id + ' missing or corrupt in the installed library');
         e.shardRepairNeeded = true;
         e.shardId = shard.id;
+        return e;
+    }
+
+    /** `state 'shards' === true` but no readable localManifest — the library is
+     *  damaged in a way no single-shard repair can fix, so it carries no
+     *  shardId and the UI offers no Repair button for it. */
+    function _shardRecordMissingError() {
+        if (_shardUpdateInFlight()) return _libraryUpdatingError();
+        var e = new Error('The installed library has no readable shard record');
+        e.shardRepairNeeded = true;
+        e.shardId = null;
         return e;
     }
 
@@ -698,6 +801,12 @@ PPP.db = (function () {
      * into a full 342 MB reinstall (Fable, 2026-07-27).
      */
     function repairShard(shardId, signal) {
+        // A delta IS a repair. Running a second one on top of it puts two
+        // writers on the same shard record, and it would validate the download
+        // against whichever generation localManifest currently names — which is
+        // exactly the thing in flux. Refuse while an update is running
+        // (Fable, 2026-07-27).
+        if (_shardUpdateInFlight()) return Promise.reject(_libraryUpdatingError());
         return _getSentenceShards().then(function (shards) {
             var shard = null;
             for (var i = 0; i < shards.length; i++) {
@@ -805,6 +914,13 @@ PPP.db = (function () {
      * Resolves { rows, count, lectures } (rows already capped to params.$limit).
      */
     function searchSentencesChunked(sql, countSql, params, onProgress, signal) {
+        // Refuse up front while a delta is rewriting the shards, and say why.
+        // Not only because a replaced shard would fail the size gate: even a
+        // search where every shard happens to match is WRONG in this window,
+        // because shards this delta ADDS are already in IDB but not yet in the
+        // list, so the user would get quietly incomplete results with no word
+        // about it. Silence is the failure mode we are removing.
+        if (_shardUpdateInFlight()) return Promise.reject(_libraryUpdatingError());
         return _getSentenceShards().then(function (shards) {
             var total = shards.length;
             if (!total) throw new Error('No sentence shards in manifest');

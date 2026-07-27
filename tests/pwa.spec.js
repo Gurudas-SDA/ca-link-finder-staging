@@ -2092,3 +2092,482 @@ test.describe('A stalled install stops, stays gated and resumes itself (2026-07-
   });
 
 });
+
+// ===========================================================================
+// An installed library searches its OWN shard list (A7, 2026-07-27)
+// ===========================================================================
+test.describe('An installed library searches its OWN shard list, not the server\'s (A7, 2026-07-27)', () => {
+  // The chunked sentence search took its shard list from the LIVE
+  // data/manifest.json. On an installed device that is the wrong source: every
+  // corpus regeneration on the server changes shard sizes, sha256s and even the
+  // shard COUNT, so between "server published" and "delta finished" a perfectly
+  // healthy library is measured against shards it does not have yet — the size
+  // gate fails, the installed-fence fires, and the user is told the library is
+  // damaged while nothing is wrong. The next corpus generation (dedup removal +
+  // Brotli) changes all 21 shards and adds a 22nd, so it would have hit every
+  // installed user at once.
+  //
+  // No real install is needed: the fence and the list both read
+  // PPP.offlineStore, so the store is stubbed as an installed one-shard library
+  // holding a REAL shard file. That keeps the test at a few seconds instead of
+  // a 342 MB install.
+  test.use({ serviceWorkers: 'block' });
+
+  test('P24. A corpus update on the server does not make an installed library look damaged', async ({ page }) => {
+    test.setTimeout(120000);
+    const installedShard = (realManifest.sentenceShards || [])[0];
+    expect(installedShard, 'manifest.json has no sentenceShards to test with').toBeTruthy();
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.db && PPP.offlineStore, { timeout: 30000 });
+
+    // Stand-in for the copy an install wrote to IndexedDB: the real shard bytes,
+    // fetched BEFORE the network watch below so the fixture's own download is
+    // not mistaken for db.js going behind the user's back.
+    await page.evaluate(async (p) => {
+      window.__shardGz = await (await fetch(p)).arrayBuffer();
+    }, installedShard.path);
+
+    // The server publishes the next corpus generation: every shard re-hashed and
+    // re-sized, and a 22nd shard appears. Exactly the shape of the pending
+    // dedup+Brotli rebuild.
+    const mutated = JSON.parse(JSON.stringify(realManifest));
+    mutated.sentenceShards = (realManifest.sentenceShards || []).map(s => Object.assign({}, s, {
+      sha256: 'ff'.repeat(32),
+      size: (s.size || 0) + 12345
+    }));
+    mutated.sentenceShards.push({
+      id: 'ppp_sentences_shard_999',
+      path: 'data/shards/ppp_sentences_shard_999.db.gz',
+      sha256: 'ab'.repeat(32),
+      size: 1234567
+    });
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(mutated)
+    }));
+
+    const shardReqs = [];
+    page.on('request', r => {
+      if (r.url().indexOf('/data/shards/') !== -1) shardReqs.push(r.url());
+    });
+
+    const res = await page.evaluate(async (shard) => {
+      // An INSTALLED library: state 'shards' === true, and localManifest records
+      // the one shard actually on the device — with its true size/sha256.
+      PPP.offlineStore.supported = function () { return true; };
+      PPP.offlineStore.getState = function (key) {
+        if (key === 'shards') return Promise.resolve(true);
+        if (key === 'localManifest') return Promise.resolve({ sentenceShards: [shard] });
+        return Promise.resolve(null);
+      };
+      PPP.offlineStore.getGz = function (key) {
+        return Promise.resolve(key === 'shard:' + shard.id ? window.__shardGz : undefined);
+      };
+      PPP.db.resetLibraryInstalledCache();   // memos must not hide the answer
+      PPP.db.resetSentenceShards();
+      return PPP.db.searchSentencesChunked(
+        'SELECT 1 AS n FROM sentences LIMIT 3', null, { $limit: 10 }
+      ).then(function (out) {
+        return { threw: false, repair: false, rows: (out && out.rows || []).length, msg: '' };
+      }, function (e) {
+        return { threw: true, repair: !!(e && e.shardRepairNeeded), rows: 0, msg: String(e && e.message) };
+      });
+    }, installedShard);
+
+    expect(res.repair,
+      'a healthy installed library was told to repair itself because the SERVER changed: ' + res.msg
+    ).toBe(false);
+    expect(res.threw, 'search failed on an installed library: ' + res.msg).toBe(false);
+    expect(res.rows, 'the installed shard was never actually queried').toBe(3);
+    expect(shardReqs,
+      'an installed device fetched a shard from the network'
+    ).toEqual([]);
+
+    // NEGATIVE CHECK (run by reverting js/db.js _getSentenceShards to the live
+    // fetch, everything else untouched): this test FAILED at the first
+    // assertion —
+    //   "a healthy installed library was told to repair itself because the
+    //    SERVER changed: Shard ppp_sentences_shard_000 missing or corrupt in
+    //    the installed library
+    //    Expected: false / Received: true"
+    // because the live list gave shard 000 the mutated size, _shardSizeOk
+    // rejected the real bytes, and the installed-fence turned that into a
+    // repair error. res.rows was 0 and res.threw true as well. With the fix all
+    // four assertions pass. Recorded here because a test that cannot fail
+    // proves nothing.
+  });
+
+});
+
+// ===========================================================================
+// A delta in flight is an UPDATE, never damage (2026-07-27)
+// ===========================================================================
+test.describe('While a delta rewrites the shards the user is told "updating", not "damaged" (2026-07-27)', () => {
+  // A7 shrank the false-damage window from "server published -> delta finished"
+  // (unbounded) to "delta in flight" (minutes), but did not close it: mid-delta
+  // the shards in IndexedDB and the list still recorded in localManifest
+  // legitimately disagree. Writing localManifest shard-by-shard would close it
+  // by making that file transiently describe half of one corpus generation and
+  // half of another -- which breaks the property the fence exists for (an
+  // interrupted delta must leave the PREVIOUS healthy generation).
+  //
+  // So the window stays and is told the truth instead: while a shard-touching
+  // delta runs, sentence search stops and says the library is being updated,
+  // and repairShard refuses (a delta IS a repair; a second one on top of it is
+  // a competing writer on the same record).
+  //
+  // Silently returning results would be no better than the false alarm: shards
+  // this delta ADDS are already in IndexedDB but not yet in the list, so those
+  // results would be quietly incomplete. That silence is the failure mode this
+  // whole pass removes.
+  test.use({ serviceWorkers: 'block' });
+
+  test('P25. Mid-delta search says "being updated" and does not offer a repair', async ({ page }) => {
+    test.setTimeout(120000);
+    const installedShard = (realManifest.sentenceShards || [])[0];
+    expect(installedShard, 'manifest.json has no sentenceShards to test with').toBeTruthy();
+
+    await page.goto('./');
+    // Ready enough for the real UI path: the search box is enabled once the
+    // metadata DB is loaded (same signal app.spec.js waits on).
+    await page.waitForFunction(() => {
+      const i = document.getElementById('searchTerm');
+      return i && !i.disabled && i.placeholder && i.placeholder.includes('9');
+    }, { timeout: 60000 });
+
+    // An installed library. localManifest is a copy of the REAL manifest, so
+    // the delta below finds no core/pack work — only the one changed shard.
+    // getGz returns a short buffer: what a shard looks like the moment the
+    // delta has begun replacing it (right key, wrong length for the size still
+    // recorded in localManifest).
+    await page.evaluate((local) => {
+      PPP.offlineStore.supported = function () { return true; };
+      PPP.offlineStore.getState = function (key) {
+        if (key === 'shards') return Promise.resolve(true);
+        if (key === 'localManifest') return Promise.resolve(local);
+        return Promise.resolve(null);
+      };
+      PPP.offlineStore.getGz = function () { return Promise.resolve(new ArrayBuffer(1024)); };
+      PPP.db.resetLibraryInstalledCache();
+      PPP.db.resetSentenceShards();
+    }, realManifest);
+
+    // The server publishes a new generation of shard 000.
+    const remote = JSON.parse(JSON.stringify(realManifest));
+    remote.sentenceShards[0] = Object.assign({}, remote.sentenceShards[0], {
+      sha256: 'ff'.repeat(32)
+    });
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(remote)
+    }));
+
+    // Hold the shard download open: that is what keeps the delta in flight for
+    // the whole test instead of finishing before the search can be typed.
+    // `holdShards` must be releasable, because _processItem RETRIES: once the
+    // held request is aborted it issues a new one, and re-holding that one would
+    // keep the delta (and the flag) alive forever.
+    const held = [];
+    const shardReqs = [];
+    let holdShards = true;
+    await page.route('**/data/shards/**', route => {
+      shardReqs.push(route.request().url());
+      if (holdShards) { held.push(route); return; }   // neither fulfilled nor aborted
+      route.abort().catch(() => {});
+    });
+
+    // Start the delta (not awaited) and wait until it is actually rewriting.
+    await page.evaluate(() => { window.__delta = PPP.downloader.checkForUpdates(); });
+    await page.waitForFunction(() => PPP.downloader.isUpdatingShards() === true, { timeout: 30000 });
+
+    const reqsBeforeSearch = shardReqs.length;
+
+    // The real user path: quotes view -> type a word -> Enter.
+    await page.evaluate(() => {
+      const b = document.getElementById('installBanner');
+      if (b) b.style.display = 'none';
+    });
+    await page.click('#viewSwitchBtn');
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+
+    const updatingMsg = await page.evaluate(() => PPP.i18n.t('libraryUpdatingSearch'));
+    const damagedMsg = await page.evaluate(() => PPP.i18n.t('libraryPartDamaged'));
+    await expect(page.locator('#resultsInfo')).toContainText(updatingMsg, { timeout: 20000 });
+
+    const infoText = await page.locator('#resultsInfo').textContent();
+    expect(infoText, 'a delta in progress was reported to the user as damage').not.toContain(damagedMsg);
+    expect(await page.locator('#shardRepairBtn').count(),
+      'a Repair button was offered while the delta is already repairing').toBe(0);
+
+    // repairShard must refuse outright — two writers on one shard record.
+    const repair = await page.evaluate(() => PPP.db.repairShard('ppp_sentences_shard_000').then(
+      () => ({ resolved: true, updating: false }),
+      e => ({ resolved: false, updating: !!(e && e.libraryUpdating) })
+    ));
+    expect(repair.resolved, 'repairShard ran while a delta was rewriting the same shards').toBe(false);
+    expect(repair.updating, 'repairShard refused for the wrong reason').toBe(true);
+
+    // Neither the search nor the refused repair may hit the network.
+    expect(shardReqs.length - reqsBeforeSearch,
+      'the search or the repair fetched a shard while the delta was running').toBe(0);
+
+    // The flag must come back down on its own once the delta unwinds, or the
+    // app would stay stuck on "updating" forever. This is the crash-safety
+    // property in miniature: the delta FAILS here (every retry aborted) and the
+    // flag is still released, because the rejection path releases it too.
+    holdShards = false;
+    for (const r of held) { await r.abort().catch(() => {}); }
+    await page.waitForFunction(() => PPP.downloader.isUpdatingShards() === false, { timeout: 60000 });
+
+    // NEGATIVE CHECK (run with the two guards removed from js/db.js — the
+    // _shardUpdateInFlight() check at the top of searchSentencesChunked and the
+    // one inside _shardRepairError — everything else untouched): this test
+    // FAILED at the "being updated" assertion, timing out after 20 s with
+    //   'Expect "toContainText" with timeout 20000ms
+    //    waiting for locator('#resultsInfo')
+    //    23 x locator resolved to <div id="resultsInfo">...</div>
+    //      - unexpected value "Part of the offline library is damaged, so this
+    //        search cannot run. Repairing it downloads only the missing piece
+    //        (a few MB).Repair"'
+    // i.e. exactly the false accusation, plus a Repair button competing with
+    // the delta that is already replacing that shard. Recorded here because a
+    // test that cannot fail proves nothing.
+  });
+
+  test('P26. A killed session cannot inherit a stuck "updating" flag', async ({ page }) => {
+    // The other half of "the flag must never wedge". P25 proves a FAILING delta
+    // still lowers it; this proves a session that dies mid-delta — crash, tab
+    // close, reload — cannot leave it raised for the next one. That property
+    // comes from the flag being a plain module variable rather than an IndexedDB
+    // record; this test is the guard that keeps it that way, because moving it
+    // into IndexedDB without a timestamp or a startup sweep would silently
+    // reintroduce a permanently "updating" app.
+    test.setTimeout(120000);
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore,
+      { timeout: 30000 });
+
+    await page.evaluate((local) => {
+      PPP.offlineStore.supported = function () { return true; };
+      PPP.offlineStore.getState = function (key) {
+        if (key === 'shards') return Promise.resolve(true);
+        if (key === 'localManifest') return Promise.resolve(local);
+        return Promise.resolve(null);
+      };
+    }, realManifest);
+
+    const remote = JSON.parse(JSON.stringify(realManifest));
+    remote.sentenceShards[0] = Object.assign({}, remote.sentenceShards[0], {
+      sha256: 'ff'.repeat(32)
+    });
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(remote)
+    }));
+    // Held open: the delta is still running at the moment the page dies.
+    await page.route('**/data/shards/**', () => {});
+
+    await page.evaluate(() => { PPP.downloader.checkForUpdates(); });
+    await page.waitForFunction(() => PPP.downloader.isUpdatingShards() === true, { timeout: 30000 });
+
+    // The session dies with the delta still in flight.
+    await page.reload();
+    await page.waitForFunction(() => window.PPP && PPP.downloader, { timeout: 30000 });
+    expect(await page.evaluate(() => PPP.downloader.isUpdatingShards()),
+      'a new session inherited "updating" from a delta that died with the old one').toBe(false);
+
+    // NEGATIVE CHECK (run with the flag made to persist the way an IndexedDB
+    // one would — _shardUpdateDepth++ also doing
+    // localStorage.setItem('__updflag','1'), and isUpdatingShards() returning
+    // true whenever that key exists): this test FAILED at the assertion above
+    // with
+    //   'Error: a new session inherited "updating" from a delta that died with
+    //    the old one
+    //    Expected: false / Received: true'
+    // which is exactly the wedged-forever app a persisted flag without a
+    // timestamp or startup sweep would produce.
+  });
+
+});
+
+// ===========================================================================
+// The "updating" truth crosses tabs (BroadcastChannel, 2026-07-27)
+// ===========================================================================
+test.describe('A delta in one tab is visible to the others (2026-07-27)', () => {
+  // The app checks for updates on load, so opening a second tab can start a
+  // delta while the user is mid-search in the first one. A per-tab flag leaves
+  // that first tab showing the false "damaged" message — the very thing P25
+  // removes, just one tab over.
+  //
+  // BroadcastChannel and not a persisted flag: it stores nothing, so it covers
+  // the other tabs WITHOUT giving up the property P26 guards. The price is that
+  // a tab which dies mid-delta must be noticed rather than trusted, which is
+  // what the heartbeat plus the stale window do.
+  test.use({ serviceWorkers: 'block' });
+
+  /** Present the page as an installed library holding a shard the delta has
+   *  already begun replacing (right key, wrong length) — so that WITHOUT the
+   *  cross-tab signal a search here renders "damaged". */
+  async function installedWithHalfReplacedShard(target, manifest) {
+    await target.evaluate((local) => {
+      PPP.offlineStore.supported = function () { return true; };
+      PPP.offlineStore.getState = function (key) {
+        if (key === 'shards') return Promise.resolve(true);
+        if (key === 'localManifest') return Promise.resolve(local);
+        return Promise.resolve(null);
+      };
+      PPP.offlineStore.getGz = function () { return Promise.resolve(new ArrayBuffer(1024)); };
+      PPP.db.resetLibraryInstalledCache();
+      PPP.db.resetSentenceShards();
+    }, manifest);
+  }
+
+  /** Present the page as an installed library (state only, no shard bytes). */
+  async function installedLibrary(target, manifest) {
+    await target.evaluate((local) => {
+      PPP.offlineStore.supported = function () { return true; };
+      PPP.offlineStore.getState = function (key) {
+        if (key === 'shards') return Promise.resolve(true);
+        if (key === 'localManifest') return Promise.resolve(local);
+        return Promise.resolve(null);
+      };
+    }, manifest);
+  }
+
+  /** Start a shard delta on the page and hold its download open. */
+  async function startHeldDelta(target, manifest) {
+    const remote = JSON.parse(JSON.stringify(manifest));
+    remote.sentenceShards[0] = Object.assign({}, remote.sentenceShards[0], {
+      sha256: 'ff'.repeat(32)
+    });
+    await target.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(remote)
+    }));
+    await target.route('**/data/shards/**', () => {});   // held open on purpose
+    await target.evaluate(() => { PPP.downloader.checkForUpdates(); });
+    await target.waitForFunction(() => PPP.downloader.isUpdatingShards() === true, { timeout: 30000 });
+  }
+
+  async function waitForSearchBox(target) {
+    await target.waitForFunction(() => {
+      const i = document.getElementById('searchTerm');
+      return i && !i.disabled && i.placeholder && i.placeholder.includes('9');
+    }, { timeout: 60000 });
+  }
+
+  test('P27. A delta in tab A makes tab B say "updating", not "damaged"', async ({ page, context }) => {
+    test.setTimeout(120000);
+
+    // Tab A: installed library, delta running and held mid-flight.
+    await page.goto('./');
+    await waitForSearchBox(page);
+    await installedLibrary(page, realManifest);
+    await startHeldDelta(page, realManifest);
+
+    // Tab B: a second tab of the same app, with no delta of its own.
+    const pageB = await context.newPage();
+    await pageB.goto('./');
+    await waitForSearchBox(pageB);
+    await installedWithHalfReplacedShard(pageB, realManifest);
+
+    // It must have learned about the delta in tab A over the channel.
+    await pageB.waitForFunction(() => PPP.downloader.isUpdatingShards() === true, { timeout: 20000 });
+
+    // Asserted at the layer that carries the cross-tab fact: the SAME rejection
+    // app.js branches on. Which of the two errors comes back is the whole
+    // question — libraryUpdating renders "being updated", shardRepairNeeded
+    // renders "damaged" plus a Repair button (js/app.js checks libraryUpdating
+    // first, and P25 proves that mapping end-to-end through the real UI in a
+    // single tab). Driving the second tab's UI here instead was tried and
+    // abandoned: neither Enter, nor the Search button, nor PPP.app.search()
+    // reliably reached doSearch in a non-foreground tab under Playwright, and a
+    // test that green-lights on a search which never ran proves nothing.
+    //
+    // The stub above matters for the negative case: without the channel this
+    // tab sees an installed library whose shard has the wrong length, which is
+    // precisely the false "damaged" verdict.
+    const err = await pageB.evaluate(() => PPP.db.searchSentencesChunked(
+      'SELECT 1 AS n FROM sentences LIMIT 3', null, { $limit: 10 }
+    ).then(
+      () => ({ resolved: true, updating: false, repair: false, msg: '' }),
+      e => ({
+        resolved: false,
+        updating: !!(e && e.libraryUpdating),
+        repair: !!(e && e.shardRepairNeeded),
+        msg: String(e && e.message)
+      })
+    ));
+    expect(err.repair,
+      'the other tab called a running delta damage: ' + err.msg).toBe(false);
+    expect(err.updating,
+      'the other tab did not learn that a delta is running: ' + err.msg).toBe(true);
+
+    // And the message that verdict maps to is a real, translated string rather
+    // than a missing key rendering as its own name.
+    const updatingMsg = await pageB.evaluate(() => PPP.i18n.t('libraryUpdatingSearch'));
+    expect(updatingMsg).not.toBe('libraryUpdatingSearch');
+    expect(updatingMsg.length).toBeGreaterThan(20);
+
+    await pageB.close();
+
+    // NEGATIVE CHECK (run with the BroadcastChannel wiring disabled in
+    // js/downloader.js — the constructor call replaced so _bc stays null,
+    // leaving isUpdatingShards() aware of its own tab only): this test FAILED
+    // before it could even reach the search, at
+    //   'Error: page.waitForFunction: Test timeout of 120000ms exceeded
+    //    > await pageB.waitForFunction(
+    //        () => PPP.downloader.isUpdatingShards() === true, ...)'
+    // i.e. the second tab never learned that the first one was mid-delta — so
+    // its next search would have hit the half-replaced shard and told the user
+    // the library was damaged. Recorded here because a test that cannot fail
+    // proves nothing.
+  });
+
+  test('P28. A tab that dies mid-delta does not freeze the others in "updating"', async ({ page, context }) => {
+    // Guard (a) from the design: the cross-tab signal must not turn one dead tab
+    // into a permanently paused search everywhere else. The heartbeat — not the
+    // pagehide courtesy message — is what guarantees that, so the tab is FROZEN
+    // here (timers stopped, no 'end' ever sent) rather than closed politely.
+    // That is what a crashed or suspended renderer looks like from outside.
+    test.setTimeout(120000);
+
+    await page.goto('./');
+    await waitForSearchBox(page);
+    await installedLibrary(page, realManifest);
+    await startHeldDelta(page, realManifest);
+
+    const pageB = await context.newPage();
+    await pageB.goto('./');
+    await waitForSearchBox(pageB);
+    await pageB.waitForFunction(() => PPP.downloader.isUpdatingShards() === true, { timeout: 20000 });
+
+    // Tab A stops dead: heartbeat silenced, no 'end' message, nothing tidied.
+    await page.evaluate(() => {
+      const top = setInterval(function () {}, 60000);
+      for (let i = 1; i <= top; i++) clearInterval(i);
+    });
+
+    // Tab B must recover by itself once the stale window passes.
+    await pageB.waitForFunction(() => PPP.downloader.isUpdatingShards() === false, { timeout: 30000 });
+    await pageB.close();
+
+    // NEGATIVE CHECK (run with the staleness sweep removed from
+    // _anyRemoteUpdating in js/downloader.js — entries kept forever instead of
+    // expiring after SHARD_UPDATE_STALE_MS): this test FAILED at the recovery
+    // wait with
+    //   'Error: page.waitForFunction: Test timeout of 120000ms exceeded
+    //    > await pageB.waitForFunction(
+    //        () => PPP.downloader.isUpdatingShards() === false, ...)'
+    // i.e. a single dead tab left every other tab's text search paused for
+    // good — exactly the wedge the heartbeat exists to prevent.
+  });
+
+});

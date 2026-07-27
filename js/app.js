@@ -5202,6 +5202,19 @@ PPP.app = (function () {
             }
             console.error('Sentence search error:', err);
             var infoEl = document.getElementById('resultsInfo');
+            if (err && err.libraryUpdating) {
+                // A delta is rewriting the sentence shards right now. Nothing is
+                // damaged and nothing needs repairing — the honest answer is
+                // that the library is mid-update and search works again in a
+                // moment. Checked BEFORE shardRepairNeeded so an update can
+                // never be reported to the user as damage.
+                var upd = document.createElement('div');
+                upd.className = 'quotes-require-install';
+                upd.textContent = i18n.t('libraryUpdatingSearch');
+                infoEl.innerHTML = '';
+                infoEl.appendChild(upd);
+                return;
+            }
             if (err && err.shardRepairNeeded) {
                 // A piece of the INSTALLED library is missing or damaged. It is
                 // no longer silently re-fetched (that made "all-or-nothing" a
@@ -5252,6 +5265,11 @@ PPP.app = (function () {
             : i18n.t('libraryPartDamagedOffline');
         info.appendChild(msg);
         if (!navigator.onLine) return;
+        // No shardId: the localManifest record itself is unreadable, so there is
+        // no single shard to re-download and repairShard() could only fail. A
+        // button that can never work is the dead end this whole pass is
+        // removing, so it is not offered.
+        if (!shardId) return;
         var btn = document.createElement('button');
         btn.id = 'shardRepairBtn';
         btn.type = 'button';
@@ -5353,6 +5371,10 @@ PPP.app = (function () {
             track('export-excel', { query: _sentenceTerm, mode: 'sentences', rows: rows.length });
         }).catch(function (err) {
             console.error('Excel export error:', err);
+            // The export runs the SAME chunked search, so a delta in flight
+            // rejects it too. Console-only here meant the Excel button just did
+            // nothing at all — the same silence the on-screen message removes.
+            if (err && err.libraryUpdating) ui.toast(i18n.t('libraryUpdatingSearch'));
         });
     }
 

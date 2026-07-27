@@ -25,6 +25,108 @@ PPP.downloader = (function () {
     var MAX_ATTEMPTS = 4;
     var RETRY_DELAYS = [1000, 4000, 10000];
 
+    /* ---- "A delta is rewriting the sentence shards right now" --------------
+     * Read by db.js. During that window the shards in IndexedDB and the shard
+     * list recorded in `localManifest` legitimately disagree — the shards are
+     * being replaced one by one and `localManifest` only advances at the very
+     * end (that fence is deliberate: an interrupted delta must leave the
+     * PREVIOUS healthy generation, never a half-and-half mixture). Without this
+     * flag a search landing in that window either accuses a healthy library of
+     * being damaged or, worse, quietly returns results missing whatever shards
+     * this delta adds.
+     *
+     * A PLAIN VARIABLE, not an IndexedDB record, on purpose:
+     *   - a crashed / reloaded / killed session starts with it false, so it can
+     *     never wedge the app permanently into "updating". A persisted flag
+     *     would need a timestamp plus a startup sweep to get the same property,
+     *     and getting THAT wrong is a worse failure than the one it guards.
+     * A counter, not a boolean: overlapping calls must not release each other.
+     *
+     * CROSS-TAB (BroadcastChannel). The app checks for updates on load, so
+     * opening a second tab can start a delta while the user is mid-search in the
+     * first — which would show the first tab the false "damaged" message this
+     * whole pass removes. BroadcastChannel is the right mechanism precisely
+     * because it STORES NOTHING: it covers the other tabs without giving up the
+     * property P26 guards (the flag cannot outlive the session).
+     *
+     * Death of an updating tab is handled by heartbeat, not by trust: an
+     * updating tab pings every SHARD_UPDATE_PING_MS, and a listener forgets any
+     * tab it has not heard from for SHARD_UPDATE_STALE_MS. A tab that dies
+     * mid-delta therefore expires on its own within a few seconds instead of
+     * freezing every other tab forever. A tab opened mid-delta asks 'who' and
+     * every updating tab answers, so it does not have to wait for the next beat.
+     *
+     * No BroadcastChannel (older browsers, some webviews) → _bc stays null,
+     * _remoteUpdaters stays empty, and behaviour degrades exactly to the
+     * single-tab version above. Never worse than before.
+     */
+    var SHARD_UPDATE_PING_MS = 2000;    // heartbeat while THIS tab is updating
+    var SHARD_UPDATE_STALE_MS = 6000;   // 3 missed beats → assume that tab died
+
+    var _shardUpdateDepth = 0;
+    var _remoteUpdaters = {};           // other tabs' id → last time we heard from it
+    var _pingTimer = null;
+    var _tabId = 'tab-' + Math.random().toString(36).slice(2) + '-' + Date.now();
+    var _bc = null;
+    try {
+        if (typeof BroadcastChannel !== 'undefined') _bc = new BroadcastChannel('ppp-shard-update');
+    } catch (e) { _bc = null; }
+
+    function _bcPost(type) {
+        try { if (_bc) _bc.postMessage({ t: type, id: _tabId }); } catch (e) { /* channel closed */ }
+    }
+
+    /** Drop tabs we have not heard from within the stale window — this is what
+     *  makes a tab that died mid-delta stop blocking everyone else. */
+    function _anyRemoteUpdating() {
+        var now = Date.now(), alive = false, id;
+        for (id in _remoteUpdaters) {
+            if (now - _remoteUpdaters[id] > SHARD_UPDATE_STALE_MS) delete _remoteUpdaters[id];
+            else alive = true;
+        }
+        return alive;
+    }
+
+    if (_bc) {
+        _bc.onmessage = function (ev) {
+            var m = ev && ev.data;
+            if (!m || !m.id || m.id === _tabId) return;
+            if (m.t === 'start' || m.t === 'alive') _remoteUpdaters[m.id] = Date.now();
+            else if (m.t === 'end') delete _remoteUpdaters[m.id];
+            else if (m.t === 'who' && _shardUpdateDepth > 0) _bcPost('alive');
+        };
+        _bcPost('who');   // opened mid-delta? ask now instead of waiting a beat
+        // Best-effort courtesy so other tabs recover instantly rather than after
+        // the stale window. The heartbeat is what actually guarantees it — this
+        // event is not delivered reliably on a crash or a killed process.
+        try {
+            window.addEventListener('pagehide', function () {
+                if (_shardUpdateDepth > 0) _bcPost('end');
+            });
+        } catch (e) { /* no window listener — heartbeat still covers it */ }
+    }
+
+    function isUpdatingShards() {
+        return _shardUpdateDepth > 0 || _anyRemoteUpdating();
+    }
+
+    function _raiseShardUpdate() {
+        _shardUpdateDepth++;
+        if (_shardUpdateDepth !== 1) return;
+        _bcPost('start');
+        if (!_pingTimer) {
+            _pingTimer = setInterval(function () { _bcPost('alive'); }, SHARD_UPDATE_PING_MS);
+        }
+    }
+
+    function _lowerShardUpdate() {
+        if (_shardUpdateDepth === 0) return;
+        _shardUpdateDepth--;
+        if (_shardUpdateDepth !== 0) return;
+        if (_pingTimer) { clearInterval(_pingTimer); _pingTimer = null; }
+        _bcPost('end');
+    }
+
     /* ---- Cancellation -----------------------------------------------------
      * The two gated entry points (firstInstall, addShards) take an optional
      * `signal` as their LAST argument. It is either a real
@@ -581,8 +683,11 @@ PPP.downloader = (function () {
                     //  - localManifest must reflect what was actually installed:
                     //    when shards are opted out, strip them so the delta
                     //    check never treats the (never-downloaded) shards as
-                    //    present. Runtime shard search reads the LIVE manifest
-                    //    (db.js), not this stored copy, so this is safe.
+                    //    present. Safe for runtime search too: since A7 the
+                    //    chunked search reads THIS copy only when the shards are
+                    //    installed (state 'shards' === true); an opted-out
+                    //    device never consults the emptied list and keeps
+                    //    reading the live manifest (db.js _getSentenceShards).
                     //  - langs: the installed opt-in language selection, so
                     //    delta updates and "add a language later" know what to
                     //    maintain.
@@ -720,13 +825,39 @@ PPP.downloader = (function () {
 
                 if (changedItems === 0) return { changedItems: 0, coreChanged: coreChanged };
 
+                // Raise the "shards are being rewritten" flag — but ONLY when
+                // this delta actually touches shards, and only from the moment
+                // the first byte is about to be applied.
+                //  - Raising it at function entry would make every no-op boot
+                //    check briefly declare "updating" and blank a search that
+                //    started in that window, while IndexedDB was in fact
+                //    untouched and the search would have been correct.
+                //  - Raising it for a packs-only delta (transcripts, minutes
+                //    long) would pause sentence search over a change that
+                //    cannot affect a single shard.
+                var touchesShards = removedShards.length > 0 || work.some(function (w) {
+                    return w.type === 'shard';
+                });
+                if (touchesShards) _raiseShardUpdate();
+                var _released = false;
+                function _releaseShardUpdate() {
+                    if (touchesShards && !_released) { _released = true; _lowerShardUpdate(); }
+                }
+
                 // Updates share the install-state shape but do NOT track
                 // durable resume state (no _track) — a failed delta simply
                 // re-runs next time against the unchanged localManifest.
                 var install = { completedCore: {}, completedPacks: {}, completedShards: {} };
-                return _runPool(work, function (item) {
-                    return _processItem(item, install, null, function () {});
-                }, CONCURRENCY).then(function () {
+                // Started from an already-resolved promise so that even a
+                // SYNCHRONOUS throw out of _runPool becomes a rejection this
+                // chain's handler sees. Thrown straight out of the `return`
+                // instead, it would skip the release below and leave the app
+                // reporting "updating" for the rest of the session.
+                return Promise.resolve().then(function () {
+                    return _runPool(work, function (item) {
+                        return _processItem(item, install, null, function () {});
+                    }, CONCURRENCY);
+                }).then(function () {
                     return _runPool(removed, function (p) {
                         return _enqueueApply(function () { return store.applyPack(p.id, []); });
                     }, 1);
@@ -744,7 +875,17 @@ PPP.downloader = (function () {
                     // check matches what is actually in IDB.
                     return store.setState('localManifest', _manifestForStore(remote, includeShards));
                 }).then(function () {
+                    // Lowered only AFTER localManifest advanced: that write IS
+                    // the moment the shards and the recorded list agree again.
+                    _releaseShardUpdate();
                     return { changedItems: changedItems, coreChanged: coreChanged };
+                }, function (err) {
+                    // Stand-in for `finally` (not in this file's ES5 baseline).
+                    // A thrown delta must not leave the app stuck in "updating"
+                    // — the outer .catch below would otherwise swallow the
+                    // error and the flag with it.
+                    _releaseShardUpdate();
+                    throw err;
                 });
                 });   // close store.getState('shards').then(savedShards)
                 });   // close store.getState('langs').then(savedLangs)
@@ -893,6 +1034,7 @@ PPP.downloader = (function () {
         getInstalledLangs: getInstalledLangs,
         addLanguages: addLanguages,
         addShards: addShards,
+        isUpdatingShards: isUpdatingShards,
         getResumeState: getResumeState,
         isCoreReady: isCoreReady
     };
