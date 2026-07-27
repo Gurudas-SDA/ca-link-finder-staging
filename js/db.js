@@ -393,21 +393,14 @@ PPP.db = (function () {
         });
     }
 
-    /**
-     * Force-reopen the sentence DB from the offline store — same delta-update
-     * problem as reloadMetaFromStore(), same bypass of the loadedDBs dedup.
-     * No-op (false) when this session never opened it: the bytes it would
-     * replace do not exist, and the next loadSentencesDB() reads the fresh
-     * IDB copy on its own. Resolves true when reloaded.
+    /* REMOVED 2026-07-27: reloadSentencesFromStore() / loadSentencesDB() /
+     * querySentencesAsync() / isSentencesLoaded() — the whole-file EN sentence
+     * DB path ('core:sentences', data/ppp_sentences_en.db[.gz], 18.9 MB
+     * packed). None of them had a single caller: both transcript-text search
+     * paths in app.js run through searchSentencesChunked() below, i.e. the
+     * SHARDS. The file was downloaded by every install and never opened.
+     * The shard machinery further down is the live path and is untouched.
      */
-    function reloadSentencesFromStore() {
-        if (!_offlineStoreUsable()) return Promise.resolve(false);
-        if (!isSentencesLoaded()) return Promise.resolve(false);
-        return PPP.offlineStore.getGz('core:sentences').then(function (gz) {
-            if (!gz) return false;
-            return _openGzInto('sentences_en', gz).then(function () { return true; });
-        });
-    }
 
     /**
      * Fetch and open the metadata database.
@@ -441,29 +434,6 @@ PPP.db = (function () {
         return getDbVersions().then(function (versions) {
             var v = versions[lang] ? '?v=' + versions[lang] : '';
             return loadDB(dbName, 'data/ppp_transcripts_html_' + lang + '.db' + v, progressCallback);
-        });
-    }
-
-    /**
-     * Lazy-load the transcript-sentence database (Advanced / "In Transcripts" search).
-     * Self-contained DB (sentences + lectures tables). Cache-bust via versions.sentences,
-     * but tolerate a missing key (db-versions.json may not yet list "sentences").
-     */
-    function loadSentencesDB(progressCallback) {
-        if (loadedDBs['sentences_en']) return Promise.resolve();
-        return _tryOfflineCore('core:sentences', 'sentences_en').then(function (opened) {
-            if (opened) return;
-            return getDbVersions().then(function (versions) {
-                var v = versions.sentences ? '?v=' + versions.sentences : '';
-                if (_gzSupported()) {
-                    return fetchGzDB('sentences_en', 'data/ppp_sentences_en.db.gz' + v, progressCallback)
-                        .catch(function (err) {
-                            console.warn('Gz sentences fetch failed, falling back to uncompressed:', err);
-                            return loadDB('sentences_en', 'data/ppp_sentences_en.db' + v, progressCallback);
-                        });
-                }
-                return loadDB('sentences_en', 'data/ppp_sentences_en.db' + v, progressCallback);
-            });
         });
     }
 
@@ -1006,10 +976,6 @@ PPP.db = (function () {
         return queryAsync('html_' + (lang || 'en'), sql, params);
     }
 
-    function querySentencesAsync(sql, params) {
-        return queryAsync('sentences_en', sql, params);
-    }
-
     /**
      * Get pre-computed stats from the stats table.
      */
@@ -1057,10 +1023,6 @@ PPP.db = (function () {
         return !!loadedDBs[dbName] || !!databases[dbName];
     }
 
-    function isSentencesLoaded() {
-        return !!loadedDBs['sentences_en'] || !!databases['sentences_en'];
-    }
-
     /**
      * Check if Worker mode is active.
      */
@@ -1074,12 +1036,10 @@ PPP.db = (function () {
         openDBFromGz: openDBFromGz,
         fetchGzDB: fetchGzDB,
         reloadMetaFromStore: reloadMetaFromStore,
-        reloadSentencesFromStore: reloadSentencesFromStore,
         resetSentenceShards: resetSentenceShards,
         repairShard: repairShard,
         resetLibraryInstalledCache: resetLibraryInstalledCache,
         loadHtmlDB: loadHtmlDB,
-        loadSentencesDB: loadSentencesDB,
         searchSentencesChunked: searchSentencesChunked,
         // Sync queries (fallback mode only)
         queryMeta: queryMeta,
@@ -1088,13 +1048,11 @@ PPP.db = (function () {
         // Async queries (both modes)
         queryMetaAsync: queryMetaAsync,
         queryHtmlAsync: queryHtmlAsync,
-        querySentencesAsync: querySentencesAsync,
         getStatsAsync: getStatsAsync,
         queryAsync: queryAsync,
         // State checks
         isMetaLoaded: isMetaLoaded,
         isHtmlLoaded: isHtmlLoaded,
-        isSentencesLoaded: isSentencesLoaded,
         getDbVersions: getDbVersions,
         isWorkerMode: isWorkerMode
     };

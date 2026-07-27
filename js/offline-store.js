@@ -6,7 +6,10 @@
      files : { key, packId, gz (Blob), raw }   — keyPath 'key', index 'byPack'
      state : out-of-line keys                  — localManifest, install, ...
    Keys: 't:{lang}:{nr}' premium transcript, 'raw:en:{nr}' raw transcript,
-         'core:meta' / 'core:extras' / 'core:sentences' core files.
+         'core:meta' / 'core:extras' core files, 'shard:{id}' sentence shards.
+         ('core:sentences' existed until 2026-07-27 — the 18.9 MB whole-file
+          sentence DB nothing ever opened; devices that hold it get it deleted
+          by the core-removal path in downloader.js checkForUpdates.)
    =========================================================================== */
 window.PPP = window.PPP || {};
 

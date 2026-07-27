@@ -12,13 +12,26 @@ PPP.downloader = (function () {
 
     var store = PPP.offlineStore;
     var CONCURRENCY = 2;
-    // Core files that every install downloads: the meta DB, the summaries /
-    // essence extras, and `sentences` — the EN sentence DB behind offline
-    // transcript-text search, which db.js opens as 'core:sentences' (without it
-    // that lookup silently falls back to the network, i.e. no offline search).
-    // NOTE: the tiered-readiness gate (coreReady / isCoreReady) deliberately
-    // waits only for meta+extras, so the app still opens after ~19.5 MB.
-    var CORE_KEYS = ['meta', 'extras', 'sentences'];
+    // Core files that every install downloads: the meta DB and the
+    // summaries / essence extras.
+    //
+    // `sentences` — the whole-file EN sentence DB, 18.9 MB packed — was in this
+    // list until 2026-07-27 and is NOT any more, because nothing ever read it.
+    // Both transcript-text search paths in app.js go through
+    // db.searchSentencesChunked(), i.e. the SHARDS; db.js's whole-file
+    // loadSentencesDB() had zero callers, so every install on every device paid
+    // 18.9 MB for a blob it never opened once. The sentence SHARDS are a
+    // separate, opt-in manifest section (`sentenceShards`) and are untouched.
+    //
+    // Dropping a key from this list is only HALF the job. This loop-driven list
+    // is deliberately NOT what reclaims the bytes from devices that already
+    // installed the file — see the "core files dropped from the manifest" block
+    // in checkForUpdates, which walks localManifest instead. Removing a key
+    // here without that block would strand the blob in IndexedDB forever.
+    //
+    // NOTE: the tiered-readiness gate (coreReady / isCoreReady) has always
+    // waited only for meta+extras, so it is unaffected by this.
+    var CORE_KEYS = ['meta', 'extras'];
     // Per-item attempts and the pause before each retry. Mobile networks fail
     // in bursts (tunnel, lift, cell handover) — an immediate second try tends
     // to fail for the same reason, so back off before giving the item up.
@@ -775,6 +788,37 @@ PPP.downloader = (function () {
                         work.push({ type: 'core', coreKey: k, name: re.path, entry: re });
                     }
                 });
+                // Core files DROPPED from the manifest → delete them from this
+                // device. The loop above cannot do this and never could: it
+                // walks CORE_KEYS and reads only `remote.core[k]`, so a key that
+                // VANISHES from the remote manifest leaves `re === undefined`
+                // and nothing happens at all. Once the key also leaves
+                // CORE_KEYS (as `sentences` did) the loop does not even look at
+                // it. Packs and shards have had a removal path since they were
+                // written (`removed` / `removedShards` below); core had none,
+                // so an 18.9 MB blob no server publishes any more would sit in
+                // IndexedDB on every already-installed device forever.
+                //
+                // So iterate the LOCAL core keys, not CORE_KEYS: localManifest
+                // is the authority on what is ON this device, the remote
+                // manifest on what SHOULD be. Keys still published remotely are
+                // handled by the loop above and never reach here (remoteCore[k]
+                // is truthy for them) — including core keys this build has
+                // never heard of, which are left strictly alone.
+                //
+                // The `CORE_KEYS.indexOf(k) === -1` guard: a key this build
+                // still declares mandatory is NEVER deleted, however the remote
+                // manifest looks. fetchManifest does no schema validation, so a
+                // truncated-but-HTTP-200 manifest.json would otherwise wipe the
+                // meta DB off every device at once. A key can only be reclaimed
+                // when BOTH sides agree it is gone.
+                var removedCore = [];
+                var remoteCore = remote.core || {};
+                Object.keys(local.core || {}).forEach(function (k) {
+                    if (!remoteCore[k] && CORE_KEYS.indexOf(k) === -1) removedCore.push(k);
+                });
+                changedItems += removedCore.length;
+
                 var remoteIds = {};
                 (remote.packs || []).forEach(function (p) { if (_packSelected(p, sel)) remoteIds[p.id] = true; });
                 var localById = {};
@@ -869,10 +913,27 @@ PPP.downloader = (function () {
                         return _enqueueApply(function () { return store.applyPack('shard:' + s.id, []); });
                     }, 1);
                 }).then(function () {
+                    // Delete core files dropped from the manifest. A core file
+                    // is stored as a SINGLE record whose byPack index equals its
+                    // own 'core:<key>' key (see _processItem), exactly like a
+                    // shard — so the same applyPack(packId, []) primitive that
+                    // removes packs and shards removes precisely this one record
+                    // and nothing else. No new primitive is needed.
+                    return _runPool(removedCore, function (k) {
+                        return _enqueueApply(function () { return store.applyPack('core:' + k, []); });
+                    }, 1);
+                }).then(function () {
                     // Fence: everything applied and verified — only now
                     // advance the local manifest. Keep the stored copy honest
                     // about shards (empty when opted out) so the next delta
                     // check matches what is actually in IDB.
+                    // This write is ALSO the second half of the core removal:
+                    // localManifest becomes the remote manifest, which no longer
+                    // carries the dropped key, so `local.core` stops claiming a
+                    // file that is no longer in IndexedDB. Nothing extra to do —
+                    // but it does mean the delete above must happen BEFORE this
+                    // line, or a crash in between would lose the only record of
+                    // what still needs deleting.
                     return store.setState('localManifest', _manifestForStore(remote, includeShards));
                 }).then(function () {
                     // Lowered only AFTER localManifest advanced: that write IS

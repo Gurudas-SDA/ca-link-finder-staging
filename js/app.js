@@ -2039,13 +2039,12 @@ PPP.app = (function () {
                 if (ui.clearExtrasCache) ui.clearExtrasCache();
                 startExtrasLoad();
             }
-            if (res.coreChanged && res.coreChanged.sentences) {
-                // Swap the sentence DB this session has open for the fresh IDB
-                // copy. No view refresh: sentence results are queried live, so
-                // the next search already sees the new bytes.
-                db.reloadSentencesFromStore()
-                    .catch(function (e) { console.warn('Sentences refresh failed:', e); });
-            }
+            // REMOVED 2026-07-27: the `coreChanged.sentences` branch that called
+            // db.reloadSentencesFromStore(). `sentences` left CORE_KEYS
+            // (downloader.js) because nothing ever opened that whole-file DB, so
+            // the flag can no longer be set and the reload would have nothing to
+            // reload. Sentence freshness rides entirely on the shards — see the
+            // resetSentenceShards() call immediately below, which is the live path.
             // Shard set / shard versions can change in the same delta. The
             // chunked search memoizes them from manifest.json at first use, so
             // drop that cache whenever anything was applied — cost is one

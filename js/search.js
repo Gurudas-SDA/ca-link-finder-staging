@@ -460,7 +460,11 @@ PPP.search = (function () {
 
     /**
      * Build SQL query for transcript sentence search (Advanced / "In Transcripts" mode).
-     * Searches the self-contained sentences DB (ppp_sentences_en.db).
+     * Runs against the sentence SHARDS via db.searchSentencesChunked(). (Until
+     * 2026-07-27 this comment named the whole-file ppp_sentences_en.db; that DB
+     * was shipped to every install and opened by nobody, and is gone now. Each
+     * shard carries the same self-contained `sentences` + `lectures` tables, so
+     * the SQL below is unchanged.)
      *
      * Same matching rules as the lecture-name search:
      *   - `;`  = AND groups, `//` = OR alternatives (parsed.orGroups).
