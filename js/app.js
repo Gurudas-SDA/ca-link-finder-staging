@@ -2010,8 +2010,358 @@ PPP.app = (function () {
      * Background delta check (installed state, online). Applies changed
      * packs/core files to IDB, then refreshes the running app in place.
      */
+    /* ---- Resuming an interrupted delta without a page reload ---------------
+     * checkForUpdates() is resumable as of 2026-07-28 (downloader.js): whatever
+     * a killed migration already fetched stays on disk and the next attempt
+     * pulls only the rest. But "the next attempt" used to mean the next PAGE
+     * LOAD — the only caller is the boot path — so a migration that died when
+     * the connection dropped sat there until the user happened to reopen the
+     * app, which on the measured device meant the whole 236 MB again later.
+     *
+     * So a delta that ends in an error re-arms itself for the next 'online'
+     * event. Bounded three ways, because an unbounded retry over a metered
+     * connection is a worse bug than the one it fixes:
+     *   - one attempt in flight at a time (an 'online' burst cannot start two
+     *     download pools; that was P21's lesson on the install path),
+     *   - the listener is one-shot and only re-armed by another failure,
+     *   - and a hard cap on automatic attempts per session.
+     * A successful (or simply uneventful) check disarms everything.
+     */
+    var _deltaCheckInFlight = false;
+    var _updateGateInFlight = false;   // the consent gate below, one at a time
+    var _deltaRetryHandler = null;
+    var _deltaAutoRetries = 0;
+    var DELTA_MAX_AUTO_RETRIES = 5;
+
+    function _disarmDeltaRetry() {
+        if (!_deltaRetryHandler) return;
+        window.removeEventListener('online', _deltaRetryHandler);
+        _deltaRetryHandler = null;
+    }
+
+    function _armDeltaRetry() {
+        if (_deltaRetryHandler) return;
+        if (_deltaAutoRetries >= DELTA_MAX_AUTO_RETRIES) return;
+        _deltaRetryHandler = function () {
+            _disarmDeltaRetry();
+            _deltaAutoRetries++;
+            backgroundUpdateCheck();
+        };
+        window.addEventListener('online', _deltaRetryHandler);
+    }
+
+    /* ---- The library does not update behind the user's back (2026-07-28) ---
+     * Measured on a real S23 Ultra: an installed device moving to the next
+     * corpus generation downloaded 240 MB with no warning, no progress and no
+     * question. Rājan: "to pārvērst jautājumā — bibliotēka atjaunojas, 240 MB —
+     * tagad vai Wi-Fi tīklā".
+     *
+     * So backgroundUpdateCheck() is now a GATE in front of the delta, not the
+     * delta itself:
+     *   1. getPendingUpdate() — a pure read (manifest + IDB), no /data/ bytes.
+     *   2. Nothing to download (no library, deletions only, plan unavailable)
+     *      -> behave exactly as before. A free update is not worth a question.
+     *   3. Bytes to download -> ask, ONCE per generation, and keep serving the
+     *      previous generation untouched until the answer comes. Nothing is
+     *      deleted and nothing is fetched while the question is open: the delta
+     *      never starts, so the atomic generation switch in downloader.js is
+     *      not entered at all.
+     *
+     * FIRST INSTALL IS NOT AFFECTED. This gate sits only on the path taken by a
+     * device that already holds a `localManifest` (getPendingUpdate returns
+     * null otherwise). A first install is agreed to at install time and its
+     * download stays mandatory — Rājan 2026-07-28: only languages are opt-out.
+     */
+    var UPDATE_CONSENT_KEY = 'updateConsent';
+    // How long a "later" (with no way to detect Wi-Fi) stays silent before the
+    // question is asked again. A deferral must not become a permanent one — the
+    // device would sit on an old corpus forever — but re-asking on every boot
+    // is exactly the nagging the deferral exists to prevent.
+    var UPDATE_DEFER_RECHECK_MS = 24 * 60 * 60 * 1000;
+    // How many times a consented generation may fail before the app stops
+    // retrying it by itself and puts the choice back to the user (Codex
+    // MEDIUM-2). Three covers a bad connection; a fourth means the download
+    // is not going to work and silence would be the wrong answer.
+    var UPDATE_MAX_CONSENTED_ATTEMPTS = 3;
+
+    /**
+     * What kind of connection is this, as far as the browser will actually say?
+     *   'wifi'    — unmetered by declaration (wifi / ethernet).
+     *   'metered' — cellular, or the user asked to save data.
+     *   'unknown' — the browser does not say, and we do not guess.
+     *
+     * WHAT HAPPENS WHEN THE API IS NOT THERE. navigator.connection.type is
+     * Android Chrome (and derivatives); Safari/iOS and desktop Firefox have no
+     * NetworkInformation at all, and several browsers expose `effectiveType`
+     * (a SPEED estimate: '4g', '3g'…) without `type`. effectiveType is
+     * deliberately NOT read here: a fast cellular link reports '4g' and a slow
+     * hotel Wi-Fi reports '2g', so treating it as a medium would tell the user
+     * "we will wait for Wi-Fi" and then spend their mobile data — the precise
+     * lie this whole change exists to remove. Unknown stays unknown, and the
+     * UI says "later" instead of "on Wi-Fi" (see _renderUpdateConsentPrompt).
+     */
+    function _netClass() {
+        var c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+        if (!c) return 'unknown';
+        if (c.saveData === true) return 'metered';   // explicit user preference
+        var t = c.type;
+        if (typeof t !== 'string' || !t) return 'unknown';
+        if (t === 'wifi' || t === 'ethernet') return 'wifi';
+        if (t === 'cellular' || t === 'wimax') return 'metered';
+        return 'unknown';   // 'none', 'bluetooth', 'other', 'unknown'
+    }
+
+    function _readUpdateConsent() {
+        var store = PPP.offlineStore;
+        if (!store || !store.getState) return Promise.resolve(null);
+        return store.getState(UPDATE_CONSENT_KEY).catch(function () { return null; });
+    }
+
+    function _writeUpdateConsent(rec) {
+        var store = PPP.offlineStore;
+        if (!store || !store.setState) return Promise.resolve();
+        return store.setState(UPDATE_CONSENT_KEY, rec).catch(function () {});
+    }
+
+    // The plan a deferral is waiting on, plus its listeners. Kept in memory
+    // only: the DURABLE half is the consent record in IndexedDB, which is what
+    // survives a reload and stops the question coming back.
+    var _deferredUpdate = null;
+    var _deferredListener = null;
+
+    function _disarmDeferredUpdate() {
+        if (!_deferredListener) return;
+        window.removeEventListener('online', _deferredListener);
+        var c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+        if (c && c.removeEventListener) c.removeEventListener('change', _deferredListener);
+        _deferredListener = null;
+        _deferredUpdate = null;
+    }
+
+    /**
+     * Hold a deferred update and start it BY ITSELF the moment the connection
+     * the user asked for appears. Listens to the two events that can change the
+     * answer: NetworkInformation 'change' (the medium changed) and window
+     * 'online' (the device reconnected — the medium may be different now).
+     * When the class cannot be observed at all, nothing is armed: the promise
+     * would be one we cannot keep. That deferral is time-based instead, and is
+     * re-offered by the gate on a later boot (UPDATE_DEFER_RECHECK_MS).
+     */
+    function _armDeferredUpdate(plan) {
+        // A newer generation supersedes whatever was being waited for: keeping
+        // the old listener would start a download for a plan the server has
+        // already moved past.
+        if (_deferredUpdate && _deferredUpdate.generation !== plan.generation) _disarmDeferredUpdate();
+        if (_deferredListener) return;
+        _deferredUpdate = plan;
+        _deferredListener = function () {
+            if (_netClass() !== 'wifi') return;
+            var p = _deferredUpdate;
+            _disarmDeferredUpdate();
+            // Record the promotion to a "yes" BEFORE starting, so an
+            // interrupted auto-start resumes instead of asking again.
+            _writeUpdateConsent({ gen: p.generation, decision: 'now', ts: Date.now() })
+                .then(function () { _startConsentedUpdate(p); });
+        };
+        window.addEventListener('online', _deferredListener);
+        var c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+        if (c && c.addEventListener) c.addEventListener('change', _deferredListener);
+    }
+
+    /**
+     * The question itself, in the same non-blocking box the optional install
+     * uses (#offlineProgress). NOT a modal on purpose: requirement 3 is that
+     * the app keeps working on the previous, whole generation while the
+     * question is open — a modal would make "keep using what you have" a lie.
+     */
+    function _renderUpdateConsentPrompt(plan) {
+        var box = document.getElementById('offlineProgress');
+        if (!box) return;
+        var mb = Math.round(plan.bytes / 1048576);
+        var metered = _netClass() === 'metered';
+        // Asking again replaces any earlier deferral — the question on screen
+        // is now the only live one.
+        _disarmDeferredUpdate();
+        box.style.display = 'flex';
+        box.innerHTML = '';
+
+        var msg = document.createElement('span');
+        msg.id = 'libraryUpdatePromptMsg';
+        msg.textContent = i18n.t('libraryUpdateAsk').replace('{size}', String(mb));
+        box.appendChild(msg);
+
+        var now = document.createElement('button');
+        now.type = 'button';
+        now.id = 'libraryUpdateNowBtn';
+        now.className = 'search-button';
+        now.textContent = i18n.t('libraryUpdateNowBtn');
+        now.onclick = function () {
+            _writeUpdateConsent({ gen: plan.generation, decision: 'now', ts: Date.now() })
+                .then(function () { _startConsentedUpdate(plan); });
+        };
+        box.appendChild(now);
+
+        var later = document.createElement('button');
+        later.type = 'button';
+        later.id = 'libraryUpdateLaterBtn';
+        later.className = 'search-button';
+        // Only promise Wi-Fi when the browser is telling us the medium AND it
+        // is currently a metered one. Otherwise the honest word is "later".
+        later.textContent = i18n.t(metered ? 'libraryUpdateWifiBtn' : 'libraryUpdateLaterBtn');
+        later.onclick = function () {
+            box.innerHTML = '';
+            box.style.display = 'none';
+            _writeUpdateConsent({
+                gen: plan.generation,
+                decision: 'later',
+                ts: Date.now(),
+                mode: metered ? 'wifi' : 'time'
+            }).then(function () {
+                if (metered) _armDeferredUpdate(plan);
+            });
+        };
+        box.appendChild(later);
+    }
+
+    /**
+     * Run the delta the user agreed to, with the progress they were promised,
+     * in the same box the question was asked in. Non-blocking throughout — the
+     * app stays usable, exactly as it is during a background install.
+     */
+    function _startConsentedUpdate(plan) {
+        var box = document.getElementById('offlineProgress');
+        var totalMB = Math.round(plan.bytes / 1048576);
+        if (box) {
+            box.style.display = 'flex';
+            box.innerHTML = '';
+            var msg = document.createElement('span');
+            msg.id = 'libraryUpdateProgressMsg';
+            msg.textContent = i18n.t('libraryUpdating')
+                .replace('{loaded}', '0').replace('{total}', String(totalMB)).replace('{pct}', '0');
+            box.appendChild(msg);
+        }
+        _runDeltaUpdate(function (p) {
+            var m = document.getElementById('libraryUpdateProgressMsg');
+            if (!m) return;
+            // The delta's own total is authoritative: a resumed update has less
+            // left to fetch than the plan originally quoted, and a bar that
+            // stops at 60 % because it is measured against the old number is
+            // its own bug report.
+            var total = p.totalBytes || plan.bytes;
+            m.textContent = i18n.t('libraryUpdating')
+                .replace('{loaded}', String(Math.round(p.loadedBytes / 1048576)))
+                .replace('{total}', String(Math.round(total / 1048576)))
+                .replace('{pct}', String(total ? Math.round(p.loadedBytes / total * 100) : 0));
+        }, function (res) {
+            var b = document.getElementById('offlineProgress');
+            if (b) { b.innerHTML = ''; b.style.display = 'none'; }
+            if (!PPP.offlineStore || !PPP.offlineStore.deleteState) return;
+            // `busy` is another tab holding the delta claim (Codex MEDIUM-1):
+            // nothing happened here, so nothing is counted and nothing is
+            // retired — the decision stands and the next check picks it up.
+            if (res && res.busy) return;
+            // A finished generation switch retires its decision: the record is
+            // keyed to a generation that is now the installed one, and leaving
+            // it behind would only be answering a question nobody is asking.
+            if (!res || !res.error) {
+                PPP.offlineStore.deleteState(UPDATE_CONSENT_KEY).catch(function () {});
+                return;
+            }
+            // A FAILED delta keeps the decision so the automatic retry resumes
+            // the download the user already said yes to — but only so many
+            // times (Codex MEDIUM-2). A generation that fails permanently
+            // (server-side corruption, a device out of room) otherwise retried
+            // on every single load, forever, silently spending data on a
+            // download that cannot finish and never asking again. Past the cap
+            // the decision is dropped, which means the next check asks — the
+            // user gets the choice back instead of an invisible loop.
+            _readUpdateConsent().then(function (c) {
+                if (!c || c.gen !== plan.generation || c.decision !== 'now') return;
+                var attempts = (c.attempts || 0) + 1;
+                if (attempts >= UPDATE_MAX_CONSENTED_ATTEMPTS) {
+                    console.warn('Offline update failed ' + attempts +
+                        ' times for this generation — asking again instead of retrying');
+                    return PPP.offlineStore.deleteState(UPDATE_CONSENT_KEY).catch(function () {});
+                }
+                c.attempts = attempts;
+                return _writeUpdateConsent(c);
+            });
+        });
+    }
+
+    /**
+     * The gate. See the block comment above.
+     */
     function backgroundUpdateCheck() {
-        PPP.downloader.checkForUpdates().then(function (res) {
+        if (_deltaCheckInFlight || _updateGateInFlight) return;
+        // Another TAB is already downloading a delta (Codex MEDIUM-1). Do not
+        // even ask: the question would be about a download already under way,
+        // and two "yes"es fetch the same bytes twice. checkForUpdates() refuses
+        // independently of this — the check here only keeps a pointless
+        // question off the screen.
+        if (PPP.downloader.isDeltaRunningElsewhere && PPP.downloader.isDeltaRunningElsewhere()) return;
+        if (!PPP.downloader.getPendingUpdate) { _runDeltaUpdate(); return; }
+        _updateGateInFlight = true;
+        PPP.downloader.getPendingUpdate().then(function (plan) {
+            _updateGateInFlight = false;
+            // The plan could not be made (manifest fetch failed, IDB unreadable).
+            // Fail CLOSED: do not fall through to an unmetered download on a
+            // number we do not have. The retry path re-runs the whole gate.
+            if (plan && plan.error) { _armDeltaRetry(); return; }
+            // Nothing to decide: not installed, or a generation that only
+            // removes things. Same behaviour as before this gate existed.
+            if (!plan || !plan.bytes) { _runDeltaUpdate(); return; }
+            // A download already agreed to and part-done — asking again in the
+            // middle would be worse than not asking at all.
+            if (plan.resumed) { _startConsentedUpdate(plan); return; }
+            _readUpdateConsent().then(function (c) {
+                var sameGen = c && c.gen === plan.generation;
+                if (sameGen && c.decision === 'now') { _startConsentedUpdate(plan); return; }
+                if (sameGen && c.decision === 'later') {
+                    if (c.mode === 'wifi') {
+                        // Conditional deferral: start now if the condition is
+                        // already true on this boot, otherwise wait for it.
+                        if (_netClass() === 'wifi') {
+                            _writeUpdateConsent({ gen: plan.generation, decision: 'now', ts: Date.now() })
+                                .then(function () { _startConsentedUpdate(plan); });
+                        } else {
+                            _armDeferredUpdate(plan);
+                        }
+                        return;
+                    }
+                    // Time-based deferral (Wi-Fi undetectable): stay silent
+                    // until the recheck window has passed, then ask again.
+                    if (Date.now() - (c.ts || 0) < UPDATE_DEFER_RECHECK_MS) return;
+                }
+                _renderUpdateConsentPrompt(plan);
+            });
+        }, function (err) {
+            _updateGateInFlight = false;
+            console.warn('Update gate failed:', err);
+            _armDeltaRetry();
+        });
+    }
+
+    /**
+     * The delta itself — everything backgroundUpdateCheck() used to do inline,
+     * unchanged except for the optional progress/finish callbacks.
+     */
+    function _runDeltaUpdate(onProgress, onSettled) {
+        if (_deltaCheckInFlight) {
+            // Reported as a failure on purpose: the caller must take its
+            // progress box down, and the consent record must NOT be retired —
+            // this update has not happened yet.
+            if (onSettled) onSettled({ error: new Error('a delta is already running') });
+            return;
+        }
+        _deltaCheckInFlight = true;
+        PPP.downloader.checkForUpdates(onProgress).then(function (res) {
+            if (onSettled) onSettled(res);
+            _deltaCheckInFlight = false;
+            // checkForUpdates never rejects — a failed delta comes back as
+            // { changedItems: 0, error }. That is the resume trigger.
+            if (res && res.error) { _armDeltaRetry(); return; }
+            _disarmDeltaRetry();
             if (!res || !res.changedItems) return;
             // A delta rewrote part of the library, which invalidates db.js's
             // memoized "is it installed?" answer along with the shard list.
@@ -2048,6 +2398,14 @@ PPP.app = (function () {
             // drop that cache whenever anything was applied — cost is one
             // small manifest re-fetch on the next sentence search.
             if (db.resetSentenceShards) db.resetSentenceShards();
+        }, function (err) {
+            // Defensive: checkForUpdates() is written never to reject, but a
+            // throw here must not leave the in-flight latch stuck true and the
+            // delta path dead for the rest of the session.
+            if (onSettled) onSettled({ error: err });
+            _deltaCheckInFlight = false;
+            console.warn('Offline update check threw:', err);
+            _armDeltaRetry();
         });
     }
 

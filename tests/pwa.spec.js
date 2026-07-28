@@ -662,6 +662,15 @@ test.describe('PWA offline library', () => {
       await page2.goto('./');
       await waitForDataReady(page2, 30000);
 
+      // The delta is now offered, not taken (2026-07-28): an installed device
+      // is asked before a new generation spends its data. P4 remains the
+      // end-to-end proof of the DELTA, so it answers the question and then
+      // measures exactly what it always measured. That the question comes
+      // first, and that nothing is fetched until it is answered, is U1's
+      // subject, not this test's.
+      await page2.waitForSelector('#libraryUpdateNowBtn', { timeout: 30000 });
+      await page2.click('#libraryUpdateNowBtn');
+
       // updatedItems note appears (extras = 1 changed item; auto-hides in 6 s).
       await page2.waitForSelector('#updateNoteInfo', { state: 'visible', timeout: 30000 });
       await expect(page2.locator('#updateNoteInfo')).toHaveText('Updated: 1 items');
@@ -1720,11 +1729,20 @@ test.describe('core.sentences removed from the offline base', () => {
       expect(manifestReads).toBe(afterFirst);
 
       // An applied delta invalidates it — the next search re-reads the manifest.
+      //
+      // The counter is re-baselined AFTER the update path has settled rather
+      // than measured across it (2026-07-28): the update path is now fronted
+      // by the consent gate, whose plan phase reads manifest.json itself, so
+      // "exactly one more read than before the update" measured how the GATE
+      // is built rather than whether the memo was dropped. Baselining after
+      // asserts the same thing about the same subject — the NEXT search re-reads
+      // — and is indifferent to how many reads the update itself performs.
       await stubUpdateResult(page, { meta: false, extras: false, sentences: false });
       await page.evaluate(() => PPP.app._backgroundUpdateCheckForTest());
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(1500);
+      const afterUpdate = manifestReads;
       expect(await probe()).toContain('No sentence shards');
-      expect(manifestReads).toBe(afterFirst + 1);
+      expect(manifestReads).toBe(afterUpdate + 1);
     });
   });
 
@@ -2755,6 +2773,22 @@ test.describe('While a delta rewrites the shards the user is told "updating", no
     await page.evaluate(() => { window.__delta = PPP.downloader.checkForUpdates(); });
     await page.waitForFunction(() => PPP.downloader.isUpdatingShards() === true, { timeout: 30000 });
 
+    // Quiesce before taking the baseline (2026-07-28). This test's subject is
+    // what the SEARCH and the REPAIR do, but the app's OWN boot-time update
+    // path can still have a shard request in flight once the stubs above make
+    // it see a changed generation — and a request already on its way, counted
+    // against the search, is a flake rather than a finding. That window widened
+    // when the boot path gained the consent gate (one more manifest round-trip
+    // ahead of its delta), which is what turned a latent race into a visible
+    // one. Waiting for the request stream to go quiet fixes the measurement
+    // without softening it: the assertion below still demands EXACTLY zero new
+    // requests from this point on.
+    let seen = shardReqs.length;
+    const quietBy = Date.now() + 20000;
+    for (let quiet = 0; quiet < 4 && Date.now() < quietBy; quiet++) {
+      await page.waitForTimeout(500);
+      if (shardReqs.length !== seen) { seen = shardReqs.length; quiet = -1; }
+    }
     const reqsBeforeSearch = shardReqs.length;
 
     // The real user path: quotes view -> type a word -> Enter.
@@ -4361,5 +4395,1348 @@ test.describe('addShards() skips shards already correct in IndexedDB (2026-07-28
     const shardBRec = await page.evaluate(() =>
       PPP.offlineStore.getEncoded('shard:test_race_b').then(r => r && r.buf ? r.buf.byteLength : -1));
     expect(shardBRec).toBe(shardB.length);
+  });
+});
+
+// ===========================================================================
+// A generation arrives whole, or not at all (real-device migration, 2026-07-28)
+// ===========================================================================
+// Measured on an S23 Ultra: the gzip -> Brotli corpus migration is correct when
+// it runs to completion (410 MB -> 245 MB, search honestly blocked while it
+// runs, healthy end state). Killed at t+7 s / 69.85 MB it was not. The delta
+// wrote each new core file straight to its live key and advanced
+// `localManifest` only at the very end, so the device was left holding the NEW
+// core beside the OLD shards under an OLD manifest. Nothing errored. The app
+// opened, searched, and rendered 4397 rows where the clean previous generation
+// rendered 4405 — a silent wrong answer, the worst failure this app has. And
+// nothing resumed: the next attempt started over at 236.06 MB, throwing away
+// the 69.85 MB already on the device.
+//
+// G1 is the interruption. G2 is the resume. G3 is the regression check that a
+// migration that runs to the end still lands whole.
+test.describe('A generation arrives whole, or not at all (2026-07-28)', () => {
+  test.use({ serviceWorkers: 'block' });
+
+  // The term whose lectures the "new generation" meta DB drops. Every row
+  // holding it ANYWHERE is deleted from the fixture, so the same search that
+  // returns rows against the old meta returns none against the new one — a
+  // rendered-row difference that cannot be argued with, which is what makes
+  // "search returns exactly as many rows as before" a measurement rather than
+  // a boolean.
+  const DROPPED_TERM = 'tattva';
+
+  let _reducedMeta = null;
+  /**
+   * The "next generation" core.meta: the REAL meta DB with every lecture
+   * mentioning DROPPED_TERM removed, VACUUMed and re-encoded as gzip. Built
+   * once per worker (~34 MB decompress + rewrite), because what the fixture
+   * has to be is a genuinely valid, genuinely DIFFERENT meta DB — a random
+   * buffer would never survive the app opening it, and an identical one would
+   * make the row measurement vacuous.
+   */
+  function reducedMeta() {
+    if (_reducedMeta) return _reducedMeta;
+    const os = require('os');
+    const { DatabaseSync } = require('node:sqlite');
+    const raw = decodeArtefact(readArtefact(realManifest.core.meta.path), realManifest.core.meta.enc);
+    const tmp = path.join(os.tmpdir(), 'ca-meta-reduced-' + process.pid + '.db');
+    fs.writeFileSync(tmp, raw);
+    const db = new DatabaseSync(tmp);
+    const doomed = db.prepare('SELECT * FROM lectures').all().filter(
+      r => Object.values(r).some(v => typeof v === 'string' && v.toLowerCase().includes(DROPPED_TERM))
+    ).map(r => String(r.nr));
+    const del = db.prepare('DELETE FROM lectures WHERE nr = ?');
+    doomed.forEach(nr => del.run(nr));
+    db.exec('VACUUM');
+    db.close();
+    const plain = fs.readFileSync(tmp);
+    fs.unlinkSync(tmp);
+    const bytes = zlib.gzipSync(plain);
+    _reducedMeta = {
+      dropped: doomed.length,
+      bytes,
+      entry: {
+        path: 'data/ppp_meta.newgen.gz',
+        // No `enc` — absence means gzip (offline-store.js), and it also makes
+        // the stored record trivially distinguishable from the real Brotli one.
+        hash: sha256Hex(bytes).slice(0, 10),
+        sha256: sha256Hex(bytes),
+        size: bytes.length,
+        raw: plain.length,
+      },
+    };
+    return _reducedMeta;
+  }
+
+  function shardEntry(id, relPath, bytes, enc) {
+    return {
+      id, path: relPath, enc: enc || 'gzip',
+      sha256: sha256Hex(bytes), size: bytes.length, raw: bytes.length,
+    };
+  }
+
+  /** Put the device in the PREVIOUS generation: the real core files in IDB
+   *  (so the app genuinely opens and searches), the given shards, and a
+   *  `localManifest` that records exactly that. */
+  function seedGeneration(page, localMf, shards) {
+    return page.evaluate(async (args) => {
+      const put = async (key, buf, enc, raw) =>
+        PPP.offlineStore.putFile({ key, packId: key, gz: new Blob([buf]), raw, enc });
+      const fetchBytes = async (p) => (await fetch(p)).arrayBuffer();
+      await put('core:meta', await fetchBytes(args.meta.path), args.meta.enc, args.meta.raw);
+      await put('core:extras', await fetchBytes(args.extras.path), args.extras.enc, args.extras.raw);
+      for (const s of args.shards) {
+        const bin = atob(s.b64);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        await put('shard:' + s.id, arr.buffer, s.enc, arr.length);
+      }
+      for (const k of (args.extraCore || [])) {
+        await put('core:' + k, new Uint8Array([1, 2, 3]).buffer, 'gzip', 3);
+      }
+      await PPP.offlineStore.setState('localManifest', args.localMf);
+      await PPP.offlineStore.setState('langs', []);
+      await PPP.offlineStore.setState('shards', true);
+    }, {
+      localMf,
+      meta: realManifest.core.meta,
+      extras: realManifest.core.extras,
+      shards: shards.map(s => ({ id: s.id, enc: s.enc, b64: s.bytes.toString('base64') })),
+      extraCore: localMf.core.sentences ? ['sentences'] : [],
+    });
+  }
+
+  /** What IndexedDB actually holds for the keys that decide the generation. */
+  function readGenerationState(page, shardIds) {
+    return page.evaluate(async (ids) => {
+      const info = async (k) => {
+        const i = await PPP.offlineStore.getRecordInfo(k);
+        return i ? { size: i.size, enc: i.enc } : null;
+      };
+      const shards = {};
+      for (const id of ids) shards[id] = await info('shard:' + id);
+      const lm = await PPP.offlineStore.getState('localManifest');
+      return {
+        meta: await info('core:meta'),
+        extras: await info('core:extras'),
+        stagedMeta: await info('stage:core:meta'),
+        stagedExtras: await info('stage:core:extras'),
+        sentences: await info('core:sentences'),
+        shards,
+        lmMetaHash: lm && lm.core && lm.core.meta ? lm.core.meta.hash : null,
+        lmShards: (lm && lm.sentenceShards || []).map(s => s.id + ':' + s.sha256).sort(),
+        lmCoreKeys: Object.keys((lm && lm.core) || {}).sort(),
+        deltaInstall: await PPP.offlineStore.getState('deltaInstall'),
+        pendingDeletes: await PPP.offlineStore.getState('pendingDeletes'),
+      };
+    }, shardIds);
+  }
+
+  /** Rendered result rows for a metadata (Key words) search — the app's own
+   *  path, not a stand-in query. The "no results" placeholder row is not a
+   *  result and is not counted. */
+  async function renderedRows(page, term) {
+    await page.fill('#searchTerm', term);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(1500);
+    return page.evaluate(() => {
+      let n = 0;
+      document.querySelectorAll('#resultsTable tbody tr').forEach(tr => {
+        if (!tr.querySelector('.empty-result-message')) n++;
+      });
+      return n;
+    });
+  }
+
+  test('G1. A migration killed after the core files leaves the WHOLE previous generation — same manifest, same core, same rendered rows', async ({ page }) => {
+    test.setTimeout(240000);
+
+    const newMeta = reducedMeta();
+    expect(newMeta.dropped, 'the fixture removed no lectures, so the row measurement below would be vacuous')
+      .toBeGreaterThan(0);
+
+    const oldShardBytes = Buffer.from('gen-old-shard-' + 'o'.repeat(600));
+    const newShardBytes = Buffer.from('gen-new-shard-' + 'n'.repeat(900));
+    const oldShard = shardEntry('test_gen_a', 'data/shards/test_gen_a.old.gz', oldShardBytes, 'gzip');
+    const newShard = shardEntry('test_gen_a', 'data/shards/test_gen_a.new.br', newShardBytes, 'br');
+
+    const localMf = {
+      core: { meta: realManifest.core.meta, extras: realManifest.core.extras },
+      packs: [], sentenceShards: [oldShard],
+    };
+    const remoteMf = {
+      core: { meta: newMeta.entry, extras: realManifest.core.extras },
+      packs: [], sentenceShards: [newShard],
+    };
+
+    // One handler, switchable: the boot before the measurement must be a
+    // no-op, or the app's own boot-time check would race the delta this test
+    // drives deliberately.
+    let served = localMf;
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(served),
+    }));
+    await serveBytes(page, newMeta.entry.path, newMeta.bytes);
+    // The kill: the new generation's shard never arrives.
+    await page.route('**/data/shards/test_gen_a.new.br*', route => route.abort('failed'));
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported(),
+      { timeout: 60000 });
+    await seedGeneration(page, localMf, [{ id: oldShard.id, enc: 'gzip', bytes: oldShardBytes }]);
+
+    // Boot as an installed device and measure the BEFORE state through the UI.
+    await page.reload();
+    await waitForDataReady(page);
+    const rowsBefore = await renderedRows(page, DROPPED_TERM);
+    expect(rowsBefore, 'the baseline search found nothing, so nothing below is measurable')
+      .toBeGreaterThan(0);
+
+    // Now the migration, and the kill.
+    served = remoteMf;
+    const res = await page.evaluate(() => PPP.downloader.checkForUpdates());
+    expect(res.error, 'the delta was supposed to be interrupted by the dead shard').toBeTruthy();
+    expect(res.changedItems).toBe(0);
+
+    const after = await readGenerationState(page, [oldShard.id]);
+
+    // NEGATIVE CHECK RUN (js/downloader.js: the core work item's
+    // `storeKey: staged` removed, so a delta writes core files straight to
+    // their live keys — the pre-fix behaviour). The new core file lands on the
+    // live key the moment it is verified:
+    //   Error: the interrupted migration replaced the live core file
+    //     expect(received).toBe(expected)
+    //     Expected: 3978715
+    //     Received: 2976051
+    expect(after.meta.size, 'the interrupted migration replaced the live core file')
+      .toBe(realManifest.core.meta.size);
+    expect(after.meta.enc).toBe('br');
+    expect(after.extras.size).toBe(realManifest.core.extras.size);
+
+    // Fixture integrity, asserted AFTER the assertion above so it cannot mask
+    // it: the core file really was downloaded during the interrupted delta —
+    // it simply went somewhere no reader looks. Without this, "the live core
+    // is unchanged" would also pass on a run where nothing was fetched at all.
+    expect(after.stagedMeta, 'the new core file was never fetched; the interruption was not exercised').toBeTruthy();
+    expect(after.stagedMeta.size).toBe(newMeta.entry.size);
+
+    // All three descriptions of "which generation is this" still agree.
+    expect(after.lmMetaHash, 'localManifest moved without the generation').toBe(realManifest.core.meta.hash);
+    expect(after.lmShards).toEqual([oldShard.id + ':' + oldShard.sha256]);
+    expect(after.shards[oldShard.id].size, 'the old shard was replaced under an old manifest')
+      .toBe(oldShardBytes.length);
+
+    // And the user-visible half: a reload (the app opens core:meta from IDB)
+    // must render exactly the rows it rendered before the failed migration.
+    // The manifest is put back to the old generation so this boot's own update
+    // check is a no-op and the measurement is purely "what did the interrupted
+    // delta leave behind".
+    //
+    // NEGATIVE CHECK RUN (same revert as above): the live core:meta is now the
+    // reduced DB, so the same query silently renders fewer rows —
+    //   Error: the interrupted migration silently changed the answer
+    //     Expected: 10
+    //     Received: 0
+    // (10 rendered rows before the migration, 0 after — the same query, a
+    //  different answer, and not one word to the user.)
+    served = localMf;
+    await page.reload();
+    await waitForDataReady(page);
+    const rowsAfter = await renderedRows(page, DROPPED_TERM);
+    expect(rowsAfter, 'the interrupted migration silently changed the answer').toBe(rowsBefore);
+  });
+
+  test('G2. The next attempt downloads only what is missing, not the whole generation again', async ({ page }) => {
+    test.setTimeout(240000);
+
+    const newMeta = reducedMeta();
+    const oldA = Buffer.from('gen2-old-a-' + 'o'.repeat(400));
+    const oldB = Buffer.from('gen2-old-b-' + 'p'.repeat(500));
+    const newA = Buffer.from('gen2-new-a-' + 'a'.repeat(700));
+    const newB = Buffer.from('gen2-new-b-' + 'b'.repeat(800));
+    const oldAE = shardEntry('test_gen2_a', 'data/shards/test_gen2_a.old.gz', oldA);
+    const oldBE = shardEntry('test_gen2_b', 'data/shards/test_gen2_b.old.gz', oldB);
+    const newAE = shardEntry('test_gen2_a', 'data/shards/test_gen2_a.new.br', newA, 'br');
+    const newBE = shardEntry('test_gen2_b', 'data/shards/test_gen2_b.new.br', newB, 'br');
+
+    const localMf = {
+      core: { meta: realManifest.core.meta, extras: realManifest.core.extras },
+      packs: [], sentenceShards: [oldAE, oldBE],
+    };
+    const remoteMf = {
+      core: { meta: newMeta.entry, extras: realManifest.core.extras },
+      packs: [], sentenceShards: [newAE, newBE],
+    };
+
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(remoteMf),
+    }));
+    await serveBytes(page, newMeta.entry.path, newMeta.bytes);
+    await serveBytes(page, newAE.path, newA);
+    // Shard B is dead for the first attempt only.
+    let shardBDead = true;
+    await page.route('**/data/shards/test_gen2_b.new.br*', route => {
+      if (shardBDead) return route.abort('failed');
+      route.fulfill({ status: 200, contentType: 'application/octet-stream', body: newB }).catch(() => {});
+    });
+
+    // Bytes actually pulled off the wire, per artefact. Only artefact URLs
+    // count — manifest.json is re-read every check by design and is not what
+    // "downloads only what is missing" is about.
+    const SIZES = {};
+    SIZES[newMeta.entry.path] = newMeta.entry.size;
+    SIZES[newAE.path] = newA.length;
+    SIZES[newBE.path] = newB.length;
+    let hits = [];
+    page.on('request', r => {
+      const u = r.url();
+      Object.keys(SIZES).forEach(p => { if (u.indexOf(p) !== -1) hits.push(p); });
+    });
+    const bytesOf = (list) => list.reduce((n, p) => n + SIZES[p], 0);
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported(),
+      { timeout: 60000 });
+    await seedGeneration(page, localMf, [
+      { id: oldAE.id, enc: 'gzip', bytes: oldA },
+      { id: oldBE.id, enc: 'gzip', bytes: oldB },
+    ]);
+
+    // Attempt 1 — dies on shard B.
+    const first = await page.evaluate(() => PPP.downloader.checkForUpdates());
+    expect(first.error, 'attempt 1 was supposed to fail on shard B').toBeTruthy();
+    const firstHits = hits.slice();
+    expect(firstHits, 'attempt 1 never fetched the new core file').toContain(newMeta.entry.path);
+    expect(firstHits, 'attempt 1 never fetched shard A').toContain(newAE.path);
+    const firstBytes = bytesOf(firstHits);
+
+    // Attempt 2 — same manifest, network back.
+    shardBDead = false;
+    hits = [];
+    const second = await page.evaluate(() => PPP.downloader.checkForUpdates());
+    expect(second.error).toBeUndefined();
+    expect(second.changedItems).toBeGreaterThan(0);
+
+    // NEGATIVE CHECK RUN (js/downloader.js: the resume pass deleted — core and
+    // shard work pushed unconditionally, as before this change). Attempt 2
+    // re-pulls everything it already had:
+    //   Error: the retry re-downloaded work the first attempt had already completed
+    //     Expected: ["data/shards/test_gen2_b.new.br"]
+    //     Received: ["data/ppp_meta.newgen.gz", "data/shards/test_gen2_a.new.br", "data/shards/test_gen2_b.new.br"]
+    expect(hits.sort(), 'the retry re-downloaded work the first attempt had already completed')
+      .toEqual([newBE.path]);
+    expect(bytesOf(hits), 'the retry moved more bytes than the one missing shard')
+      .toBe(newB.length);
+    // And the saving is the point: attempt 2 is a fraction of attempt 1.
+    expect(bytesOf(hits)).toBeLessThan(firstBytes / 10);
+
+    // The generation that finally landed is the new one, whole.
+    const after = await readGenerationState(page, [newAE.id, newBE.id]);
+    expect(after.meta.size, 'the staged core file was never promoted').toBe(newMeta.entry.size);
+    expect(after.stagedMeta, 'the staging copy was left behind').toBeNull();
+    expect(after.lmMetaHash).toBe(newMeta.entry.hash);
+    expect(after.shards[newAE.id].size).toBe(newA.length);
+    expect(after.shards[newBE.id].size).toBe(newB.length);
+    expect(after.deltaInstall, 'the resume record outlived the migration').toBeNull();
+  });
+
+  test('G3. A migration that runs to the end still lands a whole, healthy new generation (regression)', async ({ page }) => {
+    test.setTimeout(240000);
+
+    const newMeta = reducedMeta();
+    const oldA = Buffer.from('gen3-old-a-' + 'o'.repeat(400));
+    const oldGone = Buffer.from('gen3-old-gone-' + 'g'.repeat(300));
+    const newA = Buffer.from('gen3-new-a-' + 'a'.repeat(700));
+    const newC = Buffer.from('gen3-new-c-' + 'c'.repeat(650));
+    const oldAE = shardEntry('test_gen3_a', 'data/shards/test_gen3_a.old.gz', oldA);
+    const goneE = shardEntry('test_gen3_gone', 'data/shards/test_gen3_gone.gz', oldGone);
+    const newAE = shardEntry('test_gen3_a', 'data/shards/test_gen3_a.new.br', newA, 'br');
+    const newCE = shardEntry('test_gen3_c', 'data/shards/test_gen3_c.new.br', newC, 'br');
+
+    // The old generation also carries the legacy `core.sentences` blob, so this
+    // run exercises the dropped-core reclaim inside the same commit.
+    const localMf = {
+      core: {
+        meta: realManifest.core.meta, extras: realManifest.core.extras,
+        sentences: { path: 'data/ppp_sentences_en.db.gz', hash: 'legacy', size: 3, raw: 3 },
+      },
+      packs: [], sentenceShards: [oldAE, goneE],
+    };
+    const remoteMf = {
+      core: { meta: newMeta.entry, extras: realManifest.core.extras },
+      packs: [], sentenceShards: [newAE, newCE],
+    };
+
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(remoteMf),
+    }));
+    await serveBytes(page, newMeta.entry.path, newMeta.bytes);
+    await serveBytes(page, newAE.path, newA);
+    await serveBytes(page, newCE.path, newC);
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported(),
+      { timeout: 60000 });
+    await seedGeneration(page, localMf, [
+      { id: oldAE.id, enc: 'gzip', bytes: oldA },
+      { id: goneE.id, enc: 'gzip', bytes: oldGone },
+    ]);
+
+    const res = await page.evaluate(() => PPP.downloader.checkForUpdates());
+    expect(res.error).toBeUndefined();
+    expect(res.coreChanged.meta).toBe(true);
+    expect(res.coreChanged.extras).toBe(false);
+
+    const after = await readGenerationState(page, [newAE.id, newCE.id, goneE.id]);
+    // Core: promoted, staging cleared, unchanged file untouched, dropped key gone.
+    //
+    // NEGATIVE CHECK RUN (js/downloader.js: `promote: promote` passed to
+    // commitGeneration as `promote: []`, so the staged bytes never reach the
+    // live key while `localManifest` advances anyway — the mirror image of the
+    // original bug, a manifest claiming a generation the core files are not):
+    //   Error: the new generation was never promoted to the live core key
+    //     expect(received).toBe(expected)
+    //     Expected: 2976051
+    //     Received: 3978715
+    expect(after.meta.size, 'the new generation was never promoted to the live core key')
+      .toBe(newMeta.entry.size);
+    expect(after.meta.enc).toBe('gzip');
+    expect(after.extras.size).toBe(realManifest.core.extras.size);
+    expect(after.stagedMeta).toBeNull();
+    expect(after.stagedExtras).toBeNull();
+    expect(after.sentences, 'the dropped core blob was not reclaimed').toBeNull();
+    // Shards: replaced, added, and the retired one reclaimed.
+    expect(after.shards[newAE.id].size).toBe(newA.length);
+    expect(after.shards[newCE.id].size).toBe(newC.length);
+    expect(after.shards[goneE.id], 'the retired shard was not reclaimed').toBeNull();
+    // Bookkeeping: the fence advanced and left nothing behind.
+    expect(after.lmMetaHash).toBe(newMeta.entry.hash);
+    expect(after.lmCoreKeys).toEqual(['extras', 'meta']);
+    expect(after.lmShards).toEqual([
+      newAE.id + ':' + newAE.sha256, newCE.id + ':' + newCE.sha256,
+    ].sort());
+    expect(after.deltaInstall).toBeNull();
+    expect(after.pendingDeletes, 'the deferred cleanup list was not cleared').toBeNull();
+
+    // The reload below is the real check that the landed generation WORKS
+    // rather than merely measuring right: the app re-opens core:meta from IDB
+    // and searches it.
+    await page.reload();
+    await waitForDataReady(page);
+    const rows = await renderedRows(page, 'krishna');
+    expect(rows > 0, 'the app cannot open the generation it claims to have').toBe(true);
+    // The new generation really is the reduced DB: its dropped lectures are gone.
+    expect(await renderedRows(page, DROPPED_TERM),
+      'the promoted core file is not the new generation').toBe(0);
+  });
+});
+
+// ===========================================================================
+// U1-U4 — THE LIBRARY DOES NOT UPDATE BEHIND THE USER'S BACK (2026-07-28)
+//
+// Measured on a real S23 Ultra: an installed device moving to the next corpus
+// generation downloaded 240 MB with no warning, no progress and no question.
+// Rājan: "to pārvērst jautājumā — bibliotēka atjaunojas, 240 MB — tagad vai
+// Wi-Fi tīklā".
+//
+// These four measure the four halves of that: the question exists and is
+// honest about the size, "now" downloads visibly, "later" is remembered and
+// leaves the previous generation whole, and a deferral starts itself when the
+// condition it named comes true.
+// ===========================================================================
+test.describe('An update asks before it spends the user\'s data (2026-07-28)', () => {
+  test.use({ serviceWorkers: 'block' });
+
+  function shardEntry(id, relPath, bytes, enc, declaredSize) {
+    return {
+      id, path: relPath, enc: enc || 'gzip',
+      sha256: sha256Hex(bytes),
+      size: declaredSize == null ? bytes.length : declaredSize,
+      raw: bytes.length,
+    };
+  }
+
+  /** Put the device on a whole, healthy PREVIOUS generation: the real core
+   *  files in IDB (so the app genuinely opens and searches), the given shards,
+   *  and a localManifest that records exactly that. */
+  function seedGeneration(page, localMf, shards) {
+    return page.evaluate(async (args) => {
+      const put = async (key, buf, enc, raw) =>
+        PPP.offlineStore.putFile({ key, packId: key, gz: new Blob([buf]), raw, enc });
+      const fetchBytes = async (p) => (await fetch(p)).arrayBuffer();
+      await put('core:meta', await fetchBytes(args.meta.path), args.meta.enc, args.meta.raw);
+      await put('core:extras', await fetchBytes(args.extras.path), args.extras.enc, args.extras.raw);
+      for (const s of args.shards) {
+        const bin = atob(s.b64);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        await put('shard:' + s.id, arr.buffer, s.enc, arr.length);
+      }
+      await PPP.offlineStore.setState('localManifest', args.localMf);
+      await PPP.offlineStore.setState('langs', []);
+      await PPP.offlineStore.setState('shards', true);
+    }, {
+      localMf,
+      meta: realManifest.core.meta,
+      extras: realManifest.core.extras,
+      shards: shards.map(s => ({ id: s.id, enc: s.enc, b64: s.bytes.toString('base64') })),
+    });
+  }
+
+  /** Rendered result rows for a metadata search — the app's own path. The
+   *  "no results" placeholder row is not a result and is not counted. */
+  async function renderedRows(page, term) {
+    await page.fill('#searchTerm', term);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(1500);
+    return page.evaluate(() => {
+      let n = 0;
+      document.querySelectorAll('#resultsTable tbody tr').forEach(tr => {
+        if (!tr.querySelector('.empty-result-message')) n++;
+      });
+      return n;
+    });
+  }
+
+  /**
+   * Count every /data/ request EXCEPT manifest.json, and abort it.
+   *
+   * manifest.json is excluded on purpose and is not a loophole: it is the ~100
+   * KB document the question's number is COMPUTED from, so a gate that did not
+   * fetch it could not quote a size at all. Everything else under /data/ is
+   * library payload — the megabytes this whole change is about — and while the
+   * question is open the correct number of those is zero. Aborting rather than
+   * continuing makes a leak fail loudly instead of quietly succeeding.
+   *
+   * Registered BEFORE the manifest route: Playwright matches handlers in
+   * reverse registration order, so the later, narrower manifest route wins for
+   * manifest.json and never reaches this counter.
+   *
+   * Armed separately from being installed, because the fixture itself has to
+   * fetch the real core files to seed the previous generation — a counter live
+   * from the first navigation would abort the seeding and measure nothing.
+   * Set `meter.armed = true` immediately before the boot under test.
+   */
+  function countPayloadRequests(page, meter) {
+    return page.route('**/data/**', route => {
+      if (!meter.armed) { route.continue(); return; }
+      meter.urls.push(route.request().url());
+      route.abort('failed');
+    });
+  }
+
+  test('U1. A new generation asks first, with the real size, and fetches nothing until it is answered', async ({ page }) => {
+    test.setTimeout(180000);
+
+    const oldShardBytes = Buffer.from('u1-old-shard-' + 'o'.repeat(600));
+    const oldShard = shardEntry('test_u1_a', 'data/shards/test_u1_a.old.gz', oldShardBytes, 'gzip');
+    // Two new shards, so the quoted figure is a SUM and not one entry echoed
+    // back: 200 MB + 40 MB = 240 MB, the number measured on the real device.
+    const newA = shardEntry('test_u1_a', 'data/shards/test_u1_a.new.gz',
+      Buffer.from('u1-new-a'), 'gzip', 200 * 1048576);
+    const newB = shardEntry('test_u1_b', 'data/shards/test_u1_b.new.gz',
+      Buffer.from('u1-new-b'), 'gzip', 40 * 1048576);
+
+    const localMf = {
+      core: { meta: realManifest.core.meta, extras: realManifest.core.extras },
+      packs: [], sentenceShards: [oldShard],
+    };
+    const remoteMf = {
+      core: { meta: realManifest.core.meta, extras: realManifest.core.extras },
+      packs: [], sentenceShards: [newA, newB],
+    };
+
+    const meter = { armed: false, urls: [] };
+    await countPayloadRequests(page, meter);
+    let served = localMf;
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(served),
+    }));
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported(),
+      { timeout: 60000 });
+    await seedGeneration(page, localMf, [{ id: oldShard.id, enc: 'gzip', bytes: oldShardBytes }]);
+
+    // The seeding fetch of the real core files is not what this test measures.
+    meter.armed = true;
+    served = remoteMf;
+    await page.reload();
+    await waitForDataReady(page);
+
+    // NEGATIVE CHECK RUN (js/app.js: backgroundUpdateCheck() reduced to its
+    // pre-gate body, i.e. `_runDeltaUpdate()` called unconditionally):
+    //   Error: the update started without asking
+    //     page.waitForSelector: Timeout 20000ms exceeded.
+    //     waiting for locator('#libraryUpdateNowBtn') to be visible
+    await page.waitForSelector('#libraryUpdateNowBtn', { timeout: 20000 });
+    await expect(page.locator('#libraryUpdateLaterBtn')).toBeVisible();
+
+    // The number is the manifest's, not a guess or a baked-in constant.
+    const askText = await page.locator('#libraryUpdatePromptMsg').textContent();
+    expect(askText, 'the question does not quote the real download size').toContain('240');
+
+    // NEGATIVE CHECK RUN (same revert): the delta ran on boot and pulled the
+    // new generation's payload before anyone was asked —
+    // (measured with the two assertions above temporarily removed, so the
+    //  earlier failure could not mask this one):
+    //   Error: bytes were fetched before the user answered
+    //     - Expected  - 1
+    //     + Received  + 8
+    //     +   "http://localhost:8899/data/shards/test_u1_a.new.gz?v=c5c606ebd3b4ea88",
+    //     +   "http://localhost:8899/data/shards/test_u1_b.new.gz?v=f98638fbc95ca040",
+    //     ... (each retried three times by the downloader)
+    expect(meter.urls, 'bytes were fetched before the user answered').toEqual([]);
+
+    // And the previous generation is still the live one, untouched.
+    const state = await page.evaluate(async () => ({
+      lmShards: ((await PPP.offlineStore.getState('localManifest')).sentenceShards || []).map(s => s.id),
+      shardInfo: await PPP.offlineStore.getRecordInfo('shard:test_u1_a'),
+      staged: await PPP.offlineStore.getRecordInfo('stage:core:meta'),
+    }));
+    expect(state.lmShards).toEqual([oldShard.id]);
+    expect(state.shardInfo.size).toBe(oldShardBytes.length);
+    expect(state.staged).toBeNull();
+  });
+
+  test('U2. "Download now" downloads it, visibly, and lands a whole new generation', async ({ page }) => {
+    test.setTimeout(180000);
+
+    const oldShardBytes = Buffer.from('u2-old-shard-' + 'o'.repeat(600));
+    const newShardBytes = Buffer.alloc(3 * 1048576, 0x5a);
+    const oldShard = shardEntry('test_u2_a', 'data/shards/test_u2_a.old.gz', oldShardBytes, 'gzip');
+    const newShard = shardEntry('test_u2_a', 'data/shards/test_u2_a.new.gz', newShardBytes, 'gzip');
+
+    const localMf = {
+      core: { meta: realManifest.core.meta, extras: realManifest.core.extras },
+      packs: [], sentenceShards: [oldShard],
+    };
+    const remoteMf = {
+      core: { meta: realManifest.core.meta, extras: realManifest.core.extras },
+      packs: [], sentenceShards: [newShard],
+    };
+
+    let served = localMf;
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(served),
+    }));
+    // Held for 600 ms so the progress line is observable rather than a frame
+    // that came and went between two samples.
+    await page.route('**/data/shards/test_u2_a.new.gz*', async route => {
+      await new Promise(r => setTimeout(r, 600));
+      route.fulfill({ status: 200, contentType: 'application/octet-stream', body: newShardBytes });
+    });
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported(),
+      { timeout: 60000 });
+    await seedGeneration(page, localMf, [{ id: oldShard.id, enc: 'gzip', bytes: oldShardBytes }]);
+
+    served = remoteMf;
+    await page.reload();
+    await waitForDataReady(page);
+    await page.waitForSelector('#libraryUpdateNowBtn', { timeout: 20000 });
+
+    // Sample the progress line while the download runs.
+    await page.evaluate(() => {
+      window.__progressTexts = [];
+      window.__progressTimer = setInterval(() => {
+        const m = document.getElementById('libraryUpdateProgressMsg');
+        if (m && window.__progressTexts[window.__progressTexts.length - 1] !== m.textContent) {
+          window.__progressTexts.push(m.textContent);
+        }
+      }, 20);
+    });
+    await page.click('#libraryUpdateNowBtn');
+
+    // The box itself appears before the first byte, so its mere presence
+    // proves nothing — the measurement below is that the line MOVED.
+    await expect.poll(
+      () => page.evaluate(() => (window.__progressTexts || []).length),
+      { timeout: 30000, message: 'the progress box never appeared at all' }
+    ).toBeGreaterThan(0);
+
+    await expect.poll(
+      () => page.evaluate(async () => {
+        const lm = await PPP.offlineStore.getState('localManifest');
+        return (lm.sentenceShards || []).map(s => s.id + ':' + s.sha256).join(',');
+      }),
+      { timeout: 60000 }
+    ).toBe(newShard.id + ':' + newShard.sha256);
+
+    await page.evaluate(() => clearInterval(window.__progressTimer));
+    const texts = await page.evaluate(() => window.__progressTexts);
+    // What the user actually read, sampled every 20 ms:
+    //   ["Updating the offline library: 0 / 3 MB (0%)",
+    //    "Updating the offline library: 3 / 3 MB (100%)"]
+    // It names the size, starts at zero, and REACHES the end. The last of
+    // those three is what makes this a progress test rather than a
+    // "does a box appear" test.
+    expect(texts.join(' | '), 'the progress line never showed the size it was downloading').toContain('3');
+    expect(texts.some(t => t.indexOf('0%') !== -1),
+      'the progress line never started at zero').toBe(true);
+
+    // NEGATIVE CHECK RUN (js/downloader.js: `_processItem`'s byte callbacks in
+    // the delta pool put back to `null, function () {}` and emit() short-
+    // circuited — i.e. the delta downloads with no way to report progress. The
+    // box still opens at "0 / 3 MB (0%)" and never changes again):
+    //   Error: the progress line never moved
+    //     expect(received).toBeGreaterThan(expected)
+    //     Expected: > 1
+    //     Received: 1
+    expect(texts.length, 'the progress line never moved').toBeGreaterThan(1);
+    expect(texts.some(t => t.indexOf('100%') !== -1),
+      'the progress line never reached the end').toBe(true);
+
+    // Whole, healthy end state: new shard bytes on disk, no staging leftovers,
+    // no resume record, and the decision retired.
+    const after = await page.evaluate(async () => ({
+      shard: await PPP.offlineStore.getRecordInfo('shard:test_u2_a'),
+      stagedMeta: await PPP.offlineStore.getRecordInfo('stage:core:meta'),
+      deltaInstall: await PPP.offlineStore.getState('deltaInstall'),
+      pendingDeletes: await PPP.offlineStore.getState('pendingDeletes'),
+      consent: await PPP.offlineStore.getState('updateConsent'),
+    }));
+    expect(after.shard.size).toBe(newShardBytes.length);
+    expect(after.stagedMeta).toBeNull();
+    expect(after.deltaInstall).toBeNull();
+    expect(after.pendingDeletes).toBeNull();
+    expect(after.consent, 'a finished update left its decision behind').toBeNull();
+
+    // The app still opens and searches after the generation switch.
+    await page.reload();
+    await waitForDataReady(page);
+    expect(await renderedRows(page, 'tattva')).toBeGreaterThan(0);
+  });
+
+  test('U3. "Later" is remembered: no second question, no bytes, and the old generation answers in full', async ({ page }) => {
+    test.setTimeout(180000);
+
+    const oldShardBytes = Buffer.from('u3-old-shard-' + 'o'.repeat(600));
+    const oldShard = shardEntry('test_u3_a', 'data/shards/test_u3_a.old.gz', oldShardBytes, 'gzip');
+    // A new generation that replaces BOTH the core meta DB and the shard, so a
+    // leak past the deferral would be the exact silent-wrong-answer bug G1
+    // measures. Its bytes are never served: the payload counter aborts them.
+    const newCore = {
+      path: 'data/ppp_meta.u3new.gz', enc: 'gzip',
+      hash: 'u3newcore1', sha256: sha256Hex(Buffer.from('u3-new-core')),
+      size: 120 * 1048576, raw: 34021376,
+    };
+    const newShard = shardEntry('test_u3_a', 'data/shards/test_u3_a.new.gz',
+      Buffer.from('u3-new-a'), 'gzip', 120 * 1048576);
+
+    const localMf = {
+      core: { meta: realManifest.core.meta, extras: realManifest.core.extras },
+      packs: [], sentenceShards: [oldShard],
+    };
+    const remoteMf = {
+      core: { meta: newCore, extras: realManifest.core.extras },
+      packs: [], sentenceShards: [newShard],
+    };
+
+    const meter = { armed: false, urls: [] };
+    await countPayloadRequests(page, meter);
+    let served = localMf;
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(served),
+    }));
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported(),
+      { timeout: 60000 });
+    await seedGeneration(page, localMf, [{ id: oldShard.id, enc: 'gzip', bytes: oldShardBytes }]);
+
+    served = remoteMf;
+    await page.reload();
+    await waitForDataReady(page);
+    await page.waitForSelector('#libraryUpdateNowBtn', { timeout: 20000 });
+    const rowsBefore = await renderedRows(page, 'tattva');
+    expect(rowsBefore, 'the baseline search found nothing, so nothing below is measurable').toBeGreaterThan(0);
+
+    // From the answer onwards, every library byte is a violation. (The boot
+    // BEFORE the answer is U1's measurement, not this one's.)
+    meter.armed = true;
+    await page.click('#libraryUpdateLaterBtn');
+    await expect(page.locator('#libraryUpdateNowBtn')).toHaveCount(0);
+
+    // The next load — the whole point of remembering the answer.
+    await page.reload();
+    await waitForDataReady(page);
+    await page.waitForTimeout(6000);   // well past the boot update check
+
+    // NEGATIVE CHECK RUN (js/app.js: the `_readUpdateConsent()` branch removed
+    // from backgroundUpdateCheck(), so the gate re-asks every boot):
+    //   Error: the question came back on the next load
+    //     expect(received).toBe(expected)
+    //     Expected: 0
+    //     Received: 1
+    expect(await page.locator('#libraryUpdateNowBtn').count(),
+      'the question came back on the next load').toBe(0);
+
+    // NEGATIVE CHECK RUN (same revert, then "now" instead of "later"): the
+    // deferred generation was fetched anyway —
+    //   Error: a deferred update spent data anyway
+    //     - Expected  - 1
+    //     + Received  + 8
+    //     +   "http://localhost:8899/data/ppp_meta.u3new.gz?v=u3newcore1",
+    //     +   "http://localhost:8899/data/shards/test_u3_a.new.gz?v=89de3705...",
+    //     ... (each retried three times by the downloader)
+    expect(meter.urls, 'a deferred update spent data anyway').toEqual([]);
+
+    // The device is still on the whole previous generation, and the same
+    // search still returns the same, full answer — not a mixture of two.
+    const state = await page.evaluate(async () => {
+      const lm = await PPP.offlineStore.getState('localManifest');
+      return {
+        lmMetaHash: lm.core.meta.hash,
+        lmShards: (lm.sentenceShards || []).map(s => s.id),
+        meta: await PPP.offlineStore.getRecordInfo('core:meta'),
+        staged: await PPP.offlineStore.getRecordInfo('stage:core:meta'),
+        consent: await PPP.offlineStore.getState('updateConsent'),
+      };
+    });
+    expect(state.lmMetaHash).toBe(realManifest.core.meta.hash);
+    expect(state.lmShards).toEqual([oldShard.id]);
+    expect(state.meta.size).toBe(realManifest.core.meta.size);
+    expect(state.staged, 'the deferred generation was staged behind the deferral').toBeNull();
+    expect(state.consent && state.consent.decision, 'the deferral was not persisted').toBe('later');
+
+    expect(await renderedRows(page, 'tattva'),
+      'the deferred update changed the answer the user gets').toBe(rowsBefore);
+  });
+
+  test('U4. A deferral made on mobile data starts by itself on Wi-Fi', async ({ page }) => {
+    test.setTimeout(180000);
+
+    // A NetworkInformation that reports a medium — the Android Chrome shape.
+    // Installed before any app script runs, so _netClass() reads it from the
+    // first boot onwards.
+    await page.addInitScript(() => {
+      const listeners = [];
+      const conn = {
+        type: 'cellular',
+        effectiveType: '4g',
+        saveData: false,
+        addEventListener: (ev, fn) => { if (ev === 'change') listeners.push(fn); },
+        removeEventListener: (ev, fn) => {
+          const i = listeners.indexOf(fn);
+          if (i !== -1) listeners.splice(i, 1);
+        },
+      };
+      window.__setNetwork = (t) => {
+        conn.type = t;
+        listeners.slice().forEach(fn => fn());
+      };
+      Object.defineProperty(navigator, 'connection', { value: conn, configurable: true });
+    });
+
+    const oldShardBytes = Buffer.from('u4-old-shard-' + 'o'.repeat(600));
+    const newShardBytes = Buffer.from('u4-new-shard-' + 'n'.repeat(900));
+    const oldShard = shardEntry('test_u4_a', 'data/shards/test_u4_a.old.gz', oldShardBytes, 'gzip');
+    const newShard = shardEntry('test_u4_a', 'data/shards/test_u4_a.new.gz', newShardBytes, 'gzip');
+
+    const localMf = {
+      core: { meta: realManifest.core.meta, extras: realManifest.core.extras },
+      packs: [], sentenceShards: [oldShard],
+    };
+    const remoteMf = {
+      core: { meta: realManifest.core.meta, extras: realManifest.core.extras },
+      packs: [], sentenceShards: [newShard],
+    };
+
+    let served = localMf;
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(served),
+    }));
+    await serveBytes(page, 'data/shards/test_u4_a.new.gz', newShardBytes);
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported(),
+      { timeout: 60000 });
+    await seedGeneration(page, localMf, [{ id: oldShard.id, enc: 'gzip', bytes: oldShardBytes }]);
+
+    served = remoteMf;
+    await page.reload();
+    await waitForDataReady(page);
+    await page.waitForSelector('#libraryUpdateNowBtn', { timeout: 20000 });
+
+    // On a connection the browser CALLS metered, the deferral is allowed to
+    // promise Wi-Fi — and says so.
+    //
+    // NEGATIVE CHECK RUN (js/app.js: `_netClass()` reduced to `return
+    // 'unknown';`, i.e. the pre-detection behaviour):
+    //   Error: a metered connection was not recognised, so the button did not
+    //   offer Wi-Fi
+    //     Expected pattern: /Wi-Fi/
+    //     Received string:  "Later"
+    await expect(page.locator('#libraryUpdateLaterBtn'),
+      'a metered connection was not recognised, so the button did not offer Wi-Fi')
+      .toHaveText(/Wi-Fi/);
+
+    await page.click('#libraryUpdateLaterBtn');
+    await expect(page.locator('#libraryUpdateNowBtn')).toHaveCount(0);
+    await page.waitForTimeout(1000);
+    const beforeWifi = await page.evaluate(async () => {
+      const lm = await PPP.offlineStore.getState('localManifest');
+      return (lm.sentenceShards || []).map(s => s.sha256).join(',');
+    });
+    expect(beforeWifi, 'the deferral downloaded immediately').toBe(oldShard.sha256);
+
+    // The condition comes true.
+    await page.evaluate(() => window.__setNetwork('wifi'));
+
+    // NEGATIVE CHECK RUN (js/app.js: the body of `_armDeferredUpdate()`
+    // emptied, so a deferral is remembered but never resumes):
+    //   Error: the deferred update never started when Wi-Fi arrived
+    //     Timed out 60000ms waiting for expect(received).toBe(expected)
+    //     Expected: "<new shard sha256>"
+    //     Received: "<old shard sha256>"
+    await expect.poll(
+      () => page.evaluate(async () => {
+        const lm = await PPP.offlineStore.getState('localManifest');
+        return (lm.sentenceShards || []).map(s => s.sha256).join(',');
+      }),
+      { timeout: 60000, message: 'the deferred update never started when Wi-Fi arrived' }
+    ).toBe(newShard.sha256);
+
+    const after = await page.evaluate(async () => ({
+      shard: await PPP.offlineStore.getRecordInfo('shard:test_u4_a'),
+      consent: await PPP.offlineStore.getState('updateConsent'),
+    }));
+    expect(after.shard.size).toBe(newShardBytes.length);
+    expect(after.consent, 'the finished update left its decision behind').toBeNull();
+  });
+});
+
+// ===========================================================================
+// U5-U9 — CODEX AUDIT OF THE CONSENT GATE (2026-07-28)
+//
+// Five findings against the first version of the gate. Each test below is the
+// closing measurement for one of them.
+// ===========================================================================
+test.describe('The consent gate under audit (Codex, 2026-07-28)', () => {
+  test.use({ serviceWorkers: 'block' });
+
+  function shardEntry(id, relPath, bytes, enc, declaredSize) {
+    return {
+      id, path: relPath, enc: enc || 'gzip',
+      sha256: sha256Hex(bytes),
+      size: declaredSize == null ? bytes.length : declaredSize,
+      raw: bytes.length,
+    };
+  }
+
+  function seedGeneration(page, localMf, shards, extraState) {
+    return page.evaluate(async (args) => {
+      const put = async (key, buf, enc, raw) =>
+        PPP.offlineStore.putFile({ key, packId: key, gz: new Blob([buf]), raw, enc });
+      const fetchBytes = async (p) => (await fetch(p)).arrayBuffer();
+      await put('core:meta', await fetchBytes(args.meta.path), args.meta.enc, args.meta.raw);
+      await put('core:extras', await fetchBytes(args.extras.path), args.extras.enc, args.extras.raw);
+      for (const s of args.shards) {
+        const bin = atob(s.b64);
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        await put('shard:' + s.id, arr.buffer, s.enc, arr.length);
+      }
+      await PPP.offlineStore.setState('localManifest', args.localMf);
+      await PPP.offlineStore.setState('langs', []);
+      await PPP.offlineStore.setState('shards', true);
+      for (const k of Object.keys(args.extraState || {})) {
+        await PPP.offlineStore.setState(k, args.extraState[k]);
+      }
+    }, {
+      localMf,
+      meta: realManifest.core.meta,
+      extras: realManifest.core.extras,
+      shards: shards.map(s => ({ id: s.id, enc: s.enc, b64: s.bytes.toString('base64') })),
+      extraState: extraState || {},
+    });
+  }
+
+  function countPayloadRequests(page, meter) {
+    return page.route('**/data/**', route => {
+      if (!meter.armed) { route.continue(); return; }
+      meter.urls.push(route.request().url());
+      route.abort('failed');
+    });
+  }
+
+  test('U5. A "yes" about one generation does not authorise a different one (Codex HIGH-1)', async ({ page }) => {
+    test.setTimeout(180000);
+
+    // Two remote generations with an IDENTICAL core and the same `generated`
+    // timestamp — they differ only in their shards. That is the exact shape
+    // the first fingerprint could not tell apart.
+    const oldBytes = Buffer.from('u5-old-' + 'o'.repeat(600));
+    const aBytes = Buffer.from('u5-gen-a-' + 'a'.repeat(700));
+    const bBytes = Buffer.from('u5-gen-b-' + 'b'.repeat(800));
+    const oldShard = shardEntry('test_u5_a', 'data/shards/test_u5_a.old.gz', oldBytes, 'gzip');
+    const shardA = shardEntry('test_u5_a', 'data/shards/test_u5_a.gena.gz', aBytes, 'gzip', 90 * 1048576);
+    const shardB = shardEntry('test_u5_a', 'data/shards/test_u5_a.genb.gz', bBytes, 'gzip', 210 * 1048576);
+
+    const core = { meta: realManifest.core.meta, extras: realManifest.core.extras };
+    const localMf = { generated: 'FIXED-STAMP', core, packs: [], sentenceShards: [oldShard] };
+    const genA = { generated: 'FIXED-STAMP', core, packs: [], sentenceShards: [shardA] };
+    const genB = { generated: 'FIXED-STAMP', core, packs: [], sentenceShards: [shardB] };
+
+    const meter = { armed: false, urls: [] };
+    await countPayloadRequests(page, meter);
+    let served = localMf;
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(served),
+    }));
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported(),
+      { timeout: 60000 });
+    await seedGeneration(page, localMf, [{ id: oldShard.id, enc: 'gzip', bytes: oldBytes }]);
+
+    // The user is asked about generation A — 90 MB — and says "later", which
+    // is a decision recorded against A.
+    meter.armed = true;
+    served = genA;
+    await page.reload();
+    await waitForDataReady(page);
+    await page.waitForSelector('#libraryUpdateNowBtn', { timeout: 20000 });
+    expect(await page.locator('#libraryUpdatePromptMsg').textContent()).toContain('90');
+    await page.click('#libraryUpdateLaterBtn');
+    await expect(page.locator('#libraryUpdateNowBtn')).toHaveCount(0);
+
+    // The server now publishes B — same core, same timestamp, 210 MB of
+    // different shards. A decision about A says nothing about this.
+    served = genB;
+    await page.reload();
+    await waitForDataReady(page);
+
+    // NEGATIVE CHECK RUN (js/downloader.js: _generationId() reduced to its
+    // first form, `generated` + core hashes only, so A and B share an id):
+    //   Error: a decision about one generation silenced the question about another
+    //     page.waitForSelector: Timeout 20000ms exceeded.
+    //     waiting for locator('#libraryUpdateNowBtn') to be visible
+    await page.waitForSelector('#libraryUpdateNowBtn', { timeout: 20000 });
+    const askB = await page.locator('#libraryUpdatePromptMsg').textContent();
+    expect(askB, 'the second question quoted the first generation\'s size').toContain('210');
+
+    // And not one byte of either generation was fetched without an answer.
+    expect(meter.urls, 'bytes were fetched across the two questions').toEqual([]);
+  });
+
+  test('U6. A failed delta for an old generation does not wave the next one through (Codex HIGH-2)', async ({ page }) => {
+    test.setTimeout(180000);
+
+    const oldBytes = Buffer.from('u6-old-' + 'o'.repeat(600));
+    const oldShard = shardEntry('test_u6_a', 'data/shards/test_u6_a.old.gz', oldBytes, 'gzip');
+    const shardB = shardEntry('test_u6_a', 'data/shards/test_u6_a.genb.gz',
+      Buffer.from('u6-gen-b'), 'gzip', 175 * 1048576);
+    const core = { meta: realManifest.core.meta, extras: realManifest.core.extras };
+    const localMf = { generated: 'U6-LOCAL', core, packs: [], sentenceShards: [oldShard] };
+    const genB = { generated: 'U6-B', core, packs: [], sentenceShards: [shardB] };
+
+    // A `deltaInstall` left behind by a FAILED delta for a generation that no
+    // longer exists anywhere — the residue of an interrupted migration. It is
+    // stamped with generation A's id, which generation B cannot match.
+    const staleDelta = {
+      completedCore: {}, completedShards: {},
+      completedPacks: { 'prem-en-0000': { hash: 'deadbeef00', size: 1 } },
+      gen: 'U6-A|core:extras=x,meta=y|packs:|shards:test_u6_a=deadbeefdeadbeef',
+    };
+
+    const meter = { armed: false, urls: [] };
+    await countPayloadRequests(page, meter);
+    let served = localMf;
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(served),
+    }));
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported(),
+      { timeout: 60000 });
+    await seedGeneration(page, localMf, [{ id: oldShard.id, enc: 'gzip', bytes: oldBytes }],
+      { deltaInstall: staleDelta });
+
+    meter.armed = true;
+    served = genB;
+    await page.reload();
+    await waitForDataReady(page);
+
+    // NEGATIVE CHECK RUN (js/downloader.js: getPendingUpdate() back to
+    // `resumed: !!st[2]`, i.e. any leftover delta record counts as consent):
+    //   Error: a leftover delta record authorised a download nobody agreed to
+    //     page.waitForSelector: Timeout 20000ms exceeded.
+    //     waiting for locator('#libraryUpdateNowBtn') to be visible
+    // (with, in that run, 8 aborted payload requests recorded below)
+    await page.waitForSelector('#libraryUpdateNowBtn', { timeout: 20000 });
+    expect(await page.locator('#libraryUpdatePromptMsg').textContent()).toContain('175');
+    expect(meter.urls, 'a leftover delta record authorised a download nobody agreed to').toEqual([]);
+
+    // The stale record is not merely ignored — it is discarded once the delta
+    // for the CURRENT generation actually runs, so it cannot come back.
+    await page.unroute('**/data/**');
+    await serveBytes(page, shardB.path, Buffer.from('u6-gen-b'));
+    // A truthful size, so the download can verify: the fixture above declares
+    // 175 MB purely to make the QUESTION's number measurable.
+    served = {
+      generated: 'U6-B', core, packs: [],
+      sentenceShards: [shardEntry('test_u6_a', shardB.path, Buffer.from('u6-gen-b'), 'gzip')],
+    };
+    await page.reload();
+    await waitForDataReady(page);
+    await page.waitForSelector('#libraryUpdateNowBtn', { timeout: 20000 });
+    await page.click('#libraryUpdateNowBtn');
+    await expect.poll(
+      () => page.evaluate(() => PPP.offlineStore.getState('deltaInstall')),
+      { timeout: 60000, message: 'the stale resume record survived a completed delta' }
+    ).toBeNull();
+  });
+
+  test('U7. Without a way to hash, a stored record is never skipped (Codex HIGH-3, fail-closed)', async ({ page }) => {
+    test.setTimeout(180000);
+
+    // No SubtleCrypto — an insecure context or an old webview. _verifyBuffer
+    // then degrades to a size-only comparison, which on the SKIP path would
+    // accept the previous generation's bytes whenever they happen to be the
+    // declared length.
+    await page.addInitScript(() => {
+      try {
+        Object.defineProperty(window.crypto, 'subtle', { value: undefined, configurable: true });
+      } catch (e) { /* already undefined */ }
+    });
+
+    // Same length, different bytes: the trap exactly.
+    const oldBytes = Buffer.from('u7-STALE-' + 'o'.repeat(600));
+    const newBytes = Buffer.from('u7-FRESH-' + 'n'.repeat(600));
+    expect(newBytes.length).toBe(oldBytes.length);
+
+    const oldShard = shardEntry('test_u7_a', 'data/shards/test_u7_a.old.gz', oldBytes, 'gzip');
+    const newShard = shardEntry('test_u7_a', 'data/shards/test_u7_a.new.gz', newBytes, 'gzip');
+    const core = { meta: realManifest.core.meta, extras: realManifest.core.extras };
+    const localMf = { generated: 'U7-LOCAL', core, packs: [], sentenceShards: [oldShard] };
+    const remoteMf = { generated: 'U7-NEW', core, packs: [], sentenceShards: [newShard] };
+
+    let served = localMf;
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(served),
+    }));
+    const fetched = [];
+    await page.route('**/data/shards/test_u7_a.new.gz*', route => {
+      fetched.push(route.request().url());
+      route.fulfill({ status: 200, contentType: 'application/octet-stream', body: newBytes });
+    });
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported(),
+      { timeout: 60000 });
+    // Seed the STALE bytes under the key the NEW shard will occupy — what a
+    // write killed mid-shard leaves behind.
+    await seedGeneration(page, localMf, [{ id: 'test_u7_a', enc: 'gzip', bytes: oldBytes }]);
+
+    served = remoteMf;
+    await page.reload();
+    await waitForDataReady(page);
+    await page.waitForSelector('#libraryUpdateNowBtn', { timeout: 20000 });
+    await page.click('#libraryUpdateNowBtn');
+
+    await expect.poll(
+      () => page.evaluate(async () => {
+        const lm = await PPP.offlineStore.getState('localManifest');
+        return (lm.sentenceShards || []).map(s => s.sha256).join(',');
+      }),
+      { timeout: 60000 }
+    ).toBe(newShard.sha256);
+
+    // NEGATIVE CHECK RUN (js/downloader.js: the SubtleCrypto guard removed from
+    // _entryAlreadyInStore(), so the size-only comparison decides):
+    //   Error: a same-length stale record was accepted as the new generation
+    //     expect(received).toBe(expected)
+    //     Expected: 1
+    //     Received: 0
+    // — and, worse than the count, the committed library then claimed the new
+    //   shard while IndexedDB still held the old bytes. Measured with the
+    //   assertion above temporarily removed, so it could not mask this one:
+    //     Error: the live shard is not the generation localManifest claims
+    //       Expected substring: "u7-FRESH"
+    //       Received string:    "u7-STALE-ooooooooo…"
+    //   That is the silent wrong answer this file exists to prevent.
+    expect(fetched.length,
+      'a same-length stale record was accepted as the new generation').toBe(1);
+
+    // The STORED BYTES, not the decoded text: the fixture's "shard" is plain
+    // text carrying an enc of gzip, so decoding it is not the subject here and
+    // would only fail on its own.
+    const stored = await page.evaluate(async () => {
+      const rec = await PPP.offlineStore.getEncoded('shard:test_u7_a');
+      return new TextDecoder().decode(new Uint8Array(rec.buf));
+    });
+    expect(stored, 'the live shard is not the generation localManifest claims')
+      .toContain('u7-FRESH');
+  });
+
+  test('U8. A second tab does not download the same update again (Codex MEDIUM-1)', async ({ page, context }) => {
+    test.setTimeout(240000);
+
+    // A PACKS-only delta, deliberately. A shard-touching delta is already
+    // covered across tabs by the isUpdatingShards() flag (P27), so a shard
+    // fixture here would pass with no cross-tab claim at all and prove
+    // nothing — measured, 2026-07-28. The packs are exactly the case that flag
+    // does NOT cover, on purpose: raising it for a packs-only delta would pause
+    // text search over a change that cannot touch a shard.
+    const payload = Buffer.alloc(2 * 1048576, 0x41);
+    const member = zlib.gzipSync(payload);
+    const index = [{ nr: 999999, off: 0, len: member.length, raw: payload.length }];
+    const indexJson = Buffer.from(JSON.stringify(index), 'utf8');
+    const header = Buffer.alloc(8);
+    header.write('CAP1', 0, 'ascii');
+    header.writeUInt32LE(indexJson.length, 4);
+    const packBytes = Buffer.concat([header, indexJson, member]);
+    const packPath = 'packs/u8-en-x.pack';
+    const pack = {
+      id: 'u8-en-x', kind: 'prem', lang: 'en', path: packPath, enc: 'gzip',
+      hash: sha256Hex(packBytes).slice(0, 10), sha256: sha256Hex(packBytes),
+      size: packBytes.length, count: 1,
+    };
+
+    const shardBytes = Buffer.from('u8-shard-' + 'o'.repeat(600));
+    const shard = shardEntry('test_u8_a', 'data/shards/test_u8_a.gz', shardBytes, 'gzip');
+    const core = { meta: realManifest.core.meta, extras: realManifest.core.extras };
+    // Identical shards on both sides: this delta must touch packs and nothing
+    // else, or the shard flag would do the work the claim is here to do.
+    const localMf = { generated: 'U8-LOCAL', core, packs: [], sentenceShards: [shard] };
+    const remoteMf = { generated: 'U8-NEW', core, packs: [pack], sentenceShards: [shard] };
+
+    // Routed on the CONTEXT so both tabs share one counter and one server.
+    let served = localMf;
+    await context.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(served),
+    }));
+    const packFetches = [];
+    await context.route('**/' + packPath + '*', async route => {
+      packFetches.push(Date.now());
+      // Held long enough that the second tab's whole boot AND its own update
+      // path happen while the first tab's download is genuinely in flight.
+      await new Promise(r => setTimeout(r, 20000));
+      route.fulfill({ status: 200, contentType: 'application/octet-stream', body: packBytes });
+    });
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported(),
+      { timeout: 60000 });
+    await seedGeneration(page, localMf, [{ id: shard.id, enc: 'gzip', bytes: shardBytes }]);
+
+    served = remoteMf;
+    await page.reload();
+    await waitForDataReady(page);
+    await page.waitForSelector('#libraryUpdateNowBtn', { timeout: 20000 });
+    await page.click('#libraryUpdateNowBtn');
+    // The first tab is now mid-download (the route above holds it open).
+    await expect.poll(() => packFetches.length, { timeout: 30000 }).toBe(1);
+
+    // A second tab opens on the same device, same IndexedDB, same generation.
+    // Its stored decision is already "now", so it goes straight for the delta.
+    const page2 = await context.newPage();
+    await page2.goto('./');
+    await waitForDataReady(page2, 60000);
+    await page2.waitForTimeout(9000);
+
+    // NEGATIVE CHECK RUN (js/downloader.js: the isDeltaRunningElsewhere()
+    // stand-down removed from checkForUpdates(), and its twin removed from the
+    // gate in js/app.js — i.e. no cross-tab claim at all):
+    //   Error: the second tab downloaded the same update again
+    //     expect(received).toBe(expected)
+    //     Expected: 1
+    //     Received: 2
+    expect(packFetches.length, 'the second tab downloaded the same update again').toBe(1);
+
+    // And the one download still lands.
+    await expect.poll(
+      () => page.evaluate(async () => {
+        const lm = await PPP.offlineStore.getState('localManifest');
+        return (lm.packs || []).map(p => p.id).join(',');
+      }),
+      { timeout: 90000 }
+    ).toBe('u8-en-x');
+    await page2.close();
+  });
+
+  test('U9. A generation that keeps failing stops retrying and asks again (Codex MEDIUM-2)', async ({ page }) => {
+    test.setTimeout(240000);
+
+    const oldBytes = Buffer.from('u9-old-' + 'o'.repeat(600));
+    const oldShard = shardEntry('test_u9_a', 'data/shards/test_u9_a.old.gz', oldBytes, 'gzip');
+    const newShard = shardEntry('test_u9_a', 'data/shards/test_u9_a.new.gz',
+      Buffer.from('u9-new-a'), 'gzip', 60 * 1048576);
+    const core = { meta: realManifest.core.meta, extras: realManifest.core.extras };
+    const localMf = { generated: 'U9-LOCAL', core, packs: [], sentenceShards: [oldShard] };
+    const remoteMf = { generated: 'U9-NEW', core, packs: [], sentenceShards: [newShard] };
+
+    let served = localMf;
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(served),
+    }));
+    // The generation is permanently broken: its shard never arrives.
+    const attempts = [];
+    await page.route('**/data/shards/test_u9_a.new.gz*', route => {
+      attempts.push(Date.now());
+      route.abort('failed');
+    });
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported(),
+      { timeout: 60000 });
+    await seedGeneration(page, localMf, [{ id: oldShard.id, enc: 'gzip', bytes: oldBytes }]);
+
+    served = remoteMf;
+    await page.reload();
+    await waitForDataReady(page);
+    await page.waitForSelector('#libraryUpdateNowBtn', { timeout: 20000 });
+    await page.click('#libraryUpdateNowBtn');
+
+    // Reload until the recorded decision is gone. Each boot is one more
+    // automatic attempt on a download that cannot finish.
+    // Each iteration waits for THIS boot's attempt to be counted before
+    // reloading. Polling for "not zero" instead would pass instantly on the
+    // count the PREVIOUS boot wrote, and the reload would then cancel the
+    // in-flight retry ladder before it could fail — the counter would sit at 1
+    // forever and the test would report a cap that was never reached.
+    const readConsent = () => page.evaluate(() => PPP.offlineStore.getState('updateConsent'));
+    let asked = false;
+    let counted = 0;
+    for (let i = 0; i < 6; i++) {
+      let consent = await readConsent();
+      const deadline = Date.now() + 60000;
+      while (consent && (consent.attempts || 0) <= counted && Date.now() < deadline) {
+        await page.waitForTimeout(500);
+        consent = await readConsent();
+      }
+      if (!consent) {
+        // The cap was reached: the very next load must ASK, not retry.
+        await page.reload();
+        await waitForDataReady(page);
+        await page.waitForSelector('#libraryUpdateNowBtn', { timeout: 20000 });
+        asked = true;
+        break;
+      }
+      expect(consent.attempts, 'the failure was not counted').toBeGreaterThan(counted);
+      expect(consent.attempts).toBeLessThan(4);
+      counted = consent.attempts;
+      await page.reload();
+      await waitForDataReady(page);
+    }
+
+    // The loop above is itself the negative check, and it fails INSIDE the
+    // loop rather than here.
+    //
+    // NEGATIVE CHECK RUN (js/app.js: the attempts/cap block in
+    // _startConsentedUpdate()'s settle handler removed, leaving the previous
+    // unconditional "a FAILED delta keeps the decision" — never counted, never
+    // dropped):
+    //   Error: the failure was not counted
+    //     expect(received).toBeGreaterThan(expected)
+    //     Received has value: undefined
+    // The record simply never grows an `attempts` field, so the cap can never
+    // be reached and the question never comes back — which is what the
+    // assertion below states in one line once the loop has run.
+    expect(asked, 'a permanently failing update retried forever without asking').toBe(true);
+    expect(attempts.length, 'the fixture never exercised a real download attempt').toBeGreaterThan(0);
   });
 });

@@ -24,6 +24,10 @@
          ('core:sentences' existed until 2026-07-27 — the 18.9 MB whole-file
           sentence DB nothing ever opened; devices that hold it get it deleted
           by the core-removal path in downloader.js checkForUpdates.)
+         'stage:core:{key}' is a core file a DELTA has downloaded but not yet
+          made active. No reader knows that prefix on purpose: the bytes are
+          invisible until commitGeneration() re-keys them to 'core:{key}' in
+          the same transaction that advances `localManifest`.
    =========================================================================== */
 window.PPP = window.PPP || {};
 
@@ -107,6 +111,25 @@ PPP.offlineStore = (function () {
             return rec.gz.arrayBuffer().then(function (buf) {
                 return { buf: buf, enc: PPP.codec.normalize(rec.enc) };
             });
+        });
+    }
+
+    /**
+     * Cheap metadata about a stored record — { size, enc } | null — WITHOUT
+     * materializing its bytes. `size` is the Blob's own length, which
+     * IndexedDB hands back as metadata; reading it costs nothing like the
+     * arrayBuffer() call getEncoded() has to make.
+     *
+     * Exists so a "is this artefact already on disk?" check can reject the
+     * common case — a record of a DIFFERENT generation sitting under the same
+     * key — on size/codec alone, instead of reading and SHA-256-ing every one.
+     * A delta that replaces 22 shards would otherwise hash ~119 MB before
+     * downloading a single byte (downloader.js _entryAlreadyInStore).
+     */
+    function getRecordInfo(key) {
+        return _getRecord(key).then(function (rec) {
+            if (!rec || !rec.gz) return null;
+            return { size: rec.gz.size, enc: PPP.codec.normalize(rec.enc) };
         });
     }
 
@@ -243,6 +266,82 @@ PPP.offlineStore = (function () {
     }
 
     /**
+     * Switch the device from one generation of the library to the next in ONE
+     * readwrite transaction across BOTH stores. Everything below either
+     * happens together or does not happen at all:
+     *   promote:     [{ from, to }]  staged file records re-keyed to their
+     *                                final keys (the staged copy is removed)
+     *   deleteFiles: [key]           single file records to drop
+     *   puts:        { stateKey: v } state writes (localManifest, …)
+     *   deletes:     [stateKey]      state keys to remove
+     *
+     * WHY IT HAS TO BE ONE TRANSACTION. `localManifest` is the app's whole
+     * description of which generation it holds: db.js reads its shard list,
+     * checkForUpdates diffs against it, and every reader trusts that the CORE
+     * files match it. A delta that wrote the new core files first and advanced
+     * `localManifest` afterwards had a window — the entire download of the
+     * packs and shards, minutes long — in which the device held the NEW core
+     * next to the OLD shards under an OLD manifest. Nothing errored: the app
+     * opened, searched, and quietly returned a different number of rows than
+     * either generation would have (measured on a real device, 2026-07-28:
+     * 4397 rows against 4405 for the same query, after a download killed at
+     * t+7 s). A silent wrong answer is the worst failure this app has, so the
+     * new core bytes now land under staging keys and arrive at their real keys
+     * HERE, in the same transaction that advances `localManifest`.
+     *
+     * The gets are issued synchronously when the transaction opens, and each
+     * put/delete is issued from its get's callback — which is what keeps the
+     * transaction alive until every promotion is done (IndexedDB commits only
+     * when it runs out of pending requests).
+     *
+     * A staged record that is missing ABORTS the whole thing rather than
+     * promoting the rest: a partial promotion is exactly the half-and-half
+     * generation this function exists to make impossible. The delta then fails
+     * cleanly, the previous generation stays active, and the next attempt
+     * re-downloads what it cannot find.
+     */
+    function commitGeneration(opts) {
+        opts = opts || {};
+        var promote = opts.promote || [];
+        var deleteFiles = opts.deleteFiles || [];
+        return open().then(function (idb) {
+            return new Promise(function (resolve, reject) {
+                var tx = idb.transaction(['files', 'state'], 'readwrite');
+                var files = tx.objectStore('files');
+                var st = tx.objectStore('state');
+                var failure = null;
+                promote.forEach(function (p) {
+                    var req = files.get(p.from);
+                    req.onsuccess = function () {
+                        var rec = req.result;
+                        if (!rec) {
+                            failure = new Error('Staged file missing: ' + p.from);
+                            try { tx.abort(); } catch (e) { /* already aborting */ }
+                            return;
+                        }
+                        rec.key = p.to;
+                        rec.packId = p.to;
+                        files.put(rec);
+                        files.delete(p.from);
+                    };
+                });
+                for (var i = 0; i < deleteFiles.length; i++) files.delete(deleteFiles[i]);
+                if (opts.puts) {
+                    Object.keys(opts.puts).forEach(function (k) { st.put(opts.puts[k], k); });
+                }
+                if (opts.deletes) {
+                    for (var j = 0; j < opts.deletes.length; j++) st.delete(opts.deletes[j]);
+                }
+                tx.oncomplete = function () { resolve(); };
+                tx.onerror = function () { reject(failure || tx.error); };
+                tx.onabort = function () {
+                    reject(failure || tx.error || new Error('tx aborted'));
+                };
+            });
+        });
+    }
+
+    /**
      * Parse a CAP1 pack: "CAP1" magic (bytes 0-3), uint32 LE index-JSON
      * length (bytes 4-7), index JSON array [{nr, off, len, raw}] sorted by nr,
      * then the blob area (off relative to blob start; each member is a
@@ -318,6 +417,7 @@ PPP.offlineStore = (function () {
         open: open,
         getGz: getGz,
         getEncoded: getEncoded,
+        getRecordInfo: getRecordInfo,
         getText: getText,
         putFile: putFile,
         applyPack: applyPack,
@@ -325,6 +425,7 @@ PPP.offlineStore = (function () {
         setState: setState,
         deleteState: deleteState,
         commitState: commitState,
+        commitGeneration: commitGeneration,
         parsePack: parsePack,
         requestPersist: requestPersist
     };

@@ -89,6 +89,60 @@ PPP.downloader = (function () {
         try { if (_bc) _bc.postMessage({ t: type, id: _tabId }); } catch (e) { /* channel closed */ }
     }
 
+    /* ---- The DELTA claim: one download at a time across tabs ---------------
+     * (Codex MEDIUM-1, 2026-07-28.) The app checks for updates on load, so two
+     * tabs opened on a new generation each started their own delta and the
+     * device paid for the same ~240 MB twice. Correctness was never at risk —
+     * the fence is atomic and every item is verified — but the bytes are the
+     * entire subject of this change.
+     *
+     * It rides the SAME BroadcastChannel ('ppp-shard-update') and the same
+     * heartbeat design as the shard flag above; only the message vocabulary is
+     * extended ('dstart' / 'dalive' / 'dend' / 'dwho'). Tabs running an older
+     * build ignore types they do not know, and so does the handler below, so
+     * mixing builds degrades to the previous behaviour rather than breaking.
+     *
+     * It is a SEPARATE claim rather than a reuse of _raiseShardUpdate() because
+     * that flag means "the sentence shards are being rewritten" and pauses text
+     * search. Raising it for a packs-only delta would pause search over a change
+     * that cannot touch a single shard — explicitly rejected where the flag is
+     * raised in checkForUpdates. Two claims, one channel, one heartbeat design.
+     *
+     * Same crash property as the shard flag: a plain variable plus a heartbeat,
+     * so a tab that dies mid-delta stops blocking the others within
+     * SHARD_UPDATE_STALE_MS instead of wedging them forever.
+     */
+    var _deltaClaimDepth = 0;
+    var _remoteDeltas = {};
+    var _deltaPingTimer = null;
+
+    /** Is ANOTHER tab downloading a delta right now? (Stale tabs swept out.) */
+    function isDeltaRunningElsewhere() {
+        var now = Date.now(), alive = false, id;
+        for (id in _remoteDeltas) {
+            if (now - _remoteDeltas[id] > SHARD_UPDATE_STALE_MS) delete _remoteDeltas[id];
+            else alive = true;
+        }
+        return alive;
+    }
+
+    function _raiseDeltaClaim() {
+        _deltaClaimDepth++;
+        if (_deltaClaimDepth !== 1) return;
+        _bcPost('dstart');
+        if (!_deltaPingTimer) {
+            _deltaPingTimer = setInterval(function () { _bcPost('dalive'); }, SHARD_UPDATE_PING_MS);
+        }
+    }
+
+    function _lowerDeltaClaim() {
+        if (_deltaClaimDepth === 0) return;
+        _deltaClaimDepth--;
+        if (_deltaClaimDepth !== 0) return;
+        if (_deltaPingTimer) { clearInterval(_deltaPingTimer); _deltaPingTimer = null; }
+        _bcPost('dend');
+    }
+
     /** Drop tabs we have not heard from within the stale window — this is what
      *  makes a tab that died mid-delta stop blocking everyone else. */
     function _anyRemoteUpdating() {
@@ -107,14 +161,19 @@ PPP.downloader = (function () {
             if (m.t === 'start' || m.t === 'alive') _remoteUpdaters[m.id] = Date.now();
             else if (m.t === 'end') delete _remoteUpdaters[m.id];
             else if (m.t === 'who' && _shardUpdateDepth > 0) _bcPost('alive');
+            else if (m.t === 'dstart' || m.t === 'dalive') _remoteDeltas[m.id] = Date.now();
+            else if (m.t === 'dend') delete _remoteDeltas[m.id];
+            else if (m.t === 'dwho' && _deltaClaimDepth > 0) _bcPost('dalive');
         };
         _bcPost('who');   // opened mid-delta? ask now instead of waiting a beat
+        _bcPost('dwho');  // ...and the same question about the delta claim
         // Best-effort courtesy so other tabs recover instantly rather than after
         // the stale window. The heartbeat is what actually guarantees it — this
         // event is not delivered reliably on a crash or a killed process.
         try {
             window.addEventListener('pagehide', function () {
                 if (_shardUpdateDepth > 0) _bcPost('end');
+                if (_deltaClaimDepth > 0) _bcPost('dend');
             });
         } catch (e) { /* no window listener — heartbeat still covers it */ }
     }
@@ -552,13 +611,25 @@ PPP.downloader = (function () {
                     // they land in IndexedDB, and Brotli cannot be recognised
                     // from the bytes (see js/codec.js). Missing -> gzip.
                     var itemEnc = PPP.codec.normalize(entry.enc);
+                    // Which durable record the post-item snapshot goes into.
+                    // firstInstall owns 'install'; a delta owns 'deltaInstall'
+                    // and must never be mistaken for a pending first install
+                    // (getResumeState / the boot resume path read 'install').
+                    var stateRec = install._track
+                        ? { key: install._stateKey || 'install', value: install }
+                        : null;
                     if (item.type === 'core') {
-                        var key = 'core:' + item.coreKey;
+                        // `storeKey` lets a DELTA park the bytes under a staging
+                        // key instead of the live one (see checkForUpdates). A
+                        // first install has no previous generation to protect,
+                        // so it writes 'core:<key>' directly and its partial
+                        // library stays openable (coreReady).
+                        var key = item.storeKey || ('core:' + item.coreKey);
                         return _enqueueApply(function () {
                             install.completedCore[item.coreKey] = { hash: entry.hash, size: entry.size };
                             return store.putFile(
                                 { key: key, packId: key, gz: new Blob([buf], { type: _blobType(itemEnc) }), raw: entry.raw, enc: itemEnc },
-                                install._track ? { key: 'install', value: install } : null
+                                stateRec
                             );
                         });
                     }
@@ -568,7 +639,7 @@ PPP.downloader = (function () {
                             install.completedShards[entry.id] = { sha256: entry.sha256, size: entry.size };
                             return store.putFile(
                                 { key: skey, packId: skey, gz: new Blob([buf], { type: _blobType(itemEnc) }), raw: entry.raw, enc: itemEnc },
-                                install._track ? { key: 'install', value: install } : null
+                                stateRec
                             );
                         });
                     }
@@ -576,8 +647,7 @@ PPP.downloader = (function () {
                     var entries = store.parsePack(buf, _packKeyFn(entry), itemEnc);
                     return _enqueueApply(function () {
                         install.completedPacks[entry.id] = { hash: entry.hash, size: entry.size };
-                        return store.applyPack(entry.id, entries,
-                            install._track ? { key: 'install', value: install } : null);
+                        return store.applyPack(entry.id, entries, stateRec);
                     });
                 })
                 .catch(function (err) {
@@ -843,14 +913,266 @@ PPP.downloader = (function () {
         }).catch(function () { return false; });
     }
 
-    /**
-     * Delta update: remote manifest vs stored localManifest. Downloads and
-     * applies every changed core file and changed/new pack, deletes packs that
-     * were removed from the manifest, and ONLY THEN advances localManifest
-     * (fence: a partial update never claims to be current). Never throws —
-     * returns { changedItems, coreChanged } or { changedItems: 0, error }.
+    /* ---- The atomic generation switch (A, 2026-07-28) ----------------------
+     * A delta used to write each new core file straight to its live key
+     * ('core:meta', 'core:extras') and advance `localManifest` only at the very
+     * end. Between those two moments — the whole download of the packs and the
+     * shards, minutes on a phone — the device held the NEW core beside the OLD
+     * shards under an OLD manifest. Measured on a real S23 Ultra (2026-07-28):
+     * a migration killed at t+7 s left exactly that state, the app opened
+     * without a single error, and the same query rendered 4397 rows where the
+     * clean previous generation rendered 4405. A silent wrong answer, with no
+     * indication anything had happened.
+     *
+     * So a delta's core bytes now land under a staging key nothing reads, and
+     * reach their live keys inside the SAME IndexedDB transaction that advances
+     * `localManifest` (store.commitGeneration). There is no ordering left to
+     * get wrong and no window to be interrupted in: a reader either sees the
+     * whole previous generation or the whole next one.
+     *
+     * Why staging rather than "write the core files last, just before the
+     * fence": the fence would still be two writes (files, then manifest) with a
+     * gap between them, and the gap is the entire bug — it does not matter that
+     * it got smaller. IndexedDB gives all-or-nothing across stores in one
+     * transaction; the only way to use it is to have the bytes already there,
+     * verified, before the transaction opens. Staging is what makes that true.
+     *
+     * firstInstall deliberately does NOT stage: there is no previous generation
+     * to protect, and its partial library is meant to be openable (coreReady).
      */
-    function checkForUpdates() {
+    function _stagedCoreKey(coreKey) {
+        return 'stage:core:' + coreKey;
+    }
+
+    /**
+     * Carry out (and clear) the deletions a committed generation switch left
+     * behind — packs and shards the new manifest no longer lists.
+     *
+     * They run AFTER the fence, not before it, because deleting them before
+     * means a delta that then fails has already damaged the generation the user
+     * is still on. Running them after needs the list to survive a crash, hence
+     * `pendingDeletes`, written inside the fence transaction itself and dropped
+     * only once the deletions are done. Worst case is unreferenced bytes on
+     * disk until the next check — never a missing piece of a live generation.
+     *
+     * Deferred while isUpdatingShards(): the list can contain shard keys, and
+     * deleting a shard under an in-flight addShards() is the same race the
+     * delta's own shard handling defers for (Codex HIGH-1). The record stays,
+     * so the next check reclaims them.
+     */
+    function _drainPendingDeletes() {
+        if (isUpdatingShards()) return Promise.resolve();
+        return store.getState('pendingDeletes').then(function (list) {
+            if (!list || !list.length) return;
+            // A pack and a shard are both removed by wiping every record whose
+            // byPack index equals the id — applyPack(packId, []) — so one list
+            // and one primitive covers both (a shard's is 'shard:<id>').
+            return _runPool(list, function (packId) {
+                return _enqueueApply(function () { return store.applyPack(packId, []); });
+            }, 1).then(function () {
+                return store.deleteState('pendingDeletes');
+            });
+        }).catch(function (e) {
+            // Reclaiming space must never be what fails a delta: the record
+            // stays and the next check tries again.
+            console.warn('Deferred cleanup failed, will retry next check:', e);
+        });
+    }
+
+    /* ---- What the next delta would COST, before it costs it ---------------
+     * Measured on a real S23 Ultra (2026-07-28): moving an installed device to
+     * the next corpus generation pulled 240 MB with no warning, no progress and
+     * no question — on mobile data, that is the user's data plan spent without
+     * them knowing. Rājan, 2026-07-28: "to pārvērst jautājumā — bibliotēka
+     * atjaunojas, 240 MB — tagad vai Wi-Fi tīklā".
+     *
+     * A question needs a number BEFORE anything is fetched, so the plan phase
+     * is split out of checkForUpdates(): getPendingUpdate() is a pure read
+     * (manifest.json + IndexedDB state, nothing else) that answers "how many
+     * bytes would the delta download". It deliberately does NOT reuse
+     * checkForUpdates' body — that body writes, and the whole point here is a
+     * phase that cannot. The duplication is ~30 lines of diffing against the
+     * SAME helpers (_packSelected, _normLangs, CORE_KEYS), and the atomic
+     * generation switch below is left untouched.
+     *
+     * The number is DOWNLOAD bytes only. Removals are free and are never worth
+     * a question, so a generation that only drops things reports bytes: 0 and
+     * the caller runs it silently — as it always did.
+     */
+
+    /**
+     * Stable identity of a manifest generation, used to remember a decision
+     * against the generation it was made about.
+     *
+     * IT COVERS EVERY ARTEFACT THE MANIFEST NAMES, not just the core (Codex
+     * HIGH-1, 2026-07-28). The first version was `generated` + the core
+     * hashes, and that is a consent bug rather than a cosmetic one: two
+     * generations that share a core but differ in packs or shards produced the
+     * SAME id, so a "download now" answered about generation A silently
+     * authorised generation B — a different, possibly far larger download the
+     * user was never shown. `generated` is no safety net either: it is a build
+     * timestamp, and a republish can repeat it.
+     *
+     * So the id fingerprints the whole referenced set — core hashes, pack
+     * hashes, shard sha256s, each keyed by id and sorted so manifest ORDERING
+     * cannot change it. Kept as the plain fingerprint string rather than a
+     * digest of it: SubtleCrypto is async and absent in insecure contexts, and
+     * a non-cryptographic hash would reintroduce collisions in the exact place
+     * collisions ARE the bug. ~2 KB in one IndexedDB state record costs
+     * nothing.
+     */
+    function _generationId(mf) {
+        if (!mf) return '';
+        var core = mf.core || {};
+        return [
+            String(mf.generated || ''),
+            'core:' + Object.keys(core).sort().map(function (k) {
+                return k + '=' + (core[k] && core[k].hash);
+            }).join(','),
+            'packs:' + (mf.packs || []).map(function (p) {
+                return p.id + '=' + p.hash;
+            }).sort().join(','),
+            'shards:' + (mf.sentenceShards || []).map(function (s) {
+                return s.id + '=' + String(s.sha256 || '').slice(0, 16);
+            }).sort().join(',')
+        ].join('|');
+    }
+
+    /**
+     * Read-only preview of the next delta. Fetches manifest.json (~100 KB) and
+     * reads IndexedDB state; downloads nothing, writes nothing, deletes
+     * nothing.
+     *
+     * Returns null when there is nothing to decide (no library installed, no
+     * remote manifest, or a manifest the wipe guard refuses — that one is
+     * handled by checkForUpdates itself and must not become a user question).
+     * Otherwise { bytes, items, generation, resumed }:
+     *   bytes     — what the delta would DOWNLOAD, from the manifest's own
+     *               `size` fields, i.e. the same source computeInstallBytes
+     *               uses. 0 means "nothing to fetch" (removals only).
+     *   items     — changed item count, for the existing "Updated: {n}" note.
+     *   generation— identity of the remote generation (see _generationId).
+     *   resumed   — a delta for some generation is already part-done on this
+     *               device (`deltaInstall`). The user already said yes to a
+     *               download once; asking again mid-way would be the worst of
+     *               both worlds, so the caller proceeds without a question.
+     */
+    function getPendingUpdate() {
+        return fetchManifest().then(function (remote) {
+            return store.getState('localManifest').then(function (local) {
+                if (!local) return null;                      // not installed
+                if (_manifestWipesSection(remote, local)) return null;
+                return Promise.all([
+                    store.getState('langs'),
+                    store.getState('shards'),
+                    store.getState('deltaInstall')
+                ]).then(function (st) {
+                    var sel = _normLangs(st[0]);
+                    var includeShards = !!st[1];
+                    var bytes = 0;
+                    var items = 0;
+
+                    var remoteCore = remote.core || {};
+                    CORE_KEYS.forEach(function (k) {
+                        var re = remoteCore[k];
+                        var lo = local.core && local.core[k];
+                        if (re && (!lo || lo.hash !== re.hash)) {
+                            bytes += (re.size || 0);
+                            items += 1;
+                        }
+                    });
+                    // Core files dropped remotely are deletions — counted as
+                    // work (so "nothing changed" stays honest) but not bytes.
+                    Object.keys(local.core || {}).forEach(function (k) {
+                        if (!remoteCore[k] && CORE_KEYS.indexOf(k) === -1) items += 1;
+                    });
+
+                    var localPackById = {};
+                    (local.packs || []).forEach(function (p) { localPackById[p.id] = p; });
+                    var remotePackIds = {};
+                    (remote.packs || []).forEach(function (p) {
+                        if (!_packSelected(p, sel)) return;
+                        remotePackIds[p.id] = true;
+                        var lo = localPackById[p.id];
+                        if (!lo || lo.hash !== p.hash) {
+                            bytes += (p.size || 0);
+                            items += (p.count || 1);
+                        }
+                    });
+                    (local.packs || []).forEach(function (p) {
+                        if (_packSelected(p, sel) && !remotePackIds[p.id]) items += (p.count || 1);
+                    });
+
+                    // Shards mirror checkForUpdates exactly, including its
+                    // opted-out branch (every locally recorded shard is a
+                    // removal) and its "defer entirely while addShards() runs"
+                    // rule — a round that will do no shard work must not quote
+                    // shard megabytes.
+                    var localShardById = {};
+                    (local.sentenceShards || []).forEach(function (s) { localShardById[s.id] = s; });
+                    if (isUpdatingShards()) {
+                        // no shard work this round — see checkForUpdates.
+                    } else if (includeShards) {
+                        var remoteShardIds = {};
+                        (remote.sentenceShards || []).forEach(function (s) {
+                            remoteShardIds[s.id] = true;
+                            var lo = localShardById[s.id];
+                            if (!lo || lo.sha256 !== s.sha256) {
+                                bytes += (s.size || 0);
+                                items += 1;
+                            }
+                        });
+                        (local.sentenceShards || []).forEach(function (s) {
+                            if (!remoteShardIds[s.id]) items += 1;
+                        });
+                    } else {
+                        items += (local.sentenceShards || []).length;
+                    }
+
+                    // `resumed` means "a download of THIS generation is already
+                    // part-done", never merely "some delta once ran" (Codex
+                    // HIGH-2). A leftover record from a generation the server
+                    // has moved past is not consent for the one on offer now,
+                    // so it does not suppress the question.
+                    var gen = _generationId(remote);
+                    var savedDelta = st[2];
+                    return {
+                        bytes: bytes,
+                        items: items,
+                        generation: gen,
+                        resumed: !!(savedDelta && savedDelta.gen === gen)
+                    };
+                });
+            });
+        }).catch(function (err) {
+            // Same contract as checkForUpdates: never reject. A plan that could
+            // not be made is reported as such, and the caller does NOT start a
+            // download on a number it does not have.
+            console.warn('Update preview failed:', err);
+            return { bytes: 0, items: 0, generation: null, error: err };
+        });
+    }
+
+    /**
+     * Delta update: remote manifest vs stored localManifest. Downloads every
+     * changed core file (into a staging key), applies changed/new packs and
+     * shards, then switches generation ATOMICALLY — staged core files, the
+     * `localManifest` fence and the dropped-core deletions all commit in one
+     * IndexedDB transaction, so an interrupted delta always leaves the whole
+     * previous generation rather than a mixture of two. Resumable: work already
+     * on disk (verified byte for byte) or already applied is not fetched again.
+     * Never throws — returns { changedItems, coreChanged } or
+     * { changedItems: 0, error }.
+     *
+     * `onProgress({ loadedBytes, totalBytes })` (optional, added 2026-07-28) is
+     * the same shape firstInstall emits, throttled the same way. It exists
+     * because a consented update has to be VISIBLE: once the user has agreed to
+     * spend 240 MB, a silent bar-less download is the same complaint one step
+     * later. It observes only — the work list, the fence and the commit below
+     * are untouched by it, and omitting the callback restores the previous
+     * behaviour byte for byte.
+     */
+    function checkForUpdates(onProgress) {
         // One flag per core key (derived, so a new core file cannot be
         // forgotten here). Consumers read individual keys (app.js reads
         // .meta / .extras), so extra keys are additive and break nothing.
@@ -886,15 +1208,26 @@ PPP.downloader = (function () {
                 var sel = _normLangs(savedLangs);
                 var includeShards = !!savedShards;
 
+                // Reclaim whatever a previous run committed but did not finish
+                // deleting, then read this delta's durable resume record. Both
+                // happen before any diffing, so everything below reasons about
+                // a settled store.
+                return _drainPendingDeletes().then(function () {
+                    return store.getState('deltaInstall');
+                }).then(function (savedDelta) {
+
                 var changedItems = 0;
-                var work = [];
+                // Core files that this delta replaces. They are NOT queued as
+                // work yet: the download list is decided after the resume pass
+                // below, which may find some of them already staged on disk.
+                var coreUpdates = [];
                 CORE_KEYS.forEach(function (k) {
                     var re = remote.core[k];
                     var lo = local.core && local.core[k];
                     if (re && (!lo || lo.hash !== re.hash)) {
                         coreChanged[k] = true;
                         changedItems += 1;
-                        work.push({ type: 'core', coreKey: k, name: re.path, entry: re });
+                        coreUpdates.push({ coreKey: k, entry: re });
                     }
                 });
                 // Core files DROPPED from the manifest → delete them from this
@@ -932,12 +1265,13 @@ PPP.downloader = (function () {
                 (remote.packs || []).forEach(function (p) { if (_packSelected(p, sel)) remoteIds[p.id] = true; });
                 var localById = {};
                 (local.packs || []).forEach(function (p) { localById[p.id] = p; });
+                var packUpdates = [];
                 (remote.packs || []).forEach(function (p) {
                     if (!_packSelected(p, sel)) return;   // never pull unselected languages
                     var lo = localById[p.id];
                     if (!lo || lo.hash !== p.hash) {
                         changedItems += (p.count || 1);
-                        work.push({ type: 'pack', name: p.id, entry: p });
+                        packUpdates.push(p);
                     }
                 });
                 // Packs removed from the manifest (within the selected set) →
@@ -971,6 +1305,7 @@ PPP.downloader = (function () {
                 // call (periodic / visibility-triggered) reconciles normally
                 // once the flag clears.
                 var removedShards = [];
+                var shardUpdates = [];
                 if (isUpdatingShards()) {
                     // no-op this round — see above.
                 } else if (includeShards) {
@@ -982,7 +1317,7 @@ PPP.downloader = (function () {
                         var lo = localShardById[s.id];
                         if (!lo || lo.sha256 !== s.sha256) {
                             changedItems += 1;
-                            work.push({ type: 'shard', name: s.id, entry: s });
+                            shardUpdates.push(s);
                         }
                     });
                     removedShards = (local.sentenceShards || []).filter(function (s) {
@@ -996,85 +1331,229 @@ PPP.downloader = (function () {
 
                 if (changedItems === 0) return { changedItems: 0, coreChanged: coreChanged };
 
-                // Raise the "shards are being rewritten" flag — but ONLY when
-                // this delta actually touches shards, and only from the moment
-                // the first byte is about to be applied.
-                //  - Raising it at function entry would make every no-op boot
-                //    check briefly declare "updating" and blank a search that
-                //    started in that window, while IndexedDB was in fact
-                //    untouched and the search would have been correct.
-                //  - Raising it for a packs-only delta (transcripts, minutes
-                //    long) would pause sentence search over a change that
-                //    cannot affect a single shard.
-                var touchesShards = removedShards.length > 0 || work.some(function (w) {
-                    return w.type === 'shard';
-                });
-                if (touchesShards) _raiseShardUpdate();
-                var _released = false;
-                function _releaseShardUpdate() {
-                    if (touchesShards && !_released) { _released = true; _lowerShardUpdate(); }
+                // Another tab is already downloading a delta: stand down before
+                // a single byte is fetched (Codex MEDIUM-1). Reported as `busy`,
+                // never as an error — nothing failed, and the caller must NOT
+                // retire the user's decision over it. The next check reconciles
+                // once that tab is done, exactly like the shard deferral above.
+                if (isDeltaRunningElsewhere()) {
+                    return { changedItems: 0, coreChanged: coreChanged, busy: true };
                 }
 
-                // Updates share the install-state shape but do NOT track
-                // durable resume state (no _track) — a failed delta simply
-                // re-runs next time against the unchanged localManifest.
-                var install = { completedCore: {}, completedPacks: {}, completedShards: {} };
-                // Started from an already-resolved promise so that even a
-                // SYNCHRONOUS throw out of _runPool becomes a rejection this
-                // chain's handler sees. Thrown straight out of the `return`
-                // instead, it would skip the release below and leave the app
-                // reporting "updating" for the rest of the session.
-                return Promise.resolve().then(function () {
-                    return _runPool(work, function (item) {
-                        return _processItem(item, install, null, function () {});
+                // Where each replaced core file's bytes are parked while the
+                // delta runs, and where they must arrive when it commits. The
+                // promotion list is the SET OF REPLACED KEYS, not the set this
+                // run happens to download: a resumed delta finds some of them
+                // already staged (below) and must still promote them.
+                var promote = coreUpdates.map(function (c) {
+                    return { from: _stagedCoreKey(c.coreKey), to: 'core:' + c.coreKey };
+                });
+
+                // Durable resume state for THIS delta (B, 2026-07-28). Same
+                // shape and same commit mechanism firstInstall uses — the
+                // post-item snapshot is written in the SAME IndexedDB
+                // transaction as the item's records — but under its own state
+                // key, so a half-finished delta can never be mistaken for a
+                // pending FIRST install by getResumeState()/the boot path.
+                //
+                // Its job is packs, and only packs. Core files and shards are
+                // resumed by looking at the BYTES on disk (below), which is
+                // strictly better: self-verifying, size+sha256, fail-closed,
+                // and it cannot drift from reality. A pack is exploded into
+                // hundreds of member records with no stored hash of its own, so
+                // for packs there is nothing to verify against and a record of
+                // what was applied is the only way to not download 132 MB again.
+                //
+                // IT IS STAMPED WITH THE GENERATION IT BELONGS TO (Codex HIGH-2,
+                // 2026-07-28). Without the stamp the record is just "a delta was
+                // running", and the consent gate in app.js reads its mere
+                // existence as "the user already agreed to a download" — so a
+                // FAILED delta for generation A silently waved through whatever
+                // generation the server offered next. A record from another
+                // generation is discarded outright rather than merged: its
+                // completedPacks describe a work list that no longer exists,
+                // and the bytes it would let us skip are re-verified from disk
+                // anyway (the resume pass below), so the only thing thrown away
+                // is a claim we have no reason to trust.
+                var remoteGen = _generationId(remote);
+                if (savedDelta && savedDelta.gen !== remoteGen) savedDelta = null;
+                var install = savedDelta || { completedCore: {}, completedPacks: {}, completedShards: {} };
+                if (!install.completedCore) install.completedCore = {};
+                if (!install.completedPacks) install.completedPacks = {};
+                if (!install.completedShards) install.completedShards = {};
+                install.gen = remoteGen;
+                install._track = true;
+                install._stateKey = 'deltaInstall';
+
+                // Resume pass: everything already on disk, verified byte for
+                // byte, drops out of the download list. This is what turns a
+                // killed migration from "236 MB again" into "only what is
+                // missing". _entryAlreadyInStore is fail-closed — anything it
+                // cannot PROVE is correct gets re-downloaded.
+                var work = [];
+                return _runPool(coreUpdates, function (c) {
+                    var staged = _stagedCoreKey(c.coreKey);
+                    return _entryAlreadyInStore(staged, c.entry).then(function (ok) {
+                        if (ok) return;
+                        work.push({
+                            type: 'core', coreKey: c.coreKey, storeKey: staged,
+                            name: c.entry.path, entry: c.entry
+                        });
+                    });
+                }, CONCURRENCY).then(function () {
+                    return _runPool(shardUpdates, function (s) {
+                        return _shardAlreadyInStore(s).then(function (ok) {
+                            if (!ok) work.push({ type: 'shard', name: s.id, entry: s });
+                        });
                     }, CONCURRENCY);
                 }).then(function () {
-                    return _runPool(removed, function (p) {
-                        return _enqueueApply(function () { return store.applyPack(p.id, []); });
-                    }, 1);
-                }).then(function () {
-                    // Delete removed shards. A shard is stored as a single file
-                    // record whose byPack index == its 'shard:<id>' key, so the
-                    // existing applyPack(packId, []) primitive removes exactly it.
-                    return _runPool(removedShards, function (s) {
-                        return _enqueueApply(function () { return store.applyPack('shard:' + s.id, []); });
-                    }, 1);
-                }).then(function () {
-                    // Delete core files dropped from the manifest. A core file
-                    // is stored as a SINGLE record whose byPack index equals its
-                    // own 'core:<key>' key (see _processItem), exactly like a
-                    // shard — so the same applyPack(packId, []) primitive that
-                    // removes packs and shards removes precisely this one record
-                    // and nothing else. No new primitive is needed.
-                    return _runPool(removedCore, function (k) {
-                        return _enqueueApply(function () { return store.applyPack('core:' + k, []); });
-                    }, 1);
-                }).then(function () {
-                    // Fence: everything applied and verified — only now
-                    // advance the local manifest. Keep the stored copy honest
-                    // about shards (empty when opted out) so the next delta
-                    // check matches what is actually in IDB.
-                    // This write is ALSO the second half of the core removal:
-                    // localManifest becomes the remote manifest, which no longer
-                    // carries the dropped key, so `local.core` stops claiming a
-                    // file that is no longer in IndexedDB. Nothing extra to do —
-                    // but it does mean the delete above must happen BEFORE this
-                    // line, or a crash in between would lose the only record of
-                    // what still needs deleting.
-                    return store.setState('localManifest', _manifestForStore(remote, includeShards));
-                }).then(function () {
-                    // Lowered only AFTER localManifest advanced: that write IS
-                    // the moment the shards and the recorded list agree again.
-                    _releaseShardUpdate();
-                    return { changedItems: changedItems, coreChanged: coreChanged };
-                }, function (err) {
-                    // Stand-in for `finally` (not in this file's ES5 baseline).
-                    // A thrown delta must not leave the app stuck in "updating"
-                    // — the outer .catch below would otherwise swallow the
-                    // error and the flag with it.
-                    _releaseShardUpdate();
-                    throw err;
+                    packUpdates.forEach(function (p) {
+                        var done = install.completedPacks[p.id];
+                        if (done && done.hash === p.hash) return;   // applied by an earlier attempt
+                        work.push({ type: 'pack', name: p.id, entry: p });
+                    });
+
+                    // Raise the "shards are being rewritten" flag — but ONLY when
+                    // this delta actually touches shards, and only from the moment
+                    // the first byte is about to be applied.
+                    //  - Raising it at function entry would make every no-op boot
+                    //    check briefly declare "updating" and blank a search that
+                    //    started in that window, while IndexedDB was in fact
+                    //    untouched and the search would have been correct.
+                    //  - Raising it for a packs-only delta (transcripts, minutes
+                    //    long) would pause sentence search over a change that
+                    //    cannot affect a single shard.
+                    var touchesShards = removedShards.length > 0 || work.some(function (w) {
+                        return w.type === 'shard';
+                    });
+                    if (touchesShards) _raiseShardUpdate();
+                    // The cross-tab delta claim (Codex MEDIUM-1) is raised here
+                    // too — at the same moment, for the same reason: from just
+                    // before the first byte until the generation has switched.
+                    // Unlike the shard flag it is UNCONDITIONAL: a packs-only
+                    // delta is exactly the 132 MB a second tab must not fetch
+                    // again.
+                    _raiseDeltaClaim();
+                    var _released = false;
+                    function _releaseShardUpdate() {
+                        if (_released) return;
+                        _released = true;
+                        if (touchesShards) _lowerShardUpdate();
+                        _lowerDeltaClaim();
+                    }
+
+                    // Started from an already-resolved promise so that even a
+                    // SYNCHRONOUS throw out of _runPool becomes a rejection this
+                    // chain's handler sees. Thrown straight out of the `return`
+                    // instead, it would skip the release below and leave the app
+                    // reporting "updating" for the rest of the session.
+                    // Progress accounting, identical in shape to firstInstall's:
+                    // a per-item byte counter folded into a base on completion,
+                    // reset on retry so the bar never runs ahead of reality.
+                    // `totalBytes` is the DOWNLOAD size of this delta's work
+                    // list — i.e. what getPendingUpdate() quoted, minus
+                    // anything the resume pass found already on disk — so the
+                    // number the user agreed to is the number the bar fills.
+                    var totalBytes = 0;
+                    work.forEach(function (w) { totalBytes += ((w.entry && w.entry.size) || 0); });
+                    var baseBytes = 0;
+                    var itemBytes = {};
+                    var lastEmit = 0;
+                    function emit(force) {
+                        if (!onProgress) return;
+                        var now = Date.now();
+                        if (!force && now - lastEmit < 100) return;   // ~10/s
+                        lastEmit = now;
+                        var loaded = baseBytes;
+                        for (var bk in itemBytes) loaded += itemBytes[bk];
+                        onProgress({ loadedBytes: Math.min(loaded, totalBytes), totalBytes: totalBytes });
+                    }
+                    emit(true);
+
+                    return Promise.resolve().then(function () {
+                        return _runPool(work, function (item) {
+                            itemBytes[item.name] = 0;
+                            return _processItem(item, install, function (n) {
+                                itemBytes[item.name] += n; emit();
+                            }, function () {
+                                itemBytes[item.name] = 0; emit(true);
+                            }).then(function () {
+                                delete itemBytes[item.name];
+                                baseBytes += ((item.entry && item.entry.size) || 0);
+                                emit(true);
+                            });
+                        }, CONCURRENCY);
+                    }).then(function () {
+                        // THE FENCE, and it is now a single IndexedDB
+                        // transaction (store.commitGeneration) instead of a
+                        // sequence of writes:
+                        //   - the staged core files arrive at their live keys,
+                        //   - core files dropped from the manifest disappear,
+                        //   - `localManifest` advances to the new generation,
+                        //   - the delta's resume record is discarded,
+                        //   - and the leftovers to reclaim are recorded.
+                        // Until this transaction commits, every reader still
+                        // sees the PREVIOUS generation, whole: old core, old
+                        // shard list, old manifest. That is the property the
+                        // old code did not have — it wrote the new core files
+                        // to their live keys immediately and advanced
+                        // `localManifest` minutes later, so a download killed
+                        // in between left new core + old shards and the app
+                        // silently answered with a row count belonging to
+                        // neither generation.
+                        //
+                        // Deletions of removed PACKS and SHARDS deliberately do
+                        // NOT run before this point any more. Deleting them
+                        // early damages the generation the user is still on if
+                        // the delta then fails. They are recorded as
+                        // `pendingDeletes` INSIDE this transaction and carried
+                        // out after it — so an interruption there leaves only
+                        // unreferenced bytes, and the list of what to reclaim
+                        // survives (drained at the start of the next check).
+                        var pending = removed.map(function (p) { return p.id; })
+                            .concat(removedShards.map(function (s) { return 'shard:' + s.id; }));
+                        var puts = { localManifest: _manifestForStore(remote, includeShards) };
+                        if (pending.length) puts.pendingDeletes = pending;
+                        // A core file is stored as a SINGLE record under its own
+                        // 'core:<key>' — deleting that key is the whole removal,
+                        // and `localManifest` (written in this same transaction)
+                        // is what stops the device claiming it.
+                        var drop = removedCore.map(function (k) { return 'core:' + k; });
+                        // Plus any staged core bytes this generation does NOT
+                        // consume: leftovers from an earlier delta that was
+                        // abandoned (the server moved on, or reverted) would
+                        // otherwise sit in IndexedDB unreferenced forever. The
+                        // keys being promoted are not in this list — their
+                        // staged record is consumed by the promotion itself.
+                        CORE_KEYS.forEach(function (k) {
+                            var stale = !coreUpdates.some(function (c) { return c.coreKey === k; });
+                            if (stale) drop.push(_stagedCoreKey(k));
+                        });
+                        return store.commitGeneration({
+                            promote: promote,
+                            deleteFiles: drop,
+                            puts: puts,
+                            deletes: ['deltaInstall']
+                        }).then(function () { return pending; });
+                    }).then(function (pending) {
+                        // Lowered only AFTER the generation switched: that
+                        // transaction IS the moment the shards and the recorded
+                        // list agree again.
+                        _releaseShardUpdate();
+                        if (!pending.length) return;
+                        return _drainPendingDeletes();
+                    }).then(function () {
+                        return { changedItems: changedItems, coreChanged: coreChanged };
+                    }, function (err) {
+                        // Stand-in for `finally` (not in this file's ES5 baseline).
+                        // A thrown delta must not leave the app stuck in "updating"
+                        // — the outer .catch below would otherwise swallow the
+                        // error and the flag with it.
+                        _releaseShardUpdate();
+                        throw err;
+                    });
                 });
+                });   // close _drainPendingDeletes().then(getState('deltaInstall'))
                 });   // close store.getState('shards').then(savedShards)
                 });   // close store.getState('langs').then(savedLangs)
             });
@@ -1150,7 +1629,11 @@ PPP.downloader = (function () {
     }
 
     /**
-     * Is this manifest shard already sitting in IndexedDB, byte-for-byte?
+     * Is the artefact this manifest entry describes already sitting in
+     * IndexedDB under `key`, byte-for-byte? Used for sentence shards (their
+     * live key) and, since the atomic generation switch, for a delta's STAGED
+     * core files — which is what makes an interrupted delta resume instead of
+     * re-downloading everything it had already fetched.
      * Reuses _verifyBuffer's exact size+sha256 check (the same gate a fresh
      * download has to pass) against the record already on disk, so "already
      * installed" means the SAME check as "downloaded correctly" — not two
@@ -1185,16 +1668,50 @@ PPP.downloader = (function () {
      * in) re-downloaded the full ~119 MB set for nothing (field incident,
      * 2026-07-27).
      */
-    function _shardAlreadyInStore(entry) {
+    function _entryAlreadyInStore(key, entry) {
         if (!entry.sha256) return Promise.resolve(false);
-        return store.getEncoded('shard:' + entry.id).then(function (rec) {
-            if (!rec || !rec.buf) return false;
-            if (PPP.codec.normalize(rec.enc) !== PPP.codec.normalize(entry.enc)) return false;
-            return _verifyBuffer(rec.buf, entry, entry.id).then(
-                function () { return true; },
-                function () { return false; }
-            );
+        // Fail closed when the bytes CANNOT be hashed (Codex HIGH-3,
+        // 2026-07-28). _verifyBuffer degrades to a size-only check where
+        // SubtleCrypto is missing (an insecure context, an old webview) — a
+        // deliberate degradation on the DOWNLOAD path, where the alternative is
+        // an install that cannot run at all. On the SKIP path that same
+        // degradation is a silent-wrong-answer generator: a write killed
+        // mid-shard can leave the previous generation's bytes under the live
+        // key at exactly the length the new manifest declares, and a size-only
+        // comparison then calls them correct and skips the download for good.
+        // The device would search a shard from one generation while claiming
+        // another — the one failure mode this whole file is built to prevent.
+        // So a skip requires a real hash comparison: no digest, no skip. The
+        // cost is re-downloading on such browsers, which is bytes, not
+        // correctness.
+        if (!(window.crypto && crypto.subtle && crypto.subtle.digest)) return Promise.resolve(false);
+        // Cheap rejection first (getRecordInfo reads Blob metadata only, no
+        // bytes): a record of a DIFFERENT generation under the same key almost
+        // always differs in size or codec, and saying so costs one IndexedDB
+        // lookup instead of reading and SHA-256-ing the blob. Without this, a
+        // delta that replaces 22 shards hashed ~119 MB of the OLD generation
+        // before downloading a single byte of the new one. Only a record that
+        // survives the cheap checks is materialized and hashed — so the gate
+        // below is exactly as strict as it was, just reached less often.
+        return store.getRecordInfo(key).then(function (info) {
+            if (!info) return false;
+            if (info.enc !== PPP.codec.normalize(entry.enc)) return false;
+            if (entry.size != null && info.size !== entry.size) return false;
+            return store.getEncoded(key).then(function (rec) {
+                if (!rec || !rec.buf) return false;
+                if (PPP.codec.normalize(rec.enc) !== PPP.codec.normalize(entry.enc)) return false;
+                return _verifyBuffer(rec.buf, entry, entry.id || key).then(
+                    function () { return true; },
+                    function () { return false; }
+                );
+            }, function () { return false; });
         }, function () { return false; });
+    }
+
+    /** The shard case of _entryAlreadyInStore(): shards live under
+     *  'shard:<id>' (see _processItem). */
+    function _shardAlreadyInStore(entry) {
+        return _entryAlreadyInStore('shard:' + entry.id, entry);
     }
 
     /**
@@ -1325,11 +1842,13 @@ PPP.downloader = (function () {
         fetchManifest: fetchManifest,
         firstInstall: firstInstall,
         checkForUpdates: checkForUpdates,
+        getPendingUpdate: getPendingUpdate,
         computeInstallBytes: computeInstallBytes,
         getInstalledLangs: getInstalledLangs,
         addLanguages: addLanguages,
         addShards: addShards,
         isUpdatingShards: isUpdatingShards,
+        isDeltaRunningElsewhere: isDeltaRunningElsewhere,
         getResumeState: getResumeState,
         isCoreReady: isCoreReady
     };
