@@ -47,6 +47,33 @@
 
 importScripts('sw-precache.js');
 
+// AUTO-STAMPED by scripts/build_sw_precache.py — do not edit by hand.
+//
+// Exists so that changing the precached SHELL also changes sw.js's OWN
+// bytes. The browser's Service Worker update check (the thing that decides
+// whether to fetch/install a NEW worker at all) byte-compares the response
+// for the registered script URL itself (js/app.js registers 'sw.js') against
+// what it already has installed — it never looks inside anything sw.js
+// merely imports. A SHELL_VERSION bump living only in sw-precache.js
+// (fetched via importScripts() two lines up) is therefore INVISIBLE to that
+// check on its own: a browser that already has this exact sw.js keeps it,
+// forever, no matter how many times sw-precache.js's content changes
+// underneath it. Three staging commits (2ebc26b, d13be0a, 2787bb9,
+// 2026-07-27) each changed js/ files, and none of them reached an
+// already-installed device — this constant, kept in sync with
+// self.SHELL_VERSION on every cache_bust.py run, is what makes the NEXT such
+// change actually visible (Codex HIGH-2, 2026-07-28).
+const SW_SHELL_STAMP = '7f4520efb32f';
+if (typeof self.SHELL_VERSION === 'string' && self.SHELL_VERSION !== SW_SHELL_STAMP) {
+    // Non-fatal: an install-blocking throw here would be worse than serving
+    // a mismatched shell for one cycle. This means scripts/cache_bust.py was
+    // not run (or failed) after the last shell-file edit — see the
+    // sw-precache.js drift gate in tests/cache-bust-gate.spec.js.
+    console.error('sw.js SW_SHELL_STAMP (' + SW_SHELL_STAMP + ') does not match ' +
+        'sw-precache.js SHELL_VERSION (' + self.SHELL_VERSION + ') — ' +
+        'scripts/cache_bust.py was not run after the last shell-file edit.');
+}
+
 const SW_VERSION = 'v10-' + self.SHELL_VERSION;
 const CACHE = 'ca-shell-' + self.SHELL_VERSION;
 const V8_MARKER_PREFIX = 'sw-marker-'; // v8 left marker caches with this prefix

@@ -4019,3 +4019,347 @@ test.describe('A failed send leaves nothing behind (Codex LOW, 2026-07-27)', () 
       'a failed send left a pending worker call behind').toBe(0);
   });
 });
+
+test.describe('addShards() skips shards already correct in IndexedDB (2026-07-28)', () => {
+  // Field incident, 2026-07-27: a phone that already held every sentence
+  // shard in IndexedDB, but whose durable `shards` state flag was false,
+  // re-downloaded the full ~119 MB set the moment something (a shell/OS
+  // update) drove it back through the "opted out before shards became
+  // mandatory, backfill now" path (app.js _startShardsOnlyInstall ->
+  // PPP.downloader.addShards). A negative control ruled out the shell swap
+  // itself as the cause: a device WITH `shards: true` survived a cache_bust +
+  // reload with ZERO shard requests. The only reachable cause left was
+  // addShards() itself, which queued every manifest shard unconditionally —
+  // it never asked IndexedDB whether the bytes were already there.
+  //
+  // Fix: js/downloader.js _shardAlreadyInStore() checks each shard's ACTUAL
+  // stored bytes (size + sha256 — the exact gate _verifyBuffer applies to a
+  // fresh download) before queuing it. A1 below is the positive case. A2/A3
+  // are the negative controls this fix must not break: a shard that is
+  // genuinely missing, or present under the right key but with the WRONG
+  // bytes (a damaged/partial prior write), must still be (re)downloaded —
+  // skipping is only safe on a full match.
+  test.use({ serviceWorkers: 'block' });
+
+  function sha256Hex(buf) {
+    return crypto.createHash('sha256').update(buf).digest('hex');
+  }
+
+  /** Write `bytes` into IndexedDB under the given shard's storage key, as if
+   *  a prior install/download already put them there. `enc` defaults to
+   *  'gzip' (the manifest fixtures' default) but can be overridden to test
+   *  the codec-mismatch path (MEDIUM-2). */
+  function seedShard(page, shardId, bytes, enc) {
+    return page.evaluate(({ b64, id, enc }) => {
+      const bin = atob(b64);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return PPP.offlineStore.putFile({
+        key: 'shard:' + id, packId: 'shard:' + id,
+        gz: new Blob([arr]), raw: arr.length, enc: enc || 'gzip',
+      });
+    }, { b64: bytes.toString('base64'), id: shardId, enc: enc || 'gzip' });
+  }
+
+  test('A1. Shard already correct on disk -> zero network requests, shards:true + localManifest committed', async ({ page }) => {
+    const kept = Buffer.from('kept-shard-payload-' + 'k'.repeat(500));
+    const keptEntry = {
+      id: 'test_kept', path: 'data/shards/test_kept.db.gz',
+      size: kept.length, sha256: sha256Hex(kept), raw: kept.length, enc: 'gzip',
+    };
+    const remote = JSON.parse(JSON.stringify(realManifest));
+    remote.sentenceShards = [keptEntry];
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(remote),
+    }));
+
+    const shardReqs = [];
+    page.on('request', r => { if (r.url().indexOf('/data/shards/') !== -1) shardReqs.push(r.url()); });
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported());
+
+    // Pre-seed IndexedDB with the EXACT bytes the manifest describes.
+    await seedShard(page, keptEntry.id, kept);
+
+    // NEGATIVE CHECK RUN (js/downloader.js addShards() reverted to `git stash`
+    // of the pre-fix version, which queues every manifest shard
+    // unconditionally): this test does not even reach the assertions below —
+    // the test deliberately never routes data/shards/test_kept.db.gz*, so the
+    // unconditional queue tries a real network fetch and gets a real 404:
+    //   Error: page.evaluate: Error: Download failed: test_kept (HTTP 404
+    //   loading data/shards/test_kept.db.gz?v=f44cc7bba92255fe)
+    //       at http://localhost:8899/js/downloader.js:599:32
+    // That failure IS the proof: the fixed code never attempts this fetch at
+    // all (asserted below), so "the resource doesn't even exist" simply never
+    // matters to it.
+    const res = await page.evaluate(() => PPP.downloader.addShards());
+    expect(res.added).toBe(true);
+    expect(shardReqs, 'a shard already correct on disk was fetched from the network').toEqual([]);
+
+    const shardsFlag = await page.evaluate(() => PPP.offlineStore.getState('shards'));
+    expect(shardsFlag).toBe(true);
+
+    const lm = await page.evaluate(() => PPP.offlineStore.getState('localManifest'));
+    expect(lm && lm.sentenceShards && lm.sentenceShards.length).toBe(1);
+    expect(lm.sentenceShards[0].id).toBe('test_kept');
+  });
+
+  test('A2. Shard with no IndexedDB record at all is still downloaded (negative control)', async ({ page }) => {
+    const missing = Buffer.from('missing-shard-payload-' + 'm'.repeat(500));
+    const missingEntry = {
+      id: 'test_missing', path: 'data/shards/test_missing.db.gz',
+      size: missing.length, sha256: sha256Hex(missing), raw: missing.length, enc: 'gzip',
+    };
+    const remote = JSON.parse(JSON.stringify(realManifest));
+    remote.sentenceShards = [missingEntry];
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(remote),
+    }));
+    await serveBytes(page, missingEntry.path, missing);
+
+    const shardReqs = [];
+    page.on('request', r => { if (r.url().indexOf('/data/shards/') !== -1) shardReqs.push(r.url()); });
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported());
+
+    const res = await page.evaluate(() => PPP.downloader.addShards());
+    expect(res.added).toBe(true);
+    expect(shardReqs.length, 'a shard with no IndexedDB record at all was never fetched').toBeGreaterThan(0);
+
+    const recLen = await page.evaluate(() =>
+      PPP.offlineStore.getEncoded('shard:test_missing').then(rec => rec && rec.buf ? rec.buf.byteLength : -1));
+    expect(recLen).toBe(missing.length);
+  });
+
+  test('A3. Shard present under the right key but with the WRONG bytes is re-downloaded, not skipped (fail-closed sanity)', async ({ page }) => {
+    const wrong = Buffer.from('WRONG-DAMAGED-BYTES-' + 'w'.repeat(500));
+    const correct = Buffer.from('correct-shard-payload-' + 'c'.repeat(500));
+    const entry = {
+      id: 'test_corrupt', path: 'data/shards/test_corrupt.db.gz',
+      size: correct.length, sha256: sha256Hex(correct), raw: correct.length, enc: 'gzip',
+    };
+    const remote = JSON.parse(JSON.stringify(realManifest));
+    remote.sentenceShards = [entry];
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(remote),
+    }));
+    await serveBytes(page, entry.path, correct);
+
+    const shardReqs = [];
+    page.on('request', r => { if (r.url().indexOf('/data/shards/') !== -1) shardReqs.push(r.url()); });
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported());
+
+    // Pre-seed IndexedDB under the SAME key with the WRONG bytes — a damaged
+    // or partially-written shard left behind by an interrupted prior write.
+    await seedShard(page, entry.id, wrong);
+
+    const res = await page.evaluate(() => PPP.downloader.addShards());
+    expect(res.added).toBe(true);
+    expect(shardReqs.length, 'a corrupt existing shard was skipped instead of being repaired').toBeGreaterThan(0);
+
+    const recLen = await page.evaluate(() =>
+      PPP.offlineStore.getEncoded('shard:test_corrupt').then(rec => rec && rec.buf ? rec.buf.byteLength : -1));
+    expect(recLen).toBe(correct.length);
+  });
+
+  test('A4. A manifest entry with NO sha256 is never skipped, even with a byte-identical IDB record (Codex HIGH-3, fail-closed)', async ({ page }) => {
+    // _verifyBuffer() (used to CHECK a fresh download) only verifies sha256
+    // "when the manifest carries one" — correct for that job, since a
+    // size-only match is still decent evidence a download landed intact. It
+    // is the WRONG rule for a SKIP decision: a stale same-size shard whose
+    // manifest entry lost its sha256 field would be waved through as
+    // "already correct" forever. _shardAlreadyInStore() must refuse to skip
+    // outright whenever sha256 is missing, regardless of how good the size
+    // match looks.
+    const same = Buffer.from('no-sha-shard-payload-' + 'n'.repeat(500));
+    const entry = {
+      // Deliberately NO sha256 field.
+      id: 'test_nosha', path: 'data/shards/test_nosha.db.gz',
+      size: same.length, raw: same.length, enc: 'gzip',
+    };
+    const remote = JSON.parse(JSON.stringify(realManifest));
+    remote.sentenceShards = [entry];
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(remote),
+    }));
+    await serveBytes(page, entry.path, same);
+
+    const shardReqs = [];
+    page.on('request', r => { if (r.url().indexOf('/data/shards/') !== -1) shardReqs.push(r.url()); });
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported());
+
+    // Pre-seed IndexedDB with BYTE-IDENTICAL content under the same key —
+    // the strongest possible case for skipping, and still not enough
+    // without a sha256 to check against.
+    await seedShard(page, entry.id, same);
+
+    // NEGATIVE CHECK RUN (js/downloader.js _shardAlreadyInStore() reverted to
+    // NOT have the `if (!entry.sha256) return Promise.resolve(false);` guard,
+    // falling through to plain _verifyBuffer() instead): the size-only match
+    // against the byte-identical IDB record is treated as a full pass, so the
+    // shard is skipped —
+    //   Error: a shard entry missing sha256 was skipped instead of downloaded
+    //     Expected length: > 0
+    //     Received length: 0
+    const res = await page.evaluate(() => PPP.downloader.addShards());
+    expect(res.added).toBe(true);
+    expect(shardReqs.length, 'a shard entry missing sha256 was skipped instead of downloaded').toBeGreaterThan(0);
+  });
+
+  test('A5. A stored record with the WRONG codec (enc) is never skipped, even with matching size+sha256 (Codex MEDIUM-2)', async ({ page }) => {
+    // getEncoded() returns bytes PLUS the codec that produced them — bytes
+    // alone do not say how to decode them (js/offline-store.js). If the
+    // skip check only compared bytes/size/sha256 and ignored the stored
+    // `enc`, a record whose enc field was corrupted independently of its
+    // payload (or genuinely encoded with the wrong codec) would be "skipped"
+    // as already-correct and later fail to decode.
+    const payload = Buffer.from('enc-mismatch-shard-payload-' + 'e'.repeat(500));
+    const entry = {
+      id: 'test_encmismatch', path: 'data/shards/test_encmismatch.db.gz',
+      size: payload.length, sha256: sha256Hex(payload), raw: payload.length, enc: 'gzip',
+    };
+    const remote = JSON.parse(JSON.stringify(realManifest));
+    remote.sentenceShards = [entry];
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(remote),
+    }));
+    await serveBytes(page, entry.path, payload);
+
+    const shardReqs = [];
+    page.on('request', r => { if (r.url().indexOf('/data/shards/') !== -1) shardReqs.push(r.url()); });
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported());
+
+    // Same bytes, same size, same sha256 — but stored under enc:'br' while
+    // the manifest says 'gzip'.
+    await seedShard(page, entry.id, payload, 'br');
+
+    // NEGATIVE CHECK RUN (js/downloader.js _shardAlreadyInStore() reverted to
+    // skip the `PPP.codec.normalize(rec.enc) !== PPP.codec.normalize(entry.enc)`
+    // check): bytes/size/sha256 all match, so the mismatched codec is never
+    // even looked at and the shard is skipped —
+    //   Error: a shard record with the wrong codec (enc) was skipped instead of re-fetched
+    //     Expected length: > 0
+    //     Received length: 0
+    const res = await page.evaluate(() => PPP.downloader.addShards());
+    expect(res.added).toBe(true);
+    expect(shardReqs.length, 'a shard record with the wrong codec (enc) was skipped instead of re-fetched').toBeGreaterThan(0);
+
+    const rec = await page.evaluate(() =>
+      PPP.offlineStore.getEncoded('shard:test_encmismatch').then(r => r ? { len: r.buf.byteLength, enc: r.enc } : null));
+    expect(rec && rec.enc).toBe('gzip');
+  });
+
+  test('A6. checkForUpdates() defers shard deletion while addShards() is mid-run, instead of racing its commit (Codex HIGH-1)', async ({ page }) => {
+    // The race: addShards() reads the IDB shard records once to decide what
+    // to (re)fetch, then later commits `shards: true` + the full manifest
+    // shard list. Its `shards` state stays false the WHOLE time until that
+    // final commit. If checkForUpdates() runs concurrently, it reads
+    // `includeShards = !!savedShards` as false and — in the "opted out"
+    // branch — deletes EVERY shard recorded in localManifest, including ones
+    // addShards() already decided (a moment earlier) were fine to keep. Then
+    // addShards() commits `shards: true` over that gap: the library claims
+    // an index IndexedDB does not actually hold.
+    //
+    // Reproduced here by holding shardB's download open mid-addShards() (so
+    // addShards() is provably still running and holding the shard-update
+    // flag), calling checkForUpdates() with a manifest whose `local` already
+    // lists shardA (as if from a prior generation) while the persisted
+    // `shards` flag is still false, and checking that (a) checkForUpdates()
+    // reports zero changed items — it deferred rather than computing a
+    // shard deletion — and (b) shardA's IDB record survives untouched.
+    const shardA = Buffer.from('kept-shard-A-' + 'a'.repeat(500));
+    const shardAEntry = {
+      id: 'test_race_a', path: 'data/shards/test_race_a.db.gz',
+      size: shardA.length, sha256: sha256Hex(shardA), raw: shardA.length, enc: 'gzip',
+    };
+    const shardB = Buffer.from('needs-download-shard-B-' + 'b'.repeat(500));
+    const shardBEntry = {
+      id: 'test_race_b', path: 'data/shards/test_race_b.db.gz',
+      size: shardB.length, sha256: sha256Hex(shardB), raw: shardB.length, enc: 'gzip',
+    };
+
+    const remote = JSON.parse(JSON.stringify(realManifest));
+    remote.sentenceShards = [shardAEntry, shardBEntry];
+    await page.route('**/data/manifest.json*', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(remote),
+    }));
+
+    // Hold shardB's download open so addShards() cannot finish until we say so.
+    const held = [];
+    let holdShardB = true;
+    await page.route('**/data/shards/test_race_b.db.gz*', route => {
+      if (holdShardB) { held.push(route); return; }
+      route.fulfill({ status: 200, contentType: 'application/octet-stream', body: shardB }).catch(() => {});
+    });
+
+    await page.goto('./');
+    await page.waitForFunction(() => window.PPP && PPP.downloader && PPP.offlineStore && PPP.offlineStore.supported());
+
+    // Seed shardA as already correctly installed, and simulate a device that
+    // already has a `localManifest` recording shardA from an earlier
+    // generation, but never flipped the `shards` flag to true. core/packs are
+    // set to match `remote` EXACTLY so the delta this test measures is
+    // isolated to shard handling — otherwise a synthetic localManifest with no
+    // core/packs entries at all would make checkForUpdates() see every real
+    // core file and pack as "new" too, swamping the shard-specific signal
+    // this test is about.
+    await seedShard(page, shardAEntry.id, shardA);
+    await page.evaluate(({ shardAEntry, remote }) => {
+      return PPP.offlineStore.setState('shards', false).then(() =>
+        PPP.offlineStore.setState('localManifest', {
+          core: remote.core, packs: remote.packs, sentenceShards: [shardAEntry],
+        })
+      );
+    }, { shardAEntry, remote });
+
+    // Start addShards() without awaiting it, and wait until it is provably
+    // mid-run — NOT just isUpdatingShards()===true (that flag goes up right
+    // after the manifest fetch resolves, before the presence-check pass over
+    // shardA/shardB even runs), but actually holding the network request for
+    // the missing shard, which only happens after the presence check decided
+    // shardB needs a fetch.
+    await page.evaluate(() => { window.__addShardsPromise = PPP.downloader.addShards(); });
+    await expect.poll(() => held.length, { timeout: 20000 }).toBeGreaterThan(0);
+    expect(await page.evaluate(() => PPP.downloader.isUpdatingShards())).toBe(true);
+
+    // NEGATIVE CHECK RUN (js/downloader.js checkForUpdates() reverted to NOT
+    // check `isUpdatingShards()` before computing shard adds/removes):
+    // checkForUpdates() reads `savedShards` as false (addShards() has not
+    // committed yet), takes the "opted out" branch, and reports shardA as
+    // removed —
+    //   Error: checkForUpdates() computed a shard change while addShards() was mid-run
+    //     Expected: 0
+    //     Received: 1
+    // — and a REAL (not reverted) run of the old code actually deletes
+    // shardA's IDB record right here, which the assertion below on shardA's
+    // record catches independently.
+    const delta = await page.evaluate(() => PPP.downloader.checkForUpdates());
+    expect(delta.changedItems, 'checkForUpdates() computed a shard change while addShards() was mid-run').toBe(0);
+
+    const shardAStillThere = await page.evaluate(() =>
+      PPP.offlineStore.getEncoded('shard:test_race_a').then(r => r && r.buf ? r.buf.byteLength : -1));
+    expect(shardAStillThere, 'shardA was deleted out from under the in-flight addShards()').toBe(shardA.length);
+
+    // Release shardB's download so addShards() can finish, and confirm it
+    // reaches a consistent final state.
+    holdShardB = false;
+    held.splice(0).forEach(route => {
+      route.fulfill({ status: 200, contentType: 'application/octet-stream', body: shardB }).catch(() => {});
+    });
+    const finalRes = await page.evaluate(() => window.__addShardsPromise);
+    expect(finalRes.added).toBe(true);
+    expect(await page.evaluate(() => PPP.downloader.isUpdatingShards())).toBe(false);
+
+    const shardBRec = await page.evaluate(() =>
+      PPP.offlineStore.getEncoded('shard:test_race_b').then(r => r && r.buf ? r.buf.byteLength : -1));
+    expect(shardBRec).toBe(shardB.length);
+  });
+});

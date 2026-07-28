@@ -140,6 +140,15 @@ PPP.downloader = (function () {
         _bcPost('end');
     }
 
+    /** Thrown when a caller asked to touch the sentence shards while another
+     *  shard-touching operation already holds the isUpdatingShards() flag —
+     *  see addShards()'s use of it below (Codex HIGH-1, 2026-07-28). */
+    function _libraryUpdatingError() {
+        var e = new Error('Sentence shards are already being synced — try again in a moment');
+        e.libraryUpdating = true;
+        return e;
+    }
+
     /* ---- Cancellation -----------------------------------------------------
      * The two gated entry points (firstInstall, addShards) take an optional
      * `signal` as their LAST argument. It is either a real
@@ -945,8 +954,26 @@ PPP.downloader = (function () {
                 // shards dropped from the manifest. When opted out: any shards
                 // still recorded in localManifest (e.g. a prior opted-in install
                 // whose flag was later turned off) are treated as removed.
+                //
+                // DEFER entirely while isUpdatingShards() is already true (Codex
+                // HIGH-1, 2026-07-28): that flag being up means addShards() is
+                // mid-run — it already read the IDB shard records once to decide
+                // what to skip, and will commit `shards: true` + the full shard
+                // list on that decision later. If THIS delta deleted a shard out
+                // from under that decision (the opted-out branch below deletes
+                // every locally recorded shard whenever `includeShards` reads
+                // false, which it still does until addShards()'s own commit
+                // lands), addShards() would go on to commit "shards: true" over
+                // a gap that was never actually filled — the library then claims
+                // a shard is installed that IndexedDB does not have. Skipping
+                // shard changes for one round is always safe: nothing here is
+                // shard-work-in-progress, so the very next checkForUpdates()
+                // call (periodic / visibility-triggered) reconciles normally
+                // once the flag clears.
                 var removedShards = [];
-                if (includeShards) {
+                if (isUpdatingShards()) {
+                    // no-op this round — see above.
+                } else if (includeShards) {
                     var remoteShardIds = {};
                     (remote.sentenceShards || []).forEach(function (s) { remoteShardIds[s.id] = true; });
                     var localShardById = {};
@@ -1123,67 +1150,174 @@ PPP.downloader = (function () {
     }
 
     /**
+     * Is this manifest shard already sitting in IndexedDB, byte-for-byte?
+     * Reuses _verifyBuffer's exact size+sha256 check (the same gate a fresh
+     * download has to pass) against the record already on disk, so "already
+     * installed" means the SAME check as "downloaded correctly" — not two
+     * divergent notions of "present" that could quietly drift apart.
+     *
+     * FAIL CLOSED: any reason this can't prove a full match — no record, a
+     * read error, a size/hash mismatch, a codec mismatch, OR a manifest entry
+     * with no sha256 at all — resolves false, i.e. (re)download. Skipping is
+     * only safe on a positive match; skipping on "couldn't tell" would risk
+     * leaving a corrupt/partial/wrongly-decoded shard in place forever.
+     *
+     * Two things this does NOT delegate to plain _verifyBuffer(), on purpose
+     * (Codex HIGH-3 / MEDIUM-2, 2026-07-28):
+     *   - _verifyBuffer() checks sha256 "only when the manifest carries one"
+     *     (defensive for a build that has not started emitting it yet) — the
+     *     right behaviour for VERIFYING A FRESH DOWNLOAD, where a size-only
+     *     match is still evidence the bytes are probably right. It is the
+     *     WRONG behaviour for a SKIP decision: a same-size but stale shard
+     *     with no sha256 field would be waved through as "already correct"
+     *     forever. So a missing sha256 here means false — a fresh download
+     *     runs the (weaker) _verifyBuffer() gate as before.
+     *   - The stored `enc` codec is compared to the manifest entry's,
+     *     because bytes alone do not say how to decode them (see
+     *     js/offline-store.js getEncoded); a record whose `enc` field was
+     *     corrupted independently of its bytes would otherwise be "skipped"
+     *     and later fail to decode with the wrong codec.
+     *
+     * Exists because addShards() used to queue every manifest shard
+     * unconditionally. A device that already holds all shards in IndexedDB
+     * but has `shards !== true` (e.g. a firstInstall that opted out, then an
+     * unrelated event — observed: a shell/OS update — nudges it to opt back
+     * in) re-downloaded the full ~119 MB set for nothing (field incident,
+     * 2026-07-27).
+     */
+    function _shardAlreadyInStore(entry) {
+        if (!entry.sha256) return Promise.resolve(false);
+        return store.getEncoded('shard:' + entry.id).then(function (rec) {
+            if (!rec || !rec.buf) return false;
+            if (PPP.codec.normalize(rec.enc) !== PPP.codec.normalize(entry.enc)) return false;
+            return _verifyBuffer(rec.buf, entry, entry.id).then(
+                function () { return true; },
+                function () { return false; }
+            );
+        }, function () { return false; });
+    }
+
+    /**
      * Add the sentence shards (offline text search, ~200 MB) to an ALREADY
      * installed library that opted out of them at install time. Mirrors
-     * addLanguages(): downloads + applies only the shards (core/EN/other
-     * languages are already present), then persists `shards: true` and folds
-     * the shard list into `localManifest` so checkForUpdates' delta logic
-     * treats them as present from now on (see _manifestForStore(manifest,
-     * true) — same shape, built here without re-fetching the manifest twice).
-     * onProgress({loadedBytes, totalBytes}) mirrors addLanguages. `signal`
-     * (optional, last) cancels it exactly like firstInstall: fetches aborted,
-     * no further item started, `shards: true` NOT committed.
+     * addLanguages(): downloads + applies only the shards that are actually
+     * missing or damaged (core/EN/other languages are already present, and
+     * any shard _shardAlreadyInStore() confirms is already correct on disk
+     * is skipped — see that function for why), then persists `shards: true`
+     * and folds the FULL manifest shard list into `localManifest` so
+     * checkForUpdates' delta logic treats every shard — downloaded just now
+     * or already present — as current from now on (see _manifestForStore
+     * (manifest, true) — same shape, built here without re-fetching the
+     * manifest twice).
+     * onProgress({loadedBytes, totalBytes}) mirrors addLanguages, and only
+     * accounts for bytes actually transferred (skipped shards contribute 0
+     * to totalBytes — a device that already has everything sees a
+     * near-instant "done", which is correct: nothing was downloaded).
+     * `signal` (optional, last) cancels it exactly like firstInstall: fetches
+     * aborted, no further item started, `shards: true` NOT committed.
+     *
+     * MUTUAL EXCLUSION WITH checkForUpdates() (Codex HIGH-1, 2026-07-28): this
+     * function holds the SAME isUpdatingShards() flag checkForUpdates() uses
+     * for its own shard-touching deltas, for its ENTIRE run — from before the
+     * very first IndexedDB presence-check through the final commit. Without
+     * this, checkForUpdates() could run concurrently (its `shards` state read
+     * is still false until THIS function's own commit lands), see
+     * `includeShards === false`, and delete every shard record this function
+     * had just decided — a heartbeat earlier — were already correctly
+     * installed; this function would then go on to commit `shards: true` +
+     * the full shard list over that gap, leaving the library CLAIMING an
+     * index that IndexedDB does not actually hold. If another shard-touching
+     * operation already holds the flag when this one is called, it refuses
+     * outright (_libraryUpdatingError) rather than race it from the other
+     * side — the caller (app.js) already has retry/error-screen handling for
+     * a rejected addShards().
      */
     function addShards(onProgress, signal) {
         if (_isAborted(signal)) return Promise.reject(_abortError());
+        if (isUpdatingShards()) return Promise.reject(_libraryUpdatingError());
+        _raiseShardUpdate();
+        var released = false;
+        function release() { if (!released) { released = true; _lowerShardUpdate(); } }
+
         return fetchManifest(signal).then(function (manifest) {
             if (_isAborted(signal)) throw _abortError();
-            var work = [];
-            var totalBytes = 0;
-            (manifest.sentenceShards || []).forEach(function (s) {
-                if (s) { work.push({ type: 'shard', name: s.id, entry: s }); totalBytes += (s.size || 0); }
-            });
-            if (work.length === 0) {
-                return store.setState('shards', true).then(function () { return { added: true }; });
-            }
-            var install = { completedCore: {}, completedPacks: {}, completedShards: {} };
-            var baseBytes = 0;
-            var itemBytes = {};
-            var lastEmit = 0;
-            function emit(force) {
-                if (!onProgress) return;
-                var now = Date.now();
-                if (!force && now - lastEmit < 100) return;
-                lastEmit = now;
-                var loaded = baseBytes;
-                for (var k in itemBytes) loaded += itemBytes[k];
-                onProgress({ loadedBytes: Math.min(loaded, totalBytes), totalBytes: totalBytes });
-            }
-            emit(true);
-            return _runPool(work, function (item) {
-                itemBytes[item.name] = 0;
-                return _processItem(
-                    item, install,
-                    function (n) { itemBytes[item.name] += n; emit(); },
-                    function () { itemBytes[item.name] = 0; emit(true); },
-                    signal
-                ).then(function () {
-                    delete itemBytes[item.name];
-                    baseBytes += item.entry.size;
-                    emit(true);
-                });
+            var shardEntries = (manifest.sentenceShards || []).filter(function (s) { return !!s; });
+
+            // Classify each shard as "already correct on disk" vs "needs a
+            // fetch" at bounded concurrency (CONCURRENCY, same as every
+            // download pool in this file) rather than firing every shard's
+            // IndexedDB read + full ArrayBuffer materialization + SHA-256
+            // digest at once via Promise.all (Codex MEDIUM-1, 2026-07-28): a
+            // 22-shard, ~119 MB generation read all-at-once would put the
+            // WHOLE set in memory simultaneously, on a device whose tightest
+            // budget is search's own ~173 MB transient — and it would do so
+            // BEFORE any download work even starts. _runPool already handles
+            // the abort-checking and first-error propagation this needs.
+            var toFetch = [];
+            return _runPool(shardEntries, function (s) {
+                return _shardAlreadyInStore(s).then(function (ok) { if (!ok) toFetch.push(s); });
             }, CONCURRENCY, signal).then(function () {
-                emit(true);
                 if (_isAborted(signal)) throw _abortError();
-                return store.getState('localManifest').then(function (lm) {
-                    var updated = {};
-                    if (lm) Object.keys(lm).forEach(function (k) { updated[k] = lm[k]; });
-                    updated.sentenceShards = manifest.sentenceShards || [];
-                    return store.commitState({ shards: true, localManifest: updated }, []);
+                var work = [];
+                var totalBytes = 0;
+                toFetch.forEach(function (s) {
+                    work.push({ type: 'shard', name: s.id, entry: s });
+                    totalBytes += (s.size || 0);
                 });
-            }).then(function () {
-                return { added: true };
+
+                function _commitShardsPresent() {
+                    return store.getState('localManifest').then(function (lm) {
+                        var updated = {};
+                        if (lm) Object.keys(lm).forEach(function (k) { updated[k] = lm[k]; });
+                        updated.sentenceShards = manifest.sentenceShards || [];
+                        return store.commitState({ shards: true, localManifest: updated }, []);
+                    }).then(function () {
+                        return { added: true };
+                    });
+                }
+
+                if (work.length === 0) {
+                    return _commitShardsPresent();
+                }
+
+                var install = { completedCore: {}, completedPacks: {}, completedShards: {} };
+                var baseBytes = 0;
+                var itemBytes = {};
+                var lastEmit = 0;
+                function emit(force) {
+                    if (!onProgress) return;
+                    var now = Date.now();
+                    if (!force && now - lastEmit < 100) return;
+                    lastEmit = now;
+                    var loaded = baseBytes;
+                    for (var k in itemBytes) loaded += itemBytes[k];
+                    onProgress({ loadedBytes: Math.min(loaded, totalBytes), totalBytes: totalBytes });
+                }
+                emit(true);
+                return _runPool(work, function (item) {
+                    itemBytes[item.name] = 0;
+                    return _processItem(
+                        item, install,
+                        function (n) { itemBytes[item.name] += n; emit(); },
+                        function () { itemBytes[item.name] = 0; emit(true); },
+                        signal
+                    ).then(function () {
+                        delete itemBytes[item.name];
+                        baseBytes += item.entry.size;
+                        emit(true);
+                    });
+                }, CONCURRENCY, signal).then(function () {
+                    emit(true);
+                    if (_isAborted(signal)) throw _abortError();
+                    return _commitShardsPresent();
+                });
             });
+        }).then(function (result) {
+            release();
+            return result;
+        }, function (err) {
+            release();
+            throw err;
         });
     }
 
