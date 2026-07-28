@@ -324,13 +324,13 @@
     <!-- ===== APPLICATION SCRIPTS ===== -->
     <!-- Load order matters: utils first, then i18n, db, search, ui, app last -->
     <script src="js/utils.js?v=aa1a3ba8"></script>
-    <script src="js/i18n.js?v=68921734"></script>
+    <script src="js/i18n.js?v=b6261d7d"></script>
     <!-- codec must precede offline-store/downloader/db: they read PPP.codec at
          call time, but the Brotli decoder it may pull in is fetched lazily,
          only when a `br` artefact is actually decoded. -->
     <script src="js/codec.js?v=c4091679"></script>
-    <script src="js/offline-store.js?v=5d35de25"></script>
-    <script src="js/downloader.js?v=c0e13be7"></script>
+    <script src="js/offline-store.js?v=c3bdcad3"></script>
+    <script src="js/downloader.js?v=1eadc821"></script>
     <script src="js/db.js?v=9369d5a5"></script>
     <script src="js/search.js?v=92203832"></script>
     <script src="js/ui.js?v=75c6c051"></script>
@@ -338,7 +338,7 @@
     <script src="js/config.js?v=c1fb3b66"></script>
     <script src="js/vendor/jszip.min.js?v=acc7e414"></script>
     <script src="guide/menu-data.js?v=cb5c5cbe"></script>
-    <script src="js/app.js?v=03b29f0f"></script>
+    <script src="js/app.js?v=3aeef792"></script>
 
 </body>
 </html>
