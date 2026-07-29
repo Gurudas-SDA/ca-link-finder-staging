@@ -32,7 +32,7 @@ PPP.db = (function () {
     var dbVersionsPromise = null;
     function getDbVersions() {
         if (!dbVersionsPromise) {
-            dbVersionsPromise = fetch('data/db-versions.json', { cache: 'no-store' })
+            dbVersionsPromise = fetch(PPP.dataUrl('data/db-versions.json'), { cache: 'no-store' })
                 .then(function (r) { return r.ok ? r.json() : {}; })
                 .catch(function () { return {}; });
         }
@@ -453,7 +453,7 @@ PPP.db = (function () {
     var _coreEntriesPromise = null;
     function _coreEntry(key) {
         if (!_coreEntriesPromise) {
-            _coreEntriesPromise = fetch('data/manifest.json', { cache: 'no-store' })
+            _coreEntriesPromise = fetch(PPP.dataUrl('data/manifest.json'), { cache: 'no-store' })
                 .then(function (r) { return r.ok ? r.json() : {}; })
                 .then(function (m) { return (m && m.core) || {}; })
                 .catch(function () { return {}; });
@@ -468,7 +468,7 @@ PPP.db = (function () {
             return Promise.all([getDbVersions(), _coreEntry('meta')]).then(function (res) {
                 var versions = res[0], entry = res[1];
                 var v = versions.meta ? '?v=' + versions.meta : '';
-                var path = (entry && entry.path) || 'data/ppp_meta.db.gz';
+                var path = PPP.dataUrl((entry && entry.path) || 'data/ppp_meta.db.gz');
                 var enc = PPP.codec.normalize(entry && entry.enc);
                 // Brotli needs no DecompressionStream — _gzSupported() only
                 // answers for the native gzip codec, so ask it only for gzip.
@@ -476,10 +476,10 @@ PPP.db = (function () {
                     return fetchGzDB(META, path + v, progressCallback, enc)
                         .catch(function (err) {
                             console.warn('Compressed meta fetch failed, falling back to uncompressed:', err);
-                            return loadDB(META, 'data/ppp_meta.db' + v, progressCallback);
+                            return loadDB(META, PPP.dataUrl('data/ppp_meta.db') + v, progressCallback);
                         });
                 }
-                return loadDB(META, 'data/ppp_meta.db' + v, progressCallback);
+                return loadDB(META, PPP.dataUrl('data/ppp_meta.db') + v, progressCallback);
             });
         });
     }
@@ -492,7 +492,7 @@ PPP.db = (function () {
         var dbName = 'html_' + lang;
         return getDbVersions().then(function (versions) {
             var v = versions[lang] ? '?v=' + versions[lang] : '';
-            return loadDB(dbName, 'data/ppp_transcripts_html_' + lang + '.db' + v, progressCallback);
+            return loadDB(dbName, PPP.dataUrl('data/ppp_transcripts_html_' + lang + '.db') + v, progressCallback);
         });
     }
 
@@ -512,7 +512,7 @@ PPP.db = (function () {
     // a device with no installed shards — that device fetches shards over the
     // network, so the newest list is exactly the right one.
     function _liveShardList() {
-        return fetch('data/manifest.json', { cache: 'no-store' })
+        return fetch(PPP.dataUrl('data/manifest.json'), { cache: 'no-store' })
             .then(function (r) { return r.ok ? r.json() : {}; })
             .then(function (m) { return (m && m.sentenceShards) || []; })
             .catch(function () { return []; });
@@ -682,7 +682,8 @@ PPP.db = (function () {
     // then size-validated. Fails closed on a size mismatch — never opens a
     // truncated/corrupt buffer in sql.js.
     function _fetchValidatedShard(shard, signal) {
-        var netUrl = shard.path + (shard.sha256 ? ('?v=' + String(shard.sha256).slice(0, 16)) : '');
+        var netUrl = PPP.dataUrl(shard.path) +
+            (shard.sha256 ? ('?v=' + String(shard.sha256).slice(0, 16)) : '');
         return _fetchGzBytes(netUrl, signal).then(function (gz) {
             if (!_shardSizeOk(gz, shard)) {
                 throw new Error('Corrupt/partial shard ' + shard.id + ' (size '

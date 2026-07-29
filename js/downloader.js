@@ -276,7 +276,7 @@ PPP.downloader = (function () {
         var opts = { cache: 'no-store' };
         var s = _fetchSignal(signal);
         if (s) opts.signal = s;
-        return fetch('data/manifest.json', opts).then(function (r) {
+        return fetch(PPP.dataUrl('data/manifest.json'), opts).then(function (r) {
             if (!r.ok) throw new Error('manifest HTTP ' + r.status);
             return r.json();
         });
@@ -416,7 +416,7 @@ PPP.downloader = (function () {
 
     function _itemUrl(item) {
         var v = item.hash || (item.sha256 ? String(item.sha256).slice(0, 16) : '');
-        return item.path + '?v=' + v;
+        return PPP.dataUrl(item.path) + '?v=' + v;
     }
 
     /**
