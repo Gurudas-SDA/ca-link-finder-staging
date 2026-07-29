@@ -1,3 +1,4 @@
+# Cloudflare Workers static asset exclusions
 .git/
 node_modules/
 data/ppp_sentences_en.db
