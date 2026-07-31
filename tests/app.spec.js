@@ -1509,6 +1509,48 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(await page.locator('#resultsInfo').textContent()).toBe(before);
   });
 
+  test('50q. Top Searches: picking a recommendation item, then clicking Top Searches again, reopens the list with itself active (not In Titles)', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Open Top Searches and pick any recommendation item — this used to leave
+    // navView stuck on 'topSearches' (performSearch() never resets it), so a
+    // second Top Searches click read the stale value and closed instead of
+    // reopening, while the In Titles button lit up instead (Rājan report,
+    // 2026-07-31).
+    await page.click('.combo-btn-3');
+    await expect(page.locator('#recommendationsList')).toBeVisible();
+    await page.evaluate(() => PPP.app.applySubjectFilter('.some-topic-that-may-not-exist'));
+    await expect(page.locator('#resultsTable')).toBeVisible();
+    await expect(page.locator('#recommendationsList')).toBeHidden();
+
+    // Second Top Searches click: must reopen the list, not toggle it "off"
+    // as a no-op, and must light up Top Searches itself — not In Titles.
+    await page.click('.combo-btn-3');
+    await expect(page.locator('#recommendationsList')).toBeVisible();
+    await expect(page.locator('#resultsTable')).toBeHidden();
+    await expect(page.locator('.combo-btn-3')).toHaveClass(/active/);
+    await expect(page.locator('.keywords-search-btn')).not.toHaveClass(/active/);
+  });
+
+  test('50r. In Titles click after Top Searches results fully clears the field, the result count and the result list (Rājan principle)', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.click('.combo-btn-3');
+    await page.evaluate(() => PPP.app.applySubjectFilter('.some-topic-that-may-not-exist'));
+    await expect(page.locator('#resultsInfo')).not.toBeEmpty(); // "N files found"
+
+    await page.click('.keywords-search-btn'); // "In Titles"
+
+    expect(await page.locator('#searchTerm').inputValue()).toBe('');
+    expect((await page.locator('#resultsInfo').textContent()).trim()).toBe('');
+    // The stale result list/download affordance must be gone too, not just
+    // the count line — the old code left both sitting under an empty field.
+    await expect(page.locator('#resultsTable .empty-result-message')).toBeVisible();
+    await expect(page.locator('#selectToggleWrap')).toBeHidden();
+  });
+
   test('50m. By Topic (showTopics) refreshes #resultsInfo instead of leaving a stale count', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);

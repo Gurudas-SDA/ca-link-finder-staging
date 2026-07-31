@@ -3860,8 +3860,16 @@ PPP.app = (function () {
             if (mode === 'sentences') dbLastUpdate.style.display = 'none';
             else if (dbLastUpdate.getAttribute('data-last-update')) dbLastUpdate.style.display = '';
         }
-        // Clear results and search field when switching modes
-        if (prevMode !== mode) {
+        // Clear results and search field when switching modes.
+        // Also force the clear for the two plain-text buttons (In Titles /
+        // In Text) even when prevMode === mode: a browse view (e.g. Top
+        // Searches) can be showing its own results/count/download button
+        // while searchMode itself never changed, and clearComboDisplay()
+        // below already always empties the field regardless of this guard —
+        // leaving the OLD results/count visible under an empty field
+        // (Rājan principle, 2026-07-31: clicking In Titles/In Text must
+        // land on a fully clean page, not just an empty search box).
+        if (prevMode !== mode || mode === 'metadata' || mode === 'sentences') {
             document.getElementById('searchTerm').value = '';
             document.getElementById('resultsInfo').innerHTML = '';
             document.getElementById('pagination').innerHTML = '';
@@ -5896,6 +5904,14 @@ PPP.app = (function () {
         document.getElementById('topicsList').style.display = 'none';
         document.getElementById('recommendationsList').style.display = 'none';
         var _rt = document.getElementById('resultsTable'); if (_rt) _rt.style.display = '';
+        // Picking a recommendation item leaves the Top Searches browse view
+        // (navView stayed 'topSearches' otherwise, since performSearch() never
+        // touches it) — a second Top Searches click then read the stale value
+        // and toggled OFF instead of reopening the list, while the In Titles
+        // button lit up instead (Rājan report, 2026-07-31). Reset it exactly
+        // like _runSearch() does for a typed search.
+        navView = null; transcriptView = null;
+        _refreshButtonGroups();
         performSearch();
     }
 
@@ -6268,6 +6284,9 @@ PPP.app = (function () {
         currentPage = 1;
         document.getElementById('recommendationsList').style.display = 'none';
         var _rt = document.getElementById('resultsTable'); if (_rt) _rt.style.display = '';
+        // Same stale-navView fix as applySubjectFilter() above — see comment there.
+        navView = null; transcriptView = null;
+        _refreshButtonGroups();
         performSearch();
     }
 
