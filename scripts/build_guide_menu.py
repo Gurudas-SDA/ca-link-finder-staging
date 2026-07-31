@@ -3,7 +3,7 @@
 """
 build_guide_menu.py — Generate guide/menu-data.js from guide/<lang>/index.html.
 
-WHY: The "33 Features" button opens a dropdown menu listing the 9 function
+WHY: The "31 Features" button opens a dropdown menu listing the 9 function
 groups (A-I) and, under each, the localized function names. That menu needs a
 compact data source per language. Rather than duplicate the guide's GROUPS/ITEMS
 by hand, this script extracts them straight from each guide page so the menu can
@@ -15,7 +15,7 @@ from each guide/<lang>/index.html, keeps only what the menu needs (group letter
 `window.PPP_GUIDE_MENU`.
 
 HOW: Regex extraction (the arrays are hand-authored JS literals, not JSON, and
-some `t` values contain escaped quotes). Validates 9 groups + 33 items per lang.
+some `t` values contain escaped quotes). Validates 9 groups + 31 items per lang.
 
 WHERE: run from anywhere with `python scripts/build_guide_menu.py`; paths are
 resolved relative to this file's location (staging root).
@@ -27,7 +27,7 @@ import sys
 
 LANGS = ["en", "ru", "lv", "it", "fr", "es"]
 EXPECTED_GROUPS = 9
-EXPECTED_ITEMS = 33
+EXPECTED_ITEMS = 31
 
 # staging/ root = parent of this script's directory (scripts/).
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

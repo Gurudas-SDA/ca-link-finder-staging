@@ -2373,12 +2373,13 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(fname).toBe('Janmastami_test_2026.zip');
   });
 
-  test('27. Feature #33 (ZIP download) is discoverable in app + guide', async ({ page }) => {
+  test('27. ZIP download feature is discoverable in app + guide', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);
 
-    // App "Features" button reflects the new count (33).
-    await expect(page.locator('[data-i18n="featuresBtn"]')).toContainText('33');
+    // App "Features" button reflects the current count (31 — the dark/light
+    // mode entries were dropped when the theme toggle was removed).
+    await expect(page.locator('[data-i18n="featuresBtn"]')).toContainText('31');
 
     // After a search, the persistent "Download selected" button carries a
     // non-empty localized tooltip (title).
@@ -2389,13 +2390,17 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     const dlTitle = await page.locator('#downloadSelectedBtn').getAttribute('title');
     expect(dlTitle && dlTitle.trim().length).toBeGreaterThan(0);
 
-    // The EN guide renders 33 feature cards and includes a ZIP-download card.
+    // The EN guide renders 31 feature cards and includes a ZIP-download card.
     // (Static test server has no directory index — request index.html explicitly.)
     await page.goto('/guide/en/index.html');
     await page.waitForSelector('.card', { timeout: 10000 });
     const cardCount = await page.locator('.card').count();
-    expect(cardCount).toBe(33);
+    expect(cardCount).toBe(31);
     await expect(page.locator('.card h3', { hasText: 'ZIP' })).toHaveCount(1);
+
+    // The removed theme toggle must not be documented any more.
+    await expect(page.locator('.card h3', { hasText: /dark mode|light mode/i }))
+      .toHaveCount(0);
   });
 
   test('32. Features button opens grouped dropdown menu', async ({ page }) => {
@@ -2418,7 +2423,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     // Grouped list: 9 group headings, several item links.
     await expect(menu.locator('.fm-group')).toHaveCount(9);
     const itemCount = await menu.locator('.fm-item').count();
-    expect(itemCount).toBe(33);
+    expect(itemCount).toBe(31);
 
     // Each item deep-links to a specific function anchor.
     const firstItemHref = await menu.locator('.fm-item').first().getAttribute('href');

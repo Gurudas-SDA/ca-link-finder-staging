@@ -53,155 +53,145 @@ window.PPP_GUIDE_MENU = {
    {
     "n": 3,
     "g": "B",
-    "t": "Turn on dark mode"
-   },
-   {
-    "n": 4,
-    "g": "B",
-    "t": "Turn on light mode"
-   },
-   {
-    "n": 5,
-    "g": "B",
     "t": "Language switcher"
    },
    {
-    "n": 6,
+    "n": 4,
     "g": "C",
     "t": "2026 entries"
    },
    {
-    "n": 7,
+    "n": 5,
     "g": "C",
     "t": "By Added"
    },
    {
-    "n": 8,
+    "n": 6,
     "g": "C",
     "t": "Top Searches"
    },
    {
-    "n": 9,
+    "n": 7,
     "g": "C",
     "t": "By Verses"
    },
    {
-    "n": 10,
+    "n": 8,
     "g": "C",
     "t": "Verses (Top)"
    },
    {
-    "n": 11,
+    "n": 9,
     "g": "C",
     "t": "★ Favorites"
    },
    {
-    "n": 12,
+    "n": 10,
     "g": "C",
     "t": "Favorites with count"
    },
    {
-    "n": 13,
+    "n": 11,
     "g": "D",
     "t": "Key words (mode)"
    },
    {
-    "n": 14,
+    "n": 12,
     "g": "D",
     "t": "Search field"
    },
    {
-    "n": 15,
+    "n": 13,
     "g": "D",
     "t": "How to search by keywords? (help button)"
    },
    {
-    "n": 16,
+    "n": 14,
     "g": "E",
     "t": "\"Transcripts & Translations\" label"
    },
    {
-    "n": 17,
+    "n": 15,
     "g": "E",
     "t": "By Date (transcripts)"
    },
    {
-    "n": 18,
+    "n": 16,
     "g": "E",
     "t": "By Topic (transcripts)"
    },
    {
-    "n": 19,
+    "n": 17,
     "g": "E",
     "t": "Newest (transcripts)"
    },
    {
-    "n": 20,
+    "n": 18,
     "g": "F",
     "t": "Star column (favorites)"
    },
    {
-    "n": 21,
+    "n": 19,
     "g": "F",
     "t": "Link column (share)"
    },
    {
-    "n": 22,
+    "n": 20,
     "g": "F",
     "t": "Language tabs (EN/LV/RU)"
    },
    {
-    "n": 23,
+    "n": 21,
     "g": "F",
     "t": "Result row"
    },
    {
-    "n": 24,
+    "n": 22,
     "g": "F",
     "t": "Pagination"
    },
    {
-    "n": 25,
+    "n": 23,
     "g": "G",
     "t": "\"Share quote\" popup"
    },
    {
-    "n": 26,
+    "n": 24,
     "g": "H",
     "t": "\"Save to collection\" dialog"
    },
    {
-    "n": 27,
+    "n": 25,
     "g": "H",
     "t": "New collection"
    },
    {
-    "n": 28,
+    "n": 26,
     "g": "H",
     "t": "Collections picker"
    },
    {
-    "n": 29,
+    "n": 27,
     "g": "I",
     "t": "Mobile layout"
    },
    {
-    "n": 30,
+    "n": 28,
     "g": "I",
     "t": "2×3 button grid"
    },
    {
-    "n": 31,
+    "n": 29,
     "g": "F",
     "t": "Lecture summary"
    },
    {
-    "n": 32,
+    "n": 30,
     "g": "F",
     "t": "Essence"
    },
    {
-    "n": 33,
+    "n": 31,
     "g": "F",
     "t": "Download selected transcripts (ZIP)"
    }
@@ -260,155 +250,145 @@ window.PPP_GUIDE_MENU = {
    {
     "n": 3,
     "g": "B",
-    "t": "Включить тёмный режим"
-   },
-   {
-    "n": 4,
-    "g": "B",
-    "t": "Включить светлый режим"
-   },
-   {
-    "n": 5,
-    "g": "B",
     "t": "Переключатель языков"
    },
    {
-    "n": 6,
+    "n": 4,
     "g": "C",
     "t": "Записи 2026 года"
    },
    {
-    "n": 7,
+    "n": 5,
     "g": "C",
     "t": "Записи по дате добавления"
    },
    {
-    "n": 8,
+    "n": 6,
     "g": "C",
     "t": "Популярные запросы (Top Searches)"
    },
    {
-    "n": 9,
+    "n": 7,
     "g": "C",
     "t": "По стихам (Verses)"
    },
    {
-    "n": 10,
+    "n": 8,
     "g": "C",
     "t": "Стихи (Топ)"
    },
    {
-    "n": 11,
+    "n": 9,
     "g": "C",
     "t": "★ Избранное"
    },
    {
-    "n": 12,
+    "n": 10,
     "g": "C",
     "t": "Избранное со счётчиком"
    },
    {
-    "n": 13,
+    "n": 11,
     "g": "D",
     "t": "Ключевые слова (режим)"
    },
    {
-    "n": 14,
+    "n": 12,
     "g": "D",
     "t": "Поле поиска"
    },
    {
-    "n": 15,
+    "n": 13,
     "g": "D",
     "t": "Как искать по ключевым словам? (кнопка помощи)"
    },
    {
-    "n": 16,
+    "n": 14,
     "g": "E",
     "t": "Заголовок «Транскрипты и переводы»"
    },
    {
-    "n": 17,
+    "n": 15,
     "g": "E",
     "t": "По дате (транскрипты)"
    },
    {
-    "n": 18,
+    "n": 16,
     "g": "E",
     "t": "По теме (транскрипты)"
    },
    {
-    "n": 19,
+    "n": 17,
     "g": "E",
     "t": "Новейшие (транскрипты)"
    },
    {
-    "n": 20,
+    "n": 18,
     "g": "F",
     "t": "Колонка со звездой (избранное)"
    },
    {
-    "n": 21,
+    "n": 19,
     "g": "F",
     "t": "Колонка ссылок (share)"
    },
    {
-    "n": 22,
+    "n": 20,
     "g": "F",
     "t": "Языковые вкладки (EN/LV/RU)"
    },
    {
-    "n": 23,
+    "n": 21,
     "g": "F",
     "t": "Строка результата"
    },
    {
-    "n": 24,
+    "n": 22,
     "g": "F",
     "t": "Навигация по страницам"
    },
    {
-    "n": 25,
+    "n": 23,
     "g": "G",
     "t": "Попап «Поделиться цитатой»"
    },
    {
-    "n": 26,
+    "n": 24,
     "g": "H",
     "t": "Окно «Сохранить в коллекцию»"
    },
    {
-    "n": 27,
+    "n": 25,
     "g": "H",
     "t": "Новая коллекция"
    },
    {
-    "n": 28,
+    "n": 26,
     "g": "H",
     "t": "Выбор коллекции"
    },
    {
-    "n": 29,
+    "n": 27,
     "g": "I",
     "t": "Мобильный макет"
    },
    {
-    "n": 30,
+    "n": 28,
     "g": "I",
     "t": "Сетка кнопок 2×3"
    },
    {
-    "n": 31,
+    "n": 29,
     "g": "F",
     "t": "Краткое содержание"
    },
    {
-    "n": 32,
+    "n": 30,
     "g": "F",
     "t": "Суть"
    },
    {
-    "n": 33,
+    "n": 31,
     "g": "F",
     "t": "Скачать выбранные транскрипты (ZIP)"
    }
@@ -467,155 +447,145 @@ window.PPP_GUIDE_MENU = {
    {
     "n": 3,
     "g": "B",
-    "t": "Ieslēgt tumšo režīmu"
-   },
-   {
-    "n": 4,
-    "g": "B",
-    "t": "Ieslēgt gaišo režīmu"
-   },
-   {
-    "n": 5,
-    "g": "B",
     "t": "Valodu pārslēdzējs"
    },
    {
-    "n": 6,
+    "n": 4,
     "g": "C",
     "t": "2026. gada ieraksti"
    },
    {
-    "n": 7,
+    "n": 5,
     "g": "C",
     "t": "Ieraksti pēc pievienošanas datuma"
    },
    {
-    "n": 8,
+    "n": 6,
     "g": "C",
     "t": "Biežāk meklētais (Top Searches)"
    },
    {
-    "n": 9,
+    "n": 7,
     "g": "C",
     "t": "Pēc pantiem (Verses)"
    },
    {
-    "n": 10,
+    "n": 8,
     "g": "C",
     "t": "Panti (Top)"
    },
    {
-    "n": 11,
+    "n": 9,
     "g": "C",
     "t": "★ Favorīti"
    },
    {
-    "n": 12,
+    "n": 10,
     "g": "C",
     "t": "Favorīti ar skaitu"
    },
    {
-    "n": 13,
+    "n": 11,
     "g": "D",
     "t": "Atslēgas vārdi (režīms)"
    },
    {
-    "n": 14,
+    "n": 12,
     "g": "D",
     "t": "Meklēšanas lauks"
    },
    {
-    "n": 15,
+    "n": 13,
     "g": "D",
     "t": "Kā meklēt pēc atslēgas vārdiem? (palīdzības poga)"
    },
    {
-    "n": 16,
+    "n": 14,
     "g": "E",
     "t": "\"Transkripti un tulkojumi\" uzraksts"
    },
    {
-    "n": 17,
+    "n": 15,
     "g": "E",
     "t": "Pēc datuma (transkripti)"
    },
    {
-    "n": 18,
+    "n": 16,
     "g": "E",
     "t": "Pēc tēmas (transkripti)"
    },
    {
-    "n": 19,
+    "n": 17,
     "g": "E",
     "t": "Jaunākie (transkripti)"
    },
    {
-    "n": 20,
+    "n": 18,
     "g": "F",
     "t": "Zvaigznes kolonna (favorīti)"
    },
    {
-    "n": 21,
+    "n": 19,
     "g": "F",
     "t": "Saites kolonna (share)"
    },
    {
-    "n": 22,
+    "n": 20,
     "g": "F",
     "t": "Valodu tabi (EN/LV/RU)"
    },
    {
-    "n": 23,
+    "n": 21,
     "g": "F",
     "t": "Rezultāta rinda"
    },
    {
-    "n": 24,
+    "n": 22,
     "g": "F",
     "t": "Lapu navigācija"
    },
    {
-    "n": 25,
+    "n": 23,
     "g": "G",
     "t": "\"Koplietot citātu\" popup"
    },
    {
-    "n": 26,
+    "n": 24,
     "g": "H",
     "t": "\"Saglabāt kolekcijā\" logs"
    },
    {
-    "n": 27,
+    "n": 25,
     "g": "H",
     "t": "Jauna kolekcija"
    },
    {
-    "n": 28,
+    "n": 26,
     "g": "H",
     "t": "Kolekciju izvēle"
    },
    {
-    "n": 29,
+    "n": 27,
     "g": "I",
     "t": "Mobile izkārtojums"
    },
    {
-    "n": 30,
+    "n": 28,
     "g": "I",
     "t": "2×3 pogu režģis"
    },
    {
-    "n": 31,
+    "n": 29,
     "g": "F",
     "t": "Lekcijas kopsavilkums"
    },
    {
-    "n": 32,
+    "n": 30,
     "g": "F",
     "t": "Būtība"
    },
    {
-    "n": 33,
+    "n": 31,
     "g": "F",
     "t": "Lejupielādēt izvēlētos transkriptus (ZIP)"
    }
@@ -674,155 +644,145 @@ window.PPP_GUIDE_MENU = {
    {
     "n": 3,
     "g": "B",
-    "t": "Attivare la modalità scura"
-   },
-   {
-    "n": 4,
-    "g": "B",
-    "t": "Attivare la modalità chiara"
-   },
-   {
-    "n": 5,
-    "g": "B",
     "t": "Selettore di lingua"
    },
    {
-    "n": 6,
+    "n": 4,
     "g": "C",
     "t": "Voci del 2026"
    },
    {
-    "n": 7,
+    "n": 5,
     "g": "C",
     "t": "Per aggiunta"
    },
    {
-    "n": 8,
+    "n": 6,
     "g": "C",
     "t": "Ricerche principali (Top Searches)"
    },
    {
-    "n": 9,
+    "n": 7,
     "g": "C",
     "t": "Per versetti (Verses)"
    },
    {
-    "n": 10,
+    "n": 8,
     "g": "C",
     "t": "Versetti (Top)"
    },
    {
-    "n": 11,
+    "n": 9,
     "g": "C",
     "t": "★ Preferiti"
    },
    {
-    "n": 12,
+    "n": 10,
     "g": "C",
     "t": "Preferiti con conteggio"
    },
    {
-    "n": 13,
+    "n": 11,
     "g": "D",
     "t": "Parole chiave (modalità)"
    },
    {
-    "n": 14,
+    "n": 12,
     "g": "D",
     "t": "Campo di ricerca"
    },
    {
-    "n": 15,
+    "n": 13,
     "g": "D",
     "t": "Come cercare per parole chiave? (pulsante di aiuto)"
    },
    {
-    "n": 16,
+    "n": 14,
     "g": "E",
     "t": "Etichetta \"Trascrizioni e traduzioni\""
    },
    {
-    "n": 17,
+    "n": 15,
     "g": "E",
     "t": "Per data (trascrizioni)"
    },
    {
-    "n": 18,
+    "n": 16,
     "g": "E",
     "t": "Per argomento (trascrizioni)"
    },
    {
-    "n": 19,
+    "n": 17,
     "g": "E",
     "t": "Più recenti (trascrizioni)"
    },
    {
-    "n": 20,
+    "n": 18,
     "g": "F",
     "t": "Colonna con stella (preferiti)"
    },
    {
-    "n": 21,
+    "n": 19,
     "g": "F",
     "t": "Colonna link (share)"
    },
    {
-    "n": 22,
+    "n": 20,
     "g": "F",
     "t": "Schede lingua (EN/LV/RU)"
    },
    {
-    "n": 23,
+    "n": 21,
     "g": "F",
     "t": "Riga del risultato"
    },
    {
-    "n": 24,
+    "n": 22,
     "g": "F",
     "t": "Navigazione pagine"
    },
    {
-    "n": 25,
+    "n": 23,
     "g": "G",
     "t": "Popup \"Condividi citazione\""
    },
    {
-    "n": 26,
+    "n": 24,
     "g": "H",
     "t": "Finestra \"Salva in collezione\""
    },
    {
-    "n": 27,
+    "n": 25,
     "g": "H",
     "t": "Nuova collezione"
    },
    {
-    "n": 28,
+    "n": 26,
     "g": "H",
     "t": "Selezione collezioni"
    },
    {
-    "n": 29,
+    "n": 27,
     "g": "I",
     "t": "Layout mobile"
    },
    {
-    "n": 30,
+    "n": 28,
     "g": "I",
     "t": "Griglia di pulsanti 2×3"
    },
    {
-    "n": 31,
+    "n": 29,
     "g": "F",
     "t": "Riepilogo della lezione"
    },
    {
-    "n": 32,
+    "n": 30,
     "g": "F",
     "t": "Essenza"
    },
    {
-    "n": 33,
+    "n": 31,
     "g": "F",
     "t": "Scarica le trascrizioni selezionate (ZIP)"
    }
@@ -881,155 +841,145 @@ window.PPP_GUIDE_MENU = {
    {
     "n": 3,
     "g": "B",
-    "t": "Activer le mode sombre"
-   },
-   {
-    "n": 4,
-    "g": "B",
-    "t": "Activer le mode clair"
-   },
-   {
-    "n": 5,
-    "g": "B",
     "t": "Sélecteur de langue"
    },
    {
-    "n": 6,
+    "n": 4,
     "g": "C",
     "t": "Entrées de 2026"
    },
    {
-    "n": 7,
+    "n": 5,
     "g": "C",
     "t": "Par ajout"
    },
    {
-    "n": 8,
+    "n": 6,
     "g": "C",
     "t": "Recherches populaires (Top Searches)"
    },
    {
-    "n": 9,
+    "n": 7,
     "g": "C",
     "t": "Par versets (Verses)"
    },
    {
-    "n": 10,
+    "n": 8,
     "g": "C",
     "t": "Versets (Top)"
    },
    {
-    "n": 11,
+    "n": 9,
     "g": "C",
     "t": "★ Favoris"
    },
    {
-    "n": 12,
+    "n": 10,
     "g": "C",
     "t": "Favoris avec compteur"
    },
    {
-    "n": 13,
+    "n": 11,
     "g": "D",
     "t": "Mots-clés (mode)"
    },
    {
-    "n": 14,
+    "n": 12,
     "g": "D",
     "t": "Champ de recherche"
    },
    {
-    "n": 15,
+    "n": 13,
     "g": "D",
     "t": "Comment rechercher par mots-clés ? (bouton d'aide)"
    },
    {
-    "n": 16,
+    "n": 14,
     "g": "E",
     "t": "Libellé « Transcriptions et traductions »"
    },
    {
-    "n": 17,
+    "n": 15,
     "g": "E",
     "t": "Par date (transcriptions)"
    },
    {
-    "n": 18,
+    "n": 16,
     "g": "E",
     "t": "Par sujet (transcriptions)"
    },
    {
-    "n": 19,
+    "n": 17,
     "g": "E",
     "t": "Plus récentes (transcriptions)"
    },
    {
-    "n": 20,
+    "n": 18,
     "g": "F",
     "t": "Colonne étoile (favoris)"
    },
    {
-    "n": 21,
+    "n": 19,
     "g": "F",
     "t": "Colonne lien (share)"
    },
    {
-    "n": 22,
+    "n": 20,
     "g": "F",
     "t": "Onglets de langue (EN/LV/RU)"
    },
    {
-    "n": 23,
+    "n": 21,
     "g": "F",
     "t": "Ligne de résultat"
    },
    {
-    "n": 24,
+    "n": 22,
     "g": "F",
     "t": "Pagination"
    },
    {
-    "n": 25,
+    "n": 23,
     "g": "G",
     "t": "Popup « Partager la citation »"
    },
    {
-    "n": 26,
+    "n": 24,
     "g": "H",
     "t": "Fenêtre « Enregistrer dans la collection »"
    },
    {
-    "n": 27,
+    "n": 25,
     "g": "H",
     "t": "Nouvelle collection"
    },
    {
-    "n": 28,
+    "n": 26,
     "g": "H",
     "t": "Sélecteur de collections"
    },
    {
-    "n": 29,
+    "n": 27,
     "g": "I",
     "t": "Mise en page mobile"
    },
    {
-    "n": 30,
+    "n": 28,
     "g": "I",
     "t": "Grille de boutons 2×3"
    },
    {
-    "n": 31,
+    "n": 29,
     "g": "F",
     "t": "Résumé de la conférence"
    },
    {
-    "n": 32,
+    "n": 30,
     "g": "F",
     "t": "Essence"
    },
    {
-    "n": 33,
+    "n": 31,
     "g": "F",
     "t": "Télécharger les transcriptions sélectionnées (ZIP)"
    }
@@ -1088,155 +1038,145 @@ window.PPP_GUIDE_MENU = {
    {
     "n": 3,
     "g": "B",
-    "t": "Activar modo oscuro"
-   },
-   {
-    "n": 4,
-    "g": "B",
-    "t": "Activar modo claro"
-   },
-   {
-    "n": 5,
-    "g": "B",
     "t": "Selector de idioma"
    },
    {
-    "n": 6,
+    "n": 4,
     "g": "C",
     "t": "Entradas de 2026"
    },
    {
-    "n": 7,
+    "n": 5,
     "g": "C",
     "t": "Por adición"
    },
    {
-    "n": 8,
+    "n": 6,
     "g": "C",
     "t": "Búsquedas principales (Top Searches)"
    },
    {
-    "n": 9,
+    "n": 7,
     "g": "C",
     "t": "Por versos (Verses)"
    },
    {
-    "n": 10,
+    "n": 8,
     "g": "C",
     "t": "Versos (Top)"
    },
    {
-    "n": 11,
+    "n": 9,
     "g": "C",
     "t": "★ Favoritos"
    },
    {
-    "n": 12,
+    "n": 10,
     "g": "C",
     "t": "Favoritos con contador"
    },
    {
-    "n": 13,
+    "n": 11,
     "g": "D",
     "t": "Palabras clave (modo)"
    },
    {
-    "n": 14,
+    "n": 12,
     "g": "D",
     "t": "Campo de búsqueda"
    },
    {
-    "n": 15,
+    "n": 13,
     "g": "D",
     "t": "¿Cómo buscar por palabras clave? (botón de ayuda)"
    },
    {
-    "n": 16,
+    "n": 14,
     "g": "E",
     "t": "Etiqueta «Transcripciones y traducciones»"
    },
    {
-    "n": 17,
+    "n": 15,
     "g": "E",
     "t": "Por fecha (transcripciones)"
    },
    {
-    "n": 18,
+    "n": 16,
     "g": "E",
     "t": "Por tema (transcripciones)"
    },
    {
-    "n": 19,
+    "n": 17,
     "g": "E",
     "t": "Más recientes (transcripciones)"
    },
    {
-    "n": 20,
+    "n": 18,
     "g": "F",
     "t": "Columna de estrella (favoritos)"
    },
    {
-    "n": 21,
+    "n": 19,
     "g": "F",
     "t": "Columna de enlace (share)"
    },
    {
-    "n": 22,
+    "n": 20,
     "g": "F",
     "t": "Pestañas de idioma (EN/LV/RU)"
    },
    {
-    "n": 23,
+    "n": 21,
     "g": "F",
     "t": "Fila de resultado"
    },
    {
-    "n": 24,
+    "n": 22,
     "g": "F",
     "t": "Paginación"
    },
    {
-    "n": 25,
+    "n": 23,
     "g": "G",
     "t": "Popup «Compartir cita»"
    },
    {
-    "n": 26,
+    "n": 24,
     "g": "H",
     "t": "Ventana «Guardar en colección»"
    },
    {
-    "n": 27,
+    "n": 25,
     "g": "H",
     "t": "Nueva colección"
    },
    {
-    "n": 28,
+    "n": 26,
     "g": "H",
     "t": "Selector de colecciones"
    },
    {
-    "n": 29,
+    "n": 27,
     "g": "I",
     "t": "Diseño móvil"
    },
    {
-    "n": 30,
+    "n": 28,
     "g": "I",
     "t": "Cuadrícula de botones 2×3"
    },
    {
-    "n": 31,
+    "n": 29,
     "g": "F",
     "t": "Resumen de la conferencia"
    },
    {
-    "n": 32,
+    "n": 30,
     "g": "F",
     "t": "Esencia"
    },
    {
-    "n": 33,
+    "n": 31,
     "g": "F",
     "t": "Descargar las transcripciones seleccionadas (ZIP)"
    }
