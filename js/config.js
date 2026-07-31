@@ -115,22 +115,96 @@ PPP.config.countryName = function (code, lang) {
    TYPE_ORDER:   fixed display order for the Filters panel checkboxes.
 --------------------------------------------------------------------------- */
 PPP.config.TYPE_GROUPS = {
-    lecture: ['lecture', 'lecture (event)', 'lecture (public)'],
+    lecture: ['lecture', 'lecture (event)', 'lecture (public)', 'lecture (seminar)', 'lecture (by other vaishnava)'],
     parikrama: ['parikrama', 'parikrama_radhakunda'],
-    seminar: ['lecture (seminar)'],
     qa: ['istagosthi_q&a'],
-    kirtan: ['practice (kirtan)', 'practice_?_ (kirtan)', 'practice (bhajan)', 'practice (arati)', 'explanation (bhajan)']
+    practice: [
+        'practice (kirtan)', 'practice_?_ (kirtan)', 'practice (bhajan)', 'practice (arati)',
+        'practice (drama)', 'practice (yajna)', 'practice (japa)', 'practice (guru puja)',
+        'practice (go puja)', 'practice (karatalas)', 'practice (procession)',
+        'practice (mangala charana)', 'practice (bhajan studio)', 'practice (first grain ceremony)'
+    ],
+    shorttalk: ['short talk', 'short talk (name giving)', 'short talk (dance)', 'short talk (japa)'],
+    explanation: ['explanation (bhajan)', 'explanation (astrology)'],
+    commentary: ['commentary (drama)', 'commentary (bhajan)', 'commentary (dance)'],
+    promo: ['promo']
 };
 
-PPP.config.TYPE_ORDER = ['lecture', 'parikrama', 'seminar', 'qa', 'kirtan'];
+// The 8 `Type` families present in the meta DB (Rājan, 2026-07-31). The raw
+// column has 40+ cells, but they are all "Family" or "Family (variant)" —
+// the filter offers the 8 families and each expands to its raw variants.
+PPP.config.TYPE_ORDER = ['lecture', 'parikrama', 'qa', 'practice', 'shorttalk', 'explanation', 'commentary', 'promo'];
 
 // i18n key for each canonical type's checkbox label.
 PPP.config.TYPE_I18N_KEY = {
     lecture: 'typeLecture',
     parikrama: 'typeParikrama',
-    seminar: 'typeSeminar',
     qa: 'typeQA',
-    kirtan: 'typeKirtan'
+    practice: 'typePractice',
+    shorttalk: 'typeShortTalk',
+    explanation: 'typeExplanation',
+    commentary: 'typeCommentary',
+    promo: 'typePromo'
+};
+
+/* ---------------------------------------------------------------------------
+   LANGUAGE FILTER DATA
+   The `lang` column mixes real audio-language cells ("eng only", "eng; rus")
+   with non-language notes ("singing", "chanting", "multi", "Promo") and a
+   large empty tail. Rājan's rule (2026-07-31): offer ONLY the cells that end
+   in "only" or contain a semicolon — those are exactly the ones that state
+   which language(s) the recording is in.
+
+   A value like "eng; rus" cannot travel through the search field as-is,
+   because the field splits AND-terms on ';'. So the token carries '+' where
+   the raw cell has "; " (lang:eng+rus) and search.js decodes it back.
+--------------------------------------------------------------------------- */
+PPP.config.isFilterableLang = function (raw) {
+    var v = String(raw || '').trim().replace(/\s+/g, ' ');
+    if (!v) return null;
+    if (/only$/i.test(v) || v.indexOf(';') !== -1) return v.toLowerCase();
+    return null;
+};
+
+/** "eng; rus" -> "eng+rus" (safe inside a ';'-separated search field). */
+PPP.config.encodeLangToken = function (value) {
+    return String(value || '').split(/\s*;\s*/).join('+');
+};
+
+/** "eng+rus" -> "eng; rus" (inverse of encodeLangToken). */
+PPP.config.decodeLangToken = function (token) {
+    return String(token || '').split('+').map(function (s) { return s.trim(); }).join('; ');
+};
+
+/* ---------------------------------------------------------------------------
+   LINKS FILTER DATA
+   The `links` column is a platform label, not a URL ("YouTube", "Soundcloud",
+   "Mixcloud", "Facebook", "N/A"). Rājan asked for three fixed options.
+--------------------------------------------------------------------------- */
+PPP.config.LINKS_ORDER = ['YouTube', 'Soundcloud', 'Mixcloud'];
+
+/* ---------------------------------------------------------------------------
+   LENGTH FILTER DATA
+   The `length` column is human text ("45min", "1h 15min"), so the ranges are
+   resolved to minutes in SQL (see search.js LENGTH_MINUTES_SQL).
+--------------------------------------------------------------------------- */
+PPP.config.LENGTH_RANGES = [
+    { key: '0-30', min: 1, max: 30 },
+    { key: '31-45', min: 31, max: 45 },
+    { key: '46-60', min: 46, max: 60 },
+    { key: '61-90', min: 61, max: 90 },
+    { key: '91+', min: 91, max: null }
+];
+
+PPP.config.lengthRange = function (key) {
+    var all = PPP.config.LENGTH_RANGES;
+    for (var i = 0; i < all.length; i++) if (all[i].key === key) return all[i];
+    return null;
+};
+
+/** "0-30" -> "0-30 min", "91+" -> "91+ min" (unit comes from i18n). */
+PPP.config.lengthRangeLabel = function (key, unit) {
+    return key + ' ' + (unit || 'min');
 };
 
 /**

@@ -527,12 +527,18 @@ body.install-banner-visible .search-section {
     text-align: left;
 }
 .filters-panel[hidden] { display: none; }
+/* Categories stack one under another (Amazon-style facet column), each one
+   collapsed to a single example until "See more" is clicked. */
 .filters-panel .flt-cols {
     display: flex;
-    gap: 22px;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 14px;
 }
-.filters-panel .flt-sec { flex: 1 1 240px; min-width: 200px; }
+.filters-panel .flt-sec {
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border, rgba(0,0,0,0.08));
+}
+.filters-panel .flt-sec:last-child { border-bottom: none; padding-bottom: 0; }
 .filters-panel .flt-title {
     font-weight: 700;
     font-size: 13px;
@@ -549,6 +555,9 @@ body.install-banner-visible .search-section {
     overflow-y: auto;
     padding-right: 4px;
 }
+/* Collapsed sections have no scroller and no reserved height — the panel
+   must read as a short list of category headings, not a stack of boxes. */
+.filters-panel .flt-sec:not(.flt-open) .flt-grid { max-height: none; overflow: visible; }
 .filters-panel .flt-item {
     display: flex;
     align-items: center;
@@ -559,6 +568,23 @@ body.install-banner-visible .search-section {
     line-height: 1.3;
 }
 .filters-panel .flt-item input { flex: 0 0 auto; cursor: pointer; }
+/* .flt-item is display:flex, which beats the UA [hidden] rule — restate it. */
+.filters-panel .flt-item[hidden] { display: none; }
+.filters-panel .flt-more {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 4px;
+    padding: 2px 0;
+    background: none;
+    border: none;
+    color: var(--primary, #aa5210);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.filters-panel .flt-more:hover { text-decoration: underline; }
+.filters-panel .flt-chev { font-size: 11px; line-height: 1; }
 .filters-panel .flt-actions {
     display: flex;
     gap: 10px;

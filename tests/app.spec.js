@@ -20,6 +20,19 @@ async function waitForAppReady(page) {
   }, { timeout: 60000 });
 }
 
+// Helper: open every collapsed Filters category ("See more"). Each category
+// renders with only its first option visible, so a test that ticks any other
+// option must expand first. Idempotent — already-open sections are skipped.
+async function expandFilterSections(page) {
+  await page.locator('#filtersPanel .flt-more').first().waitFor({ state: 'visible' });
+  // Always click .first() and re-query: the locator filters on aria-expanded,
+  // so its match set shrinks with every click and an nth(i) walk would skip.
+  const collapsed = () => page.locator('#filtersPanel .flt-more[aria-expanded="false"]');
+  for (let guard = 0; guard < 20 && await collapsed().count() > 0; guard++) {
+    await collapsed().first().click();
+  }
+}
+
 // Helper: collect console errors during test
 function trackConsoleErrors(page) {
   const errors = [];
@@ -1145,13 +1158,16 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     // Country rows are "CODE (Localized name)" and sorted by 3-letter code.
     const codes = await panel.locator('.flt-country').evaluateAll(
       els => els.map(e => e.value));
-    const sorted = [...codes].sort();
-    expect(codes).toEqual(sorted);
+    expect(codes[codes.length - 1]).toBe('Online');          // "Online" pinned last
+    const places = codes.filter(c => c !== 'Online');
+    expect(places).toEqual([...places].sort());
     await expect(panel.locator('.flt-country[value="LVA"]').locator('xpath=..'))
-      .toContainText('LVA (');
+      .toContainText('LVA \u2014 ');
 
     // Pick 2025 + LVA, Apply.
+    await expandFilterSections(page);
     await panel.locator('.flt-year[value="2025"]').check();
+    await expandFilterSections(page);
     await panel.locator('.flt-country[value="LVA"]').check();
     await panel.locator('.flt-apply').click();
 
@@ -1167,6 +1183,123 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(rows).toBeGreaterThan(0);
   });
 
+  test('50p. Filters categories are collapsed to one example with "See more (N)"; the toggle expands and collapses', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.locator('.main-button-row .combo-btn-1').click();
+    const panel = page.locator('#filtersPanel');
+    await expect(panel).toBeVisible();
+
+    // All seven categories are present, stacked one under another.
+    const secs = await panel.locator('.flt-sec').evaluateAll(
+      els => els.map(e => e.getAttribute('data-sec')));
+    expect(secs).toEqual(['countries', 'langs', 'years', 'types', 'sources', 'links', 'lengths']);
+
+    // Collapsed default: exactly ONE visible option per category, even though
+    // every option is in the DOM (Apply must see a stable checkbox set).
+    for (const sec of secs) {
+      const scope = panel.locator(`.flt-sec[data-sec="${sec}"]`);
+      const total = await scope.locator('.flt-item').count();
+      const visible = await scope.locator('.flt-item:visible').count();
+      expect(total, `${sec} has options`).toBeGreaterThan(0);
+      expect(visible, `${sec} collapsed`).toBe(1);
+    }
+
+    // "See more (N)" counts exactly the hidden options.
+    const countriesSec = panel.locator('.flt-sec[data-sec="countries"]');
+    const hidden = (await countriesSec.locator('.flt-item').count()) - 1;
+    const more = countriesSec.locator('.flt-more');
+    await expect(more).toHaveText(new RegExp('\\(' + hidden + '\\)'));
+    await expect(more).toHaveAttribute('aria-expanded', 'false');
+
+    // Expand -> every option visible, label flips to "See less".
+    await more.click();
+    await expect(more).toHaveAttribute('aria-expanded', 'true');
+    expect(await countriesSec.locator('.flt-item:visible').count()).toBe(hidden + 1);
+    await expect(more).not.toHaveText(new RegExp('\\(' + hidden + '\\)'));
+
+    // Collapse again -> back to the single example.
+    await more.click();
+    await expect(more).toHaveAttribute('aria-expanded', 'false');
+    expect(await countriesSec.locator('.flt-item:visible').count()).toBe(1);
+    await expect(more).toHaveText(new RegExp('\\(' + hidden + '\\)'));
+  });
+
+  test('50n. New categories carry real data and Apply filters on them (Lang / Source / Links / Length)', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.locator('.main-button-row .combo-btn-1').click();
+    const panel = page.locator('#filtersPanel');
+    await expect(panel).toBeVisible();
+    await expandFilterSections(page);
+
+    // Language: only "... only" / "a; b" cells are offered (Rājan's rule).
+    const langs = await panel.locator('.flt-lang').evaluateAll(
+      els => els.map(e => e.value));
+    expect(langs.length).toBeGreaterThan(1);
+    for (const v of langs) expect(/(only$|\+)/.test(v), `lang option ${v}`).toBeTruthy();
+    expect(langs).toContain('eng only');
+    expect(langs).toContain('eng+rus');       // "eng; rus" encoded for the field
+
+    // Sources: alphabetical, every real Source value.
+    const sources = await panel.locator('.flt-source').evaluateAll(
+      els => els.map(e => e.value));
+    expect(sources.length).toBeGreaterThan(10);
+    expect(sources).toContain('Telegram');
+    expect([...sources]).toEqual([...sources].sort((a, b) => a.toLowerCase() < b.toLowerCase() ? -1 : 1));
+
+    // Links: exactly the three platforms Rājan asked for.
+    expect(await panel.locator('.flt-link').evaluateAll(els => els.map(e => e.value)))
+      .toEqual(['YouTube', 'Soundcloud', 'Mixcloud']);
+
+    // Length: the five fixed ranges.
+    expect(await panel.locator('.flt-length').evaluateAll(els => els.map(e => e.value)))
+      .toEqual(['0-30', '31-45', '46-60', '61-90', '91+']);
+
+    // Type: the 8 families of the DB `Type` column.
+    expect(await panel.locator('.flt-type').count()).toBe(8);
+
+    // Apply a Links + Length combination and check it actually narrows.
+    await panel.locator('.flt-link[value="Mixcloud"]').check();
+    await panel.locator('.flt-apply').click();
+
+    const val = await page.locator('#searchTerm').inputValue();
+    expect(val).toContain('links:Mixcloud');
+
+    await page.waitForSelector('#resultsInfo strong', { timeout: 15000 });
+    const total = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
+    expect(total).toBeGreaterThan(0);
+    expect(total).toBeLessThan(200);         // Mixcloud is a small slice, not "everything"
+
+    // Every visible Links cell says Mixcloud.
+    const linkCells = await page.locator('#resultsTable tbody tr').evaluateAll(
+      rows => rows.map(r => r.innerText.toLowerCase()));
+    for (const t of linkCells) expect(t).toContain('mixcloud');
+  });
+
+  test('50o. length: ranges resolve "1h 15min" text to minutes and never swallow blank cells', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.locator('.main-button-row .combo-btn-1').click();
+    const panel = page.locator('#filtersPanel');
+    await expandFilterSections(page);
+    await panel.locator('.flt-length[value="91+"]').check();
+    await panel.locator('.flt-apply').click();
+
+    await page.waitForSelector('#resultsInfo strong', { timeout: 15000 });
+    const lengths = await page.locator('#resultsTable tbody tr').evaluateAll(
+      rows => rows.map(r => r.innerText));
+    expect(lengths.length).toBeGreaterThan(0);
+    for (const text of lengths) {
+      // A 91+ row must show hours (1h/2h...) — a bare "45min" or an empty
+      // cell would mean the minute parsing or the blank guard is broken.
+      expect(/\d+h/.test(text)).toBeTruthy();
+    }
+  });
+
   test('50e. In Text mode: Filters panel hides Countries and keeps the typed word, adding only the year', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);
@@ -1180,6 +1313,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(await panel.locator('.flt-year').count()).toBeGreaterThan(5);
     expect(await panel.locator('.flt-country').count()).toBe(0);   // no country in sentence DB
 
+    await expandFilterSections(page);
     await panel.locator('.flt-year[value="2025"]').check();
     await panel.locator('.flt-apply').click();
 
@@ -1209,6 +1343,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.fill('#searchTerm', '');
     await page.locator('.main-button-row .combo-btn-1').click();
     let panel = page.locator('#filtersPanel');
+    await expandFilterSections(page);
     await panel.locator('.flt-year[value="2026"]').check();
     await panel.locator('.flt-apply').click();
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
@@ -1220,6 +1355,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.fill('#searchTerm', 'krishna');
     await page.locator('.main-button-row .combo-btn-1').click();
     panel = page.locator('#filtersPanel');
+    await expandFilterSections(page);
     await panel.locator('.flt-year[value="2025"]').check();
     await panel.locator('.flt-apply').click();
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
@@ -1236,6 +1372,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.fill('#searchTerm', 'krishna');
     await page.locator('.main-button-row .combo-btn-1').click();
     panel = page.locator('#filtersPanel');
+    await expandFilterSections(page);
     await panel.locator('.flt-year[value="2024"]').check();
     await page.click('.search-bar button.search-button');
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
@@ -1286,6 +1423,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.locator('.main-button-row .combo-btn-1').click();
     const panel = page.locator('#filtersPanel');
     expect(await panel.locator('.flt-country').count()).toBe(0); // no country column in the sentence DB
+    await expandFilterSections(page);
     await panel.locator('.flt-year[value="2026"]').check();
     await panel.locator('.flt-apply').click();
 
@@ -1311,6 +1449,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.fill('#searchTerm', '');
     await page.locator('.main-button-row .combo-btn-1').click();
     const panel = page.locator('#filtersPanel');
+    await expandFilterSections(page);
     await panel.locator('.flt-year[value="2026"]').check();
     await panel.locator('.flt-apply').click();
     // "In Text" needs a word to search on — Rājan's own design note in
@@ -1414,7 +1553,9 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
     await page.locator('.main-button-row .combo-btn-1').click();
     const panel = page.locator('#filtersPanel');
+    await expandFilterSections(page);
     await panel.locator('.flt-year[value="2025"]').check();
+    await expandFilterSections(page);
     await panel.locator('.flt-country[value="LVA"]').check();
     await panel.locator('.flt-apply').click();
 

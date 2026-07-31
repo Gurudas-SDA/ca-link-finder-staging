@@ -24,11 +24,14 @@ PPP.search = (function () {
      * Supports: AND (;), OR (//), has:, subject:, lang:, source: (@), latest_files:, latest_transcripts:
      */
     function parseSearchQuery(input) {
-        if (!input) return { terms: [], filters: { source: [], has: [], subject: [], lang: [], year: [], country: [], type: [], latestTranscripts: [], latestFiles: [] }, isLatestFiles: false, isLatestTranscripts: false, otherTerms: [], orGroups: [] };
+        if (!input) return { terms: [], filters: { source: [], sourceSel: [], has: [], subject: [], lang: [], year: [], country: [], type: [], links: [], length: [], latestTranscripts: [], latestFiles: [] }, isLatestFiles: false, isLatestTranscripts: false, otherTerms: [], orGroups: [] };
 
         var searchTerms = input.split(';').map(function (s) { return s.trim(); }).filter(Boolean);
 
         var sourceTerms = [];
+        var sourceSelTerms = [];
+        var linksTerms = [];
+        var lengthTerms = [];
         var hasTerms = [];
         var subjectTerms = [];
         var langTerms = [];
@@ -67,6 +70,26 @@ PPP.search = (function () {
                     tc = tc.trim();
                     if (tc) typeTerms.push(tc);
                 });
+            } else if (tl.startsWith('source:')) {
+                // source:Telegram,Guru_das — exact source names picked in the
+                // Filters panel (kept apart from the free-text "@name" form so
+                // a hand-typed @source is never clobbered by the panel).
+                t.slice(7).split(',').forEach(function (sv) {
+                    sv = sv.trim();
+                    if (sv) sourceSelTerms.push(sv);
+                });
+            } else if (tl.startsWith('links:')) {
+                // links:youtube,soundcloud — platform labels (Filters panel).
+                t.slice(6).split(',').forEach(function (lv) {
+                    lv = lv.trim();
+                    if (lv) linksTerms.push(lv);
+                });
+            } else if (tl.startsWith('length:')) {
+                // length:0-30,61-90 — minute ranges (Filters panel).
+                t.slice(7).split(',').forEach(function (rv) {
+                    rv = rv.trim();
+                    if (rv) lengthTerms.push(rv);
+                });
             } else if (tl.startsWith('latest_transcripts:')) {
                 latestTranscriptsTerms.push(t);
             } else if (tl.startsWith('latest_files:')) {
@@ -85,6 +108,9 @@ PPP.search = (function () {
             terms: searchTerms,
             filters: {
                 source: sourceTerms,
+                sourceSel: sourceSelTerms,
+                links: linksTerms,
+                length: lengthTerms,
                 has: hasTerms,
                 subject: subjectTerms,
                 lang: langTerms,
@@ -100,6 +126,33 @@ PPP.search = (function () {
             orGroups: orGroups
         };
     }
+
+    /**
+     * The values a single `lang:` token stands for. Comma separates several
+     * picks; '+' inside one pick decodes back to the "; " the raw cell has
+     * ("lang:eng+rus,rus only" -> ["eng; rus", "rus only"]). A plain legacy
+     * token ("lang:eng") is unaffected.
+     */
+    function langTokenValues(token) {
+        var cfg = (window.PPP && PPP.config) || {};
+        var decode = cfg.decodeLangToken || function (s) { return s; };
+        return String(token).slice(5).split(',')
+            .map(function (v) { return decode(v.trim()).toLowerCase().trim(); })
+            .filter(Boolean);
+    }
+
+    /**
+     * `length` is human text ("45min", "1h 15min", "1h 19"), so the minute
+     * value has to be derived in SQL. Guarded by LENGTH_HAS_TIME_SQL — cells
+     * with no time at all (empty, or the handful that hold drifted junk) must
+     * never fall into the 0-30 bucket via CAST('') = 0.
+     */
+    var LENGTH_MINUTES_SQL =
+        "(CASE WHEN INSTR(LOWER(l.length),'h') > 0" +
+        " THEN CAST(SUBSTR(LOWER(l.length),1,INSTR(LOWER(l.length),'h')-1) AS INTEGER) * 60" +
+        "    + CAST(REPLACE(SUBSTR(LOWER(l.length),INSTR(LOWER(l.length),'h')+1),'min','') AS INTEGER)" +
+        " ELSE CAST(REPLACE(LOWER(l.length),'min','') AS INTEGER) END)";
+    var LENGTH_HAS_TIME_SQL = "(LOWER(l.length) LIKE '%min%' OR LOWER(l.length) LIKE '%h%')";
 
     /**
      * Build SQL query for metadata search using LIKE on normalized columns.
@@ -137,17 +190,63 @@ PPP.search = (function () {
             conditions.push('(' + subjConds.join(' OR ') + ')');
         }
 
-        // lang: filter (OR, exact or starts-with + ";")
+        // lang: filter (OR, exact or starts-with + ";"). TRIM() because a few
+        // raw cells carry a trailing space ("eng only ").
         if (parsed.filters.lang.length > 0) {
-            var langConds = parsed.filters.lang.map(function (t) {
-                var key = '$lang' + (paramIdx++);
-                var keyP = '$langp' + (paramIdx++);
-                var val = t.slice(5).toLowerCase();
-                params[key] = val;
-                params[keyP] = val + ';%';
-                return "(LOWER(l.lang) = " + key + " OR LOWER(l.lang) LIKE " + keyP + ")";
+            var langConds = [];
+            parsed.filters.lang.forEach(function (t) {
+                langTokenValues(t).forEach(function (val) {
+                    var key = '$lang' + (paramIdx++);
+                    var keyP = '$langp' + (paramIdx++);
+                    params[key] = val;
+                    params[keyP] = val + ';%';
+                    langConds.push("(TRIM(LOWER(l.lang)) = " + key + " OR TRIM(LOWER(l.lang)) LIKE " + keyP + ")");
+                });
             });
-            conditions.push('(' + langConds.join(' OR ') + ')');
+            if (langConds.length > 0) conditions.push('(' + langConds.join(' OR ') + ')');
+        }
+
+        // source: filter (Filters panel). Exact source name, OR within the
+        // group. Kept separate from the free-text "@name" LIKE match above.
+        if (parsed.filters.sourceSel && parsed.filters.sourceSel.length > 0) {
+            var selConds = parsed.filters.sourceSel.map(function (sv) {
+                var key = '$srcsel' + (paramIdx++);
+                params[key] = sv.toLowerCase();
+                return "TRIM(LOWER(l.source)) = " + key;
+            });
+            conditions.push('(' + selConds.join(' OR ') + ')');
+        }
+
+        // links: filter (Filters panel). The column holds a platform label,
+        // so an exact (case-insensitive) match is enough — "SoundCloud" and
+        // "Soundcloud" both fold to the same option.
+        if (parsed.filters.links && parsed.filters.links.length > 0) {
+            var linkConds = parsed.filters.links.map(function (lv) {
+                var key = '$lnk' + (paramIdx++);
+                params[key] = lv.toLowerCase();
+                return "TRIM(LOWER(l.links)) = " + key;
+            });
+            conditions.push('(' + linkConds.join(' OR ') + ')');
+        }
+
+        // length: filter (Filters panel). OR within the group.
+        if (parsed.filters.length && parsed.filters.length.length > 0) {
+            var cfgLen = (window.PPP && PPP.config) || {};
+            var lenConds = [];
+            parsed.filters.length.forEach(function (rk) {
+                var range = cfgLen.lengthRange ? cfgLen.lengthRange(rk) : null;
+                if (!range) return;
+                var loKey = '$lenlo' + (paramIdx++);
+                params[loKey] = range.min;
+                var cond = LENGTH_HAS_TIME_SQL + ' AND ' + LENGTH_MINUTES_SQL + ' >= ' + loKey;
+                if (range.max !== null && range.max !== undefined) {
+                    var hiKey = '$lenhi' + (paramIdx++);
+                    params[hiKey] = range.max;
+                    cond += ' AND ' + LENGTH_MINUTES_SQL + ' <= ' + hiKey;
+                }
+                lenConds.push('(' + cond + ')');
+            });
+            if (lenConds.length > 0) conditions.push('(' + lenConds.join(' OR ') + ')');
         }
 
         // year: filter (Filters panel). OR within the group (any selected year),
@@ -301,10 +400,11 @@ PPP.search = (function () {
 
             // lang: exact or starts-with + ";", OR
             if (parsed.filters.lang.length > 0) {
-                var rowLang = (row['Lang.'] || '').toLowerCase();
+                var rowLang = (row['Lang.'] || '').toLowerCase().trim();
                 if (!parsed.filters.lang.some(function (t) {
-                    var l = t.slice(5).toLowerCase();
-                    return rowLang === l || rowLang.startsWith(l + ';');
+                    return langTokenValues(t).some(function (l) {
+                        return rowLang === l || rowLang.startsWith(l + ';');
+                    });
                 })) return false;
             }
 
