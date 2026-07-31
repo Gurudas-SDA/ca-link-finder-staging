@@ -1553,6 +1553,13 @@ th.transcripts-block {
     font-style: normal;
     font-size: 12px;
 }
+/* "By Added" view only: shows when the lecture was added (distinct from the
+   Date column, which is the lecture's own date) — Rājan report 2026-07-31. */
+.match-hint.added-hint {
+    color: #6a6a6a;
+    font-style: normal;
+    font-size: 10px;
+}
 /* "In Text" mode: matched sentence shown under the file title. Two-tier
    highlight matching the ZIP-export download (Rājan's original spec): the
    whole matched SENTENCE sits on yellow (#fff3a0); the searched WORDS inside

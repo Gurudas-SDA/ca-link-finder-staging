@@ -219,6 +219,36 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(parseInt(info)).toBe(20);
   });
 
+  test('5b. Quick action: By Added — first row matches SQL added-DESC order, not lecture date (Rājan report 2026-07-31)', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.click('button[data-i18n="latest20Files"]');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
+
+    // Ground truth: the DB's own added-date order. If the UI resorts by
+    // lecture date (the original bug — utils.compareDates undid the SQL
+    // "added DESC" order), the first rendered row will NOT match this.
+    const expectedNr = await page.evaluate(async () => {
+      const db = window.PPP.db;
+      const rows = await db.queryMetaAsync(
+        "SELECT nr FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC LIMIT 1"
+      );
+      return String(rows[0].nr);
+    });
+
+    const firstRowNr = await page.locator('#resultsTable tbody tr').first()
+      .locator('.fav-star').getAttribute('data-nr');
+    expect(String(firstRowNr)).toBe(expectedNr);
+
+    // UX: the "By Added" view shows the added date under the title (distinct
+    // from the visible Date column, which is the lecture's own date).
+    const addedHintCount = await page.locator('#resultsTable tbody tr').first()
+      .locator('.added-hint').count();
+    expect(addedHintCount).toBe(1);
+  });
+
   test('6. Quick action: 20 latest transcripts', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);

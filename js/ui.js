@@ -302,13 +302,13 @@ PPP.ui = (function () {
     /**
      * Render results table rows.
      */
-    function renderResults(rows, searchTermStr, startIndex, endIndex, matchHints) {
+    function renderResults(rows, searchTermStr, startIndex, endIndex, matchHints, showAddedDate) {
         // Language switch: the extras cache holds only the previously active
         // language, so re-scope it from core:extras and render again when it
         // lands. Rendering continues immediately with what is cached (EN
         // fallback) rather than blanking the essence/summary column.
         _syncExtrasLang(function () {
-            renderResults(rows, searchTermStr, startIndex, endIndex, matchHints);
+            renderResults(rows, searchTermStr, startIndex, endIndex, matchHints, showAddedDate);
         });
         var table = document.getElementById('resultsTable');
         table.innerHTML = '';
@@ -343,7 +343,7 @@ PPP.ui = (function () {
         var searchTerms = searchTermStr ? searchTermStr.split(';') : [];
 
         for (var i = startIndex; i < endIndex && i < rows.length; i++) {
-            _renderLectureRow(tbody, rows[i], searchTerms, columnHeaders, null);
+            _renderLectureRow(tbody, rows[i], searchTerms, columnHeaders, null, showAddedDate);
         }
     }
 
@@ -357,7 +357,7 @@ PPP.ui = (function () {
      * the file title, using the same match-hint visual mechanism as translated
      * titles / essence lines.
      */
-    function _renderLectureRow(tbody, row, searchTerms, cols, sentCtx) {
+    function _renderLectureRow(tbody, row, searchTerms, cols, sentCtx, showAddedDate) {
         {
             var tr = tbody.insertRow();
 
@@ -560,6 +560,19 @@ PPP.ui = (function () {
                         // Metadata ("In Titles") mode only — Rājan rule: a
                         // sentence-hit row shows ONLY title + matched sentence,
                         // never the translated-title hint or the essence line.
+                        // "By Added" view only: the visible Date column is the
+                        // LECTURE date, not when it was added to the DB — show
+                        // the added date too so the sort order is legible
+                        // (Rājan report, 2026-07-31).
+                        if (showAddedDate) {
+                            var addedVal = (row['Added'] || '').toString().trim();
+                            if (addedVal) {
+                                var addedSpan = document.createElement('span');
+                                addedSpan.className = 'match-hint added-hint';
+                                addedSpan.textContent = t('addedLabel') + ': ' + addedVal;
+                                td.appendChild(addedSpan);
+                            }
+                        }
                         // Tulkotais nosaukums zem oriģināla (tumši zils) — tikai non-EN valodās
                         var langPref = localStorage.getItem('preferredLanguage') || 'en';
                         if (langPref !== 'en' && nr) {

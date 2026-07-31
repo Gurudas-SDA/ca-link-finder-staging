@@ -2973,7 +2973,11 @@ PPP.app = (function () {
             '<strong>' + totalResults + ' ' + i18n.t('filesFound') + '</strong>&nbsp;&nbsp;&nbsp;' +
             i18n.t('showingResults') + ' ' + (totalResults === 0 ? 0 : (startIndex + 1)) + '-' + endIndex;
 
-        ui.renderResults(allResults, lastSearchTerm, startIndex, endIndex, matchHints);
+        // Pass navView so the "By Added" list can show the added date
+        // under the title (the visible Date column is the LECTURE date,
+        // not when it was added — that ambiguity was the root of Rājan's
+        // "By Added looks wrong" report, 2026-07-31).
+        ui.renderResults(allResults, lastSearchTerm, startIndex, endIndex, matchHints, navView === 'byAdded');
         ui.renderPagination(totalResults, currentPage, pageSize, changePage);
 
         _showSelectToggle(totalResults > 0);
@@ -3929,8 +3933,12 @@ PPP.app = (function () {
             db.queryMetaAsync(
                 "SELECT * FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC LIMIT 20"
             ).then(function (rows) {
+                // NOTE: rows already arrive in SQL "added DESC" order — do NOT
+                // re-sort by utils.compareDates (lecture date), that silently
+                // undoes the added-date ordering and old lectures added
+                // recently can jump above newer additions (Rājan report,
+                // 2026-07-31).
                 var uiRows = rows.map(mapSqlRowToUI);
-                uiRows.sort(utils.compareDates);
                 lastSearchTerm = i18n.t('latest20Files');
                 allResults = uiRows;
                 totalResults = uiRows.length;
@@ -3959,9 +3967,12 @@ PPP.app = (function () {
         var top20 = withAdded.slice(0, 20);
         var nrSet = new Set(top20.map(function (r) { return (r['Nr.'] || '').toString().trim(); }));
 
+        // NOTE: use top20 directly — it is already sorted by Added DESC.
+        // Re-filtering DB and re-sorting by utils.compareDates (lecture date)
+        // was the same bug as the SQLite branch above: it silently discarded
+        // the added-date order (Rājan report, 2026-07-31).
         lastSearchTerm = 'latest_files:' + Array.from(nrSet).join(',');
-        allResults = DB.filter(function (r) { return nrSet.has((r['Nr.'] || '').toString().trim()); });
-        allResults.sort(utils.compareDates);
+        allResults = top20;
         totalResults = allResults.length;
         currentPage = 1;
         matchHints = new Map();
@@ -3982,6 +3993,9 @@ PPP.app = (function () {
                 "SELECT * FROM lectures WHERE date LIKE '2026%' AND nr != '' ORDER BY date DESC"
             ).then(function (rows) {
                 var uiRows = rows.map(mapSqlRowToUI);
+                // OK here (unlike showLatestFiles above): SQL already orders by
+                // `date DESC` and compareDates also sorts by lecture date, so
+                // this resort is redundant but not a bug — both agree.
                 uiRows.sort(utils.compareDates);
                 lastSearchTerm = '2026';
                 allResults = uiRows;
