@@ -3,20 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chaitanya Academy — Audio, Video & Transcript Finder</title>
+    <title>Chaitanya Academy — Audio, Video, Transcript & Quote Finder</title>
 
     <!-- Open Graph (Telegram, WhatsApp, Facebook link preview) -->
-    <meta property="og:title" content="Chaitanya Academy — Audio, Video & Transcript Finder">
-    <meta property="og:description" content="~10 000 MP3 files by Prem Prayojan Prabhu | Transcripts EN/LV/RU | ~10 000 MP3 файлов | Транскрипты EN/LV/RU">
-    <meta property="og:image" content="https://gurudas-sda.github.io/ca-link-finder/og-image.png?v=8">
+    <meta property="og:title" content="Chaitanya Academy — Audio, Video, Transcript & Quote Finder">
+    <meta property="og:description" content="~10,000 MP3 files by Śrī Prem Prayojan Prabhu. Works offline.">
+    <meta property="og:image" content="https://gurudas-sda.github.io/ca-link-finder-staging/og-image-v10.png">
     <meta property="og:image:width" content="1200">
-    <meta property="og:image:height" content="630">
+    <meta property="og:image:height" content="767">
     <meta property="og:type" content="website">
     <!-- Twitter Card (also used by Telegram) -->
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Chaitanya Academy — Audio, Video & Transcript Finder">
-    <meta name="twitter:description" content="~10 000 MP3 files by Prem Prayojan Prabhu | Transcripts EN/LV/RU | ~10 000 MP3 файлов | Транскрипты EN/LV/RU">
-    <meta name="twitter:image" content="https://gurudas-sda.github.io/ca-link-finder/og-image.png?v=8">
+    <meta name="twitter:title" content="Chaitanya Academy — Audio, Video, Transcript & Quote Finder">
+    <meta name="twitter:description" content="~10,000 MP3 files by Śrī Prem Prayojan Prabhu. Works offline.">
+    <meta name="twitter:image" content="https://gurudas-sda.github.io/ca-link-finder-staging/og-image-v10.png">
 
     <!-- PWA & Icons -->
     <link rel="manifest" href="manifest.json">
@@ -323,22 +323,22 @@
 
     <!-- ===== APPLICATION SCRIPTS ===== -->
     <!-- Load order matters: utils first, then i18n, db, search, ui, app last -->
-    <script src="js/utils.js?v=aa1a3ba8"></script>
-    <script src="js/i18n.js?v=b6261d7d"></script>
+    <script src="js/utils.js?v=370ffd0a"></script>
+    <script src="js/i18n.js?v=b24668ed"></script>
     <!-- codec must precede offline-store/downloader/db: they read PPP.codec at
          call time, but the Brotli decoder it may pull in is fetched lazily,
          only when a `br` artefact is actually decoded. -->
     <script src="js/codec.js?v=c4091679"></script>
     <script src="js/offline-store.js?v=c3bdcad3"></script>
-    <script src="js/downloader.js?v=1eadc821"></script>
-    <script src="js/db.js?v=9369d5a5"></script>
+    <script src="js/downloader.js?v=5ef805a1"></script>
+    <script src="js/db.js?v=a6e5f2fc"></script>
     <script src="js/search.js?v=92203832"></script>
-    <script src="js/ui.js?v=75c6c051"></script>
+    <script src="js/ui.js?v=01831259"></script>
     <script src="js/favorites.js?v=92275512"></script>
     <script src="js/config.js?v=c1fb3b66"></script>
     <script src="js/vendor/jszip.min.js?v=acc7e414"></script>
-    <script src="guide/menu-data.js?v=cb5c5cbe"></script>
-    <script src="js/app.js?v=3aeef792"></script>
+    <script src="guide/menu-data.js?v=4b11f0e5"></script>
+    <script src="js/app.js?v=74531ccb"></script>
 
 </body>
 </html>

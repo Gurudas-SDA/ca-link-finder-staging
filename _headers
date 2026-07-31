@@ -1,0 +1,14 @@
+/data/*
+  Access-Control-Allow-Origin: https://gurudas-sda.github.io
+  Access-Control-Allow-Methods: GET, HEAD, OPTIONS
+  Access-Control-Expose-Headers: Content-Length, Content-Range, ETag
+
+/packs/*
+  Access-Control-Allow-Origin: https://gurudas-sda.github.io
+  Access-Control-Allow-Methods: GET, HEAD, OPTIONS
+  Access-Control-Expose-Headers: Content-Length, Content-Range, ETag
+
+/transcripts/*
+  Access-Control-Allow-Origin: https://gurudas-sda.github.io
+  Access-Control-Allow-Methods: GET, HEAD, OPTIONS
+  Access-Control-Expose-Headers: Content-Length, Content-Range, ETag

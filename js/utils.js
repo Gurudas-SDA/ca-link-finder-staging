@@ -4,6 +4,23 @@
    =========================================================================== */
 window.PPP = window.PPP || {};
 
+// Large corpus files live on Cloudflare while the UI stays on GitHub Pages.
+// The same promoted code works in both environments: only the GitHub Pages
+// path decides which data Worker is used. Direct Workers/local visits keep
+// relative URLs and therefore read from their own origin.
+PPP.dataOrigin = '';
+if (window.location.hostname === 'gurudas-sda.github.io') {
+    PPP.dataOrigin = window.location.pathname.indexOf('/ca-link-finder-staging/') === 0
+        ? 'https://ca-link-finder-staging.guru-das-sda.workers.dev'
+        : 'https://ca-link-finder.guru-das-sda.workers.dev';
+}
+
+PPP.dataUrl = function (path) {
+    var value = String(path || '');
+    if (!PPP.dataOrigin || /^(?:[a-z]+:)?\/\//i.test(value)) return value;
+    return PPP.dataOrigin + '/' + value.replace(/^\/+/, '');
+};
+
 PPP.utils = (function () {
     'use strict';
 
