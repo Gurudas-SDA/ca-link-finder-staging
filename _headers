@@ -2,13 +2,18 @@
   Access-Control-Allow-Origin: https://gurudas-sda.github.io
   Access-Control-Allow-Methods: GET, HEAD, OPTIONS
   Access-Control-Expose-Headers: Content-Length, Content-Range, ETag
+  Cache-Control: public, max-age=31536000, immutable
 
 /packs/*
   Access-Control-Allow-Origin: https://gurudas-sda.github.io
   Access-Control-Allow-Methods: GET, HEAD, OPTIONS
   Access-Control-Expose-Headers: Content-Length, Content-Range, ETag
+  Cache-Control: public, max-age=31536000, immutable
 
 /transcripts/*
   Access-Control-Allow-Origin: https://gurudas-sda.github.io
   Access-Control-Allow-Methods: GET, HEAD, OPTIONS
   Access-Control-Expose-Headers: Content-Length, Content-Range, ETag
+
+/data/db-versions.json
+  Cache-Control: no-cache, must-revalidate

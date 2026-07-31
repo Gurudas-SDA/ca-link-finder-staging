@@ -1256,7 +1256,7 @@ PPP.ui = (function () {
             : Promise.resolve({});
         return versionsP
             .then(function (v) {
-                var url = PPP.dataUrl('data/ppp_lecture_extras.json') +
+                var url = 'data/ppp_lecture_extras.json' +
                     (v && v.extras ? ('?v=' + v.extras) : '');
                 return fetch(url);
             })

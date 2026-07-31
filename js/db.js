@@ -476,10 +476,10 @@ PPP.db = (function () {
                     return fetchGzDB(META, path + v, progressCallback, enc)
                         .catch(function (err) {
                             console.warn('Compressed meta fetch failed, falling back to uncompressed:', err);
-                            return loadDB(META, PPP.dataUrl('data/ppp_meta.db') + v, progressCallback);
+                            return loadDB(META, 'data/ppp_meta.db' + v, progressCallback);
                         });
                 }
-                return loadDB(META, PPP.dataUrl('data/ppp_meta.db') + v, progressCallback);
+                return loadDB(META, 'data/ppp_meta.db' + v, progressCallback);
             });
         });
     }
@@ -492,7 +492,7 @@ PPP.db = (function () {
         var dbName = 'html_' + lang;
         return getDbVersions().then(function (versions) {
             var v = versions[lang] ? '?v=' + versions[lang] : '';
-            return loadDB(dbName, PPP.dataUrl('data/ppp_transcripts_html_' + lang + '.db') + v, progressCallback);
+            return loadDB(dbName, 'data/ppp_transcripts_html_' + lang + '.db' + v, progressCallback);
         });
     }
 

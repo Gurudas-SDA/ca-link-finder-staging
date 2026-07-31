@@ -3237,7 +3237,7 @@ PPP.app = (function () {
             : Promise.resolve(null);
         return fromStore.then(function (txt) {
             if (txt && txt.trim()) return txt;
-            return fetch(PPP.dataUrl('transcripts/' + lang + '/' + encodeURIComponent(String(nr)) + '.html'), { signal: signal })
+            return fetch('transcripts/' + lang + '/' + encodeURIComponent(String(nr)) + '.html', { signal: signal })
                 .then(function (r) { return r.ok ? r.text() : ''; })
                 .catch(function (e) {
                     if (e && e.name === 'AbortError') throw e;
@@ -4848,7 +4848,7 @@ PPP.app = (function () {
             // what marks the network as truly down, not the unreliable flag.
             // A resolved-but-!ok response (e.g. 404) means the server WAS
             // reached — that is a real miss, not an offline state.
-            return fetch(PPP.dataUrl('transcripts/' + lang + '/' + encodeURIComponent(String(nr)) + '.html'))
+            return fetch('transcripts/' + lang + '/' + encodeURIComponent(String(nr)) + '.html')
                 .then(function (r) { return r.ok ? r.text() : ''; })
                 .catch(function () { _netFetchFailed = true; return ''; });
         }
