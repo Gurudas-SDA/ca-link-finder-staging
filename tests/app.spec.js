@@ -3261,3 +3261,88 @@ test.describe('Extras cache is scoped to the active language', () => {
   });
 
 });
+
+/**
+ * HOME BUTTON (Rājan decision 2026-07-31).
+ *
+ * The start screen (purpose picker + "List Of Sources") used to be a one-way
+ * door: once ppp_purpose was set, initOnboarding() hid the overlay forever and
+ * the only Sources button in the app went with it. A permanent utility-row
+ * "Home" button now re-opens that same screen WITHOUT clearing ppp_purpose,
+ * and a close (X) — rendered only when a purpose already exists — leads back.
+ */
+test.describe('Home button — the start screen is reachable again', () => {
+
+  test('H1. Returning user: Home reopens the start view, Sources render, X closes it', async ({ page }) => {
+    // The file-level beforeEach presets ppp_purpose='lectures' — i.e. exactly
+    // the returning-user state where the start screen used to be unreachable.
+    await page.goto('./');
+
+    const home = page.locator('#homeBtn');
+    await expect(home).toBeVisible();
+
+    // Visible is not the same as pressable (language-chooser lesson,
+    // 2026-07-25): hit-test the centre of the button.
+    const pressable = await page.evaluate(() => {
+      const b = document.getElementById('homeBtn');
+      const r = b.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return !!top && (top === b || b.contains(top) || top.contains(b));
+    });
+    expect(pressable).toBe(true);
+
+    await home.click();
+
+    const overlay = page.locator('#onboardingOverlay');
+    await expect(overlay).toBeVisible();
+    // Straight to the purpose/intro stage — the language question is not asked
+    // again — and the mode buttons are there to switch view if wanted.
+    await expect(page.locator('.onb-stage[data-onb-stage="intro"]')).toBeVisible();
+    await expect(page.locator('.onb-stage[data-onb-stage="lang"]')).toBeHidden();
+    await expect(page.locator('.onb-go')).toHaveCount(2);
+
+    // Sources still work from inside the overlay (showSources()).
+    await page.click('.onb-intro-after button');
+    const list = page.locator('#sourcesList');
+    await expect(list).toBeVisible({ timeout: 15000 });
+    expect(await list.locator('li').count()).toBeGreaterThan(5);
+
+    // The way out exists for a returning user...
+    const close = page.locator('#onbCloseBtn');
+    await expect(close).toBeVisible();
+    await close.click();
+
+    await expect(overlay).toBeHidden();
+    // ...and lands back on a usable UI, with the purpose untouched.
+    await expect(page.locator('#searchTerm')).toBeVisible();
+    await expect(home).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem('ppp_purpose'))).toBe('lectures');
+    expect(await page.evaluate(() => document.body.classList.contains('onboarding-active'))).toBe(false);
+  });
+
+  test('H2. First visit still has no way out of the purpose choice', async ({ page }) => {
+    // Registered after the file-level beforeEach, so it undoes its presets.
+    await page.addInitScript(() => {
+      try {
+        localStorage.removeItem('ppp_auto_install');
+        localStorage.removeItem('preferredLanguage');
+        localStorage.removeItem('ppp_purpose');
+      } catch (e) {}
+    });
+    await page.goto('./');
+
+    await expect(page.locator('#onboardingOverlay')).toBeVisible();
+    await expect(page.locator('#onbCloseBtn')).toBeHidden();
+    // The Home button lives in the working UI, which the gate hides outright.
+    await expect(page.locator('#homeBtn')).toBeHidden();
+
+    await page.click('.onb-lang');   // English -> intro stage
+    await expect(page.locator('.onb-stage[data-onb-stage="intro"]')).toBeVisible();
+    await expect(page.locator('#onbCloseBtn')).toBeHidden();
+
+    // Escape is not a back door either.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#onboardingOverlay')).toBeVisible();
+  });
+
+});

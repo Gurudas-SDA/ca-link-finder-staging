@@ -19,7 +19,7 @@ self.PRECACHE = [
   'css/fonts/montserrat_v31_JTUSjIg1_i6t8kCHKm459WZhyzbi.woff2?v=26b2403f',
   'css/fonts/montserrat_v31_JTUSjIg1_i6t8kCHKm459Wdhyzbi.woff2?v=54d9a78b',
   'css/fonts/montserrat_v31_JTUSjIg1_i6t8kCHKm459Wlhyw.woff2?v=06b16db7',
-  'css/styles.css?v=90cc1ce8',
+  'css/styles.css?v=3956e868',
   'guide/en/index.html?v=c412ad05',
   'guide/es/index.html?v=097596d0',
   'guide/fr/index.html?v=2ebdf7d0',
@@ -29,8 +29,8 @@ self.PRECACHE = [
   'guide/ru/index.html?v=2dc35da1',
   'icon-192.png?v=fab41429',
   'icon-512.png?v=88196aa7',
-  'index.html?v=618f325a',
-  'js/app.js?v=e9cd4af2',
+  'index.html?v=caaec00c',
+  'js/app.js?v=06c00bf3',
   'js/auth-modal.js?v=2ba0f1fc',
   'js/auth.js?v=a4f11a49',
   'js/codec.js?v=c4091679',
@@ -40,7 +40,7 @@ self.PRECACHE = [
   'js/downloader.js?v=5ef805a1',
   'js/favorites.js?v=92275512',
   'js/firebase-config.js?v=3db6511a',
-  'js/i18n.js?v=b24668ed',
+  'js/i18n.js?v=4b00668e',
   'js/offline-store.js?v=c3bdcad3',
   'js/search.js?v=92203832',
   'js/ui.js?v=75c6c051',
@@ -63,4 +63,4 @@ self.REQUIRED_SHELL = [
   'js/vendor/sql-wasm.js',
   'js/vendor/sql-wasm.wasm',
 ];
-self.SHELL_VERSION = 'd2cee1448467';
+self.SHELL_VERSION = 'ca0b78ef949f';

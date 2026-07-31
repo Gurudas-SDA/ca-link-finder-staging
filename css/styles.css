@@ -2654,9 +2654,32 @@ body.onboarding-active #installBanner {
     max-width: 900px;
     margin: 24px auto 40px;
     padding: 0 16px;
+    position: relative;
 }
 .onb-overlay[hidden] { display: none; }
 .onb-stage[hidden] { display: none; }
+
+/* Close (X) — only rendered for a returning user who re-opened this screen
+   with the utility-row Home button; carries the hidden attribute on a first
+   visit, where the purpose choice is mandatory. */
+.onb-close {
+    position: absolute;
+    top: 0;
+    right: 16px;
+    z-index: 2;
+    width: 34px;
+    height: 34px;
+    line-height: 1;
+    font-size: 22px;
+    cursor: pointer;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-muted);
+    transition: 0.16s;
+}
+.onb-close:hover { border-color: var(--primary); color: var(--primary); }
+.onb-close[hidden] { display: none; }
 
 .onb-title, .onb-question {
     text-align: center;

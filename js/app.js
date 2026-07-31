@@ -5831,6 +5831,38 @@ PPP.app = (function () {
         document.body.classList.remove('onboarding-active');
     }
 
+    /** The close (X) control on the start screen exists ONLY for a returning
+     *  user who re-opened it via the Home button: on a first visit the purpose
+     *  choice is mandatory (Rājan), so there is deliberately no way out. */
+    function _updateOnbCloseBtn() {
+        var btn = document.getElementById('onbCloseBtn');
+        if (btn) btn.hidden = !_currentPurpose();
+    }
+
+    /** Home button (utility row, always visible): re-open the start screen
+     *  WITHOUT clearing ppp_purpose. From there the user can switch mode
+     *  (setPurpose, as before), open "List Of Sources", or close and land back
+     *  exactly where they were. */
+    function showHome() {
+        document.body.classList.add('onboarding-active');
+        var overlay = document.getElementById('onboardingOverlay');
+        if (overlay) overlay.hidden = false;
+        // Language is already chosen for anyone who can reach this button, so
+        // go straight to the intro/purpose stage rather than asking again.
+        _onbShowStage(_currentPurpose() ? 'intro' : 'lang');
+        _updateOnbCloseBtn();
+        updateOnbIntro();
+        track('home-open', {});
+        try { window.scrollTo(0, 0); } catch (e) {}
+    }
+
+    /** Close the start screen and return to the working UI. No-op while no
+     *  purpose has been chosen yet (first visit — the gate is absolute). */
+    function closeHome() {
+        if (!_currentPurpose()) return;
+        _hideOnboarding();
+    }
+
     /** Called once from init(): shows the gate on first run, or applies the
      *  already-chosen view immediately (no flash of the wrong UI). */
     function initOnboarding() {
@@ -5844,6 +5876,14 @@ PPP.app = (function () {
             _hideOnboarding();
             _applyPurposeView(purpose);
         }
+        _updateOnbCloseBtn();
+        // Escape is the keyboard twin of the X — same guard, so it cannot be
+        // used to skip the first-visit gate.
+        document.addEventListener('keydown', function (e) {
+            if (e.key !== 'Escape') return;
+            var overlay = document.getElementById('onboardingOverlay');
+            if (overlay && !overlay.hidden) closeHome();
+        });
         updateOnbIntro();
     }
 
@@ -6373,6 +6413,8 @@ PPP.app = (function () {
         // Onboarding gate (purpose picker) + the two-view toggle + tip strips
         onbPickLanguage: onbPickLanguage,
         setPurpose: setPurpose,
+        showHome: showHome,
+        closeHome: closeHome,
         switchView: switchView,
         toggleLangChooser: toggleLangChooser,
         // Internal (test only) — read/reset gate state without clicking through it.
