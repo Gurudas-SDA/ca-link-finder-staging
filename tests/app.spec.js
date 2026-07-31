@@ -1258,8 +1258,11 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(await panel.locator('.flt-length').evaluateAll(els => els.map(e => e.value)))
       .toEqual(['0-30', '31-45', '46-60', '61-90', '91+']);
 
-    // Type: the 8 families of the DB `Type` column.
-    expect(await panel.locator('.flt-type').count()).toBe(8);
+    // Type: exactly the 8 exact DB `Type` values, alphabetical (Rājan, 2026-07-31).
+    expect(await panel.locator('.flt-type').evaluateAll(els => els.map(e => e.value))).toEqual([
+      'Explanation (bhajan)', 'Istagosthi_Q&A', 'Lecture', 'Lecture (event)',
+      'Lecture (public)', 'Lecture (seminar)', 'Parikrama', 'Short talk'
+    ]);
 
     // Apply a Links + Length combination and check it actually narrows.
     await panel.locator('.flt-link[value="Mixcloud"]').check();
@@ -1277,6 +1280,54 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     const linkCells = await page.locator('#resultsTable tbody tr').evaluateAll(
       rows => rows.map(r => r.innerText.toLowerCase()));
     for (const t of linkCells) expect(t).toContain('mixcloud');
+  });
+
+  test('50n2. Type filter: exact DB values, alphabetical, "Lecture" never leaks "Lecture (event)"', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.locator('.main-button-row .combo-btn-1').click();
+    const panel = page.locator('#filtersPanel');
+    await expect(panel).toBeVisible();
+    await expandFilterSections(page);
+
+    // Exactly the 8 exact values Rājan picked, in alphabetical order.
+    const values = await panel.locator('.flt-type').evaluateAll(els => els.map(e => e.value));
+    expect(values).toEqual([
+      'Explanation (bhajan)', 'Istagosthi_Q&A', 'Lecture', 'Lecture (event)',
+      'Lecture (public)', 'Lecture (seminar)', 'Parikrama', 'Short talk'
+    ]);
+    const alphabetical = [...values].sort((a, b) => a.toLowerCase() < b.toLowerCase() ? -1 : 1);
+    expect(values).toEqual(alphabetical);
+
+    // "Lecture" alone must match the bare type only (4246 rows in the live
+    // DB), NOT also the "Lecture (event)" / "(public)" / "(seminar)" variants
+    // that the old family-based filter used to fold in.
+    await panel.locator('.flt-type[value="Lecture"]').check();
+    await panel.locator('.flt-apply').click();
+    const lectureVal = await page.locator('#searchTerm').inputValue();
+    expect(lectureVal).toContain('type:Lecture');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 15000 });
+    const lectureTotal = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
+    expect(lectureTotal).toBe(4246);
+
+    // Negative check: "Lecture (event)" is its own exact slice (692 rows),
+    // strictly smaller than plain "Lecture" — proves the two never merge.
+    // (Reopening re-renders the panel with every checkbox unticked — test 50d.)
+    await page.locator('.main-button-row .combo-btn-1').click();
+    await expandFilterSections(page);
+    await panel.locator('.flt-type[value="Lecture (event)"]').check();
+    await panel.locator('.flt-apply').click();
+    const eventVal = await page.locator('#searchTerm').inputValue();
+    expect(eventVal).toContain('type:Lecture (event)');
+    // Wait for the NEW total, not the stale "Lecture" one still on screen.
+    await page.waitForFunction((prev) => {
+      var el = document.querySelector('#resultsInfo strong');
+      return el && el.textContent.replace(/\D+/g, '') !== String(prev);
+    }, lectureTotal, { timeout: 15000 });
+    const eventTotal = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
+    expect(eventTotal).toBe(692);
+    expect(eventTotal).toBeLessThan(lectureTotal);
   });
 
   test('50o. length: ranges resolve "1h 15min" text to minutes and never swallow blank cells', async ({ page }) => {

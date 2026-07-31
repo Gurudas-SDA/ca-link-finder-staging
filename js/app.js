@@ -3674,8 +3674,10 @@ PPP.app = (function () {
             opts.years.map(function (y) { return { cls: 'flt-year', value: y, label: y }; }));
         if (!sentenceMode) {
             sections += _fltSection('types', i18n.t('filtersTypes'),
-                cfg.TYPE_ORDER.map(function (key) {
-                    return { cls: 'flt-type', value: key, label: i18n.t(cfg.TYPE_I18N_KEY[key]) };
+                cfg.TYPE_ORDER.map(function (value) {
+                    // TYPE_ORDER holds the exact DB `Type` strings (Rājan,
+                    // 2026-07-31) — no i18n label for these, shown as-is.
+                    return { cls: 'flt-type', value: value, label: value };
                 }));
             sections += _fltSection('sources', i18n.t('filtersSources'),
                 opts.sources.map(function (s) { return { cls: 'flt-source', value: s, label: s }; }));

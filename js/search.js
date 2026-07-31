@@ -65,7 +65,8 @@ PPP.search = (function () {
                     if (cc) countryTerms.push(cc);
                 });
             } else if (tl.startsWith('type:')) {
-                // type:lecture,seminar — comma-separated canonical keys (Filters panel).
+                // type:Lecture,Parikrama — comma-separated exact DB Type
+                // values (Filters panel; Rājan, 2026-07-31).
                 t.slice(5).split(',').forEach(function (tc) {
                     tc = tc.trim();
                     if (tc) typeTerms.push(tc);
@@ -284,9 +285,10 @@ PPP.search = (function () {
         }
 
         // type: filter (Filters panel). OR within the group (any selected
-        // canonical type), ANDed against the rest. Each canonical key expands
-        // to its raw type_norm variants (exact match — type_norm has no city
-        // suffix like country_norm does).
+        // exact Type value), ANDed against the rest. Each token is the exact
+        // DB `Type` string (Rājan, 2026-07-31) — matched against type_norm
+        // with no family expansion, so "Lecture" never also matches
+        // "Lecture (event)".
         if (parsed.filters.type && parsed.filters.type.length > 0) {
             var cfg2 = (window.PPP && PPP.config) || {};
             var typeConds = [];

@@ -102,50 +102,27 @@ PPP.config.countryName = function (code, lang) {
 
 /* ---------------------------------------------------------------------------
    RECORD-TYPE FILTER DATA
-   The `lectures.type` column has 25+ raw variants (verified against the live
-   meta DB), most of them one-off outliers. This block groups the handful of
-   meaningful ones into 5 canonical keys — applied in the APP layer only, so
-   the Google Sheets source is never touched. Anything not listed here (n/a,
-   empty, "Promo", and the long tail of rare one-off values) is never offered
-   as a filter checkbox.
+   Rājan's decision (2026-07-31): the Type filter offers exactly these 8
+   `lectures.type` column values, shown in alphabetical order — NOT grouped
+   into families. Each checkbox matches ONLY its own exact DB value ("Lecture"
+   never also matches "Lecture (event)"). The other 30+ rare/one-off values
+   (n/a, empty, "Promo", Practice/Commentary variants, etc.) are still never
+   offered as a filter checkbox.
 
-   TYPE_GROUPS:  canonical key -> raw `type_norm` values that fold into it
-                 (type_norm is already lower-cased in the DB, same convention
-                 as country_norm).
-   TYPE_ORDER:   fixed display order for the Filters panel checkboxes.
+   TYPE_ORDER: the exact display strings, alphabetical — also used as the
+               checkbox value and as the visible label (no i18n: these are
+               literal DB cell contents, not translatable UI copy).
 --------------------------------------------------------------------------- */
-PPP.config.TYPE_GROUPS = {
-    lecture: ['lecture', 'lecture (event)', 'lecture (public)', 'lecture (seminar)', 'lecture (by other vaishnava)'],
-    parikrama: ['parikrama', 'parikrama_radhakunda'],
-    qa: ['istagosthi_q&a'],
-    practice: [
-        'practice (kirtan)', 'practice_?_ (kirtan)', 'practice (bhajan)', 'practice (arati)',
-        'practice (drama)', 'practice (yajna)', 'practice (japa)', 'practice (guru puja)',
-        'practice (go puja)', 'practice (karatalas)', 'practice (procession)',
-        'practice (mangala charana)', 'practice (bhajan studio)', 'practice (first grain ceremony)'
-    ],
-    shorttalk: ['short talk', 'short talk (name giving)', 'short talk (dance)', 'short talk (japa)'],
-    explanation: ['explanation (bhajan)', 'explanation (astrology)'],
-    commentary: ['commentary (drama)', 'commentary (bhajan)', 'commentary (dance)'],
-    promo: ['promo']
-};
-
-// The 8 `Type` families present in the meta DB (Rājan, 2026-07-31). The raw
-// column has 40+ cells, but they are all "Family" or "Family (variant)" —
-// the filter offers the 8 families and each expands to its raw variants.
-PPP.config.TYPE_ORDER = ['lecture', 'parikrama', 'qa', 'practice', 'shorttalk', 'explanation', 'commentary', 'promo'];
-
-// i18n key for each canonical type's checkbox label.
-PPP.config.TYPE_I18N_KEY = {
-    lecture: 'typeLecture',
-    parikrama: 'typeParikrama',
-    qa: 'typeQA',
-    practice: 'typePractice',
-    shorttalk: 'typeShortTalk',
-    explanation: 'typeExplanation',
-    commentary: 'typeCommentary',
-    promo: 'typePromo'
-};
+PPP.config.TYPE_ORDER = [
+    'Explanation (bhajan)',
+    'Istagosthi_Q&A',
+    'Lecture',
+    'Lecture (event)',
+    'Lecture (public)',
+    'Lecture (seminar)',
+    'Parikrama',
+    'Short talk'
+];
 
 /* ---------------------------------------------------------------------------
    LANGUAGE FILTER DATA
@@ -208,11 +185,11 @@ PPP.config.lengthRangeLabel = function (key, unit) {
 };
 
 /**
- * Every raw `type_norm` value that must match a canonical type key.
- * Returns lower-cased values (type_norm is lower-cased), same shape as
- * countryMatchCodes.
+ * The single `type_norm` value a Type checkbox must match. The checkbox
+ * value IS the exact DB display string (see TYPE_ORDER), so this just
+ * lower-cases it to compare against the already-lower-cased type_norm
+ * column — no family expansion, exactly one value in, one value out.
  */
-PPP.config.typeMatchValues = function (canonical) {
-    var raws = PPP.config.TYPE_GROUPS[canonical];
-    return raws ? raws.slice() : [];
+PPP.config.typeMatchValues = function (exactValue) {
+    return exactValue ? [String(exactValue).toLowerCase()] : [];
 };

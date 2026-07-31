@@ -29,12 +29,12 @@ self.PRECACHE = [
   'guide/ru/index.html?v=2dc35da1',
   'icon-192.png?v=fab41429',
   'icon-512.png?v=88196aa7',
-  'index.html?v=ee051ff5',
-  'js/app.js?v=e05834e3',
+  'index.html?v=191698e6',
+  'js/app.js?v=80be66f4',
   'js/auth-modal.js?v=2ba0f1fc',
   'js/auth.js?v=a4f11a49',
   'js/codec.js?v=c4091679',
-  'js/config.js?v=281b8d55',
+  'js/config.js?v=72dc8f5f',
   'js/db-worker.js?v=eb515890',
   'js/db.js?v=3ddce523',
   'js/downloader.js?v=5ef805a1',
@@ -42,7 +42,7 @@ self.PRECACHE = [
   'js/firebase-config.js?v=3db6511a',
   'js/i18n.js?v=74c2f3aa',
   'js/offline-store.js?v=c3bdcad3',
-  'js/search.js?v=3db0f632',
+  'js/search.js?v=5c684926',
   'js/ui.js?v=75c6c051',
   'js/utils.js?v=370ffd0a',
   'js/vendor/brotli-dec.js?v=423f2d10',
@@ -63,4 +63,4 @@ self.REQUIRED_SHELL = [
   'js/vendor/sql-wasm.js',
   'js/vendor/sql-wasm.wasm',
 ];
-self.SHELL_VERSION = '64ea0b413606';
+self.SHELL_VERSION = '6870633590ed';
