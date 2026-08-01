@@ -228,14 +228,15 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.waitForTimeout(600);
 
     // Ground truth: the DB's own added-date order, with the same secondary
-    // sort (Nr. DESC) the UI applies to break ties within the same added
-    // date. If the UI resorts by lecture date (the original bug —
-    // utils.compareDates undid the SQL "added DESC" order), the first
-    // rendered row will NOT match this.
+    // sort (lecture date DESC, then Nr. DESC) the UI applies to break ties
+    // within the same added date. If the UI resorts by lecture date alone
+    // (the original bug — utils.compareDates undid the SQL "added DESC"
+    // order), or ignores lecture date entirely (Rājan correction,
+    // 2026-08-01), the first rendered row will NOT match this.
     const expectedNr = await page.evaluate(async () => {
       const db = window.PPP.db;
       const rows = await db.queryMetaAsync(
-        "SELECT nr FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC, CAST(nr AS INTEGER) DESC LIMIT 1"
+        "SELECT nr FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC, date DESC, CAST(nr AS INTEGER) DESC LIMIT 1"
       );
       return String(rows[0].nr);
     });
@@ -251,7 +252,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(addedHintCount).toBe(1);
   });
 
-  test('5c. Quick action: By Added — newest Nr. wins ties within the same added date (Rājan report 2026-07-31, 10311-10313 hidden below 10304-10306)', async ({ page }) => {
+  test('5c. Quick action: By Added — within the same added date, newest lecture date wins ties even over a higher Nr. (Rājan correction 2026-08-01)', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);
 
@@ -259,21 +260,38 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
     await page.waitForTimeout(600);
 
-    // Ground truth: among rows sharing the single most recent `added` date,
-    // the highest Nr. (most recently created lecture) must be first — not
-    // whatever order SQLite returns ties in naturally (ascending Nr., which
-    // is the bug Rājan reported: 10304-10306 shown above 10311-10313).
-    const expectedNr = await page.evaluate(async () => {
+    // Ground truth: the exact same three-key order the app SQL uses
+    // (added DESC, date DESC, nr DESC), for page 1 (pageSize = 10, js/app.js).
+    // This is the case Rājan reported: sorting the same-`added` group by
+    // Nr. alone (the previous fix, c0cd402) let a lecture with a LOWER nr
+    // but a NEWER lecture date rank below a higher-nr but OLDER-dated one.
+    const expectedNrs = await page.evaluate(async () => {
       const db = window.PPP.db;
       const rows = await db.queryMetaAsync(
-        "SELECT nr FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC, CAST(nr AS INTEGER) DESC LIMIT 1"
+        "SELECT nr FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC, date DESC, CAST(nr AS INTEGER) DESC LIMIT 10"
       );
-      return String(rows[0].nr);
+      return rows.map((r) => String(r.nr));
     });
 
-    const firstRowNr = await page.locator('#resultsTable tbody tr').first()
-      .locator('.fav-star').getAttribute('data-nr');
-    expect(String(firstRowNr)).toBe(expectedNr);
+    const renderedNrs = await page.locator('#resultsTable tbody tr .fav-star').evaluateAll(
+      (stars) => stars.map((s) => String(s.getAttribute('data-nr')))
+    );
+    expect(renderedNrs).toEqual(expectedNrs);
+
+    // Negative check baked into the assertion above: confirm the ground
+    // truth itself isn't accidentally already sorted by nr DESC (i.e. the
+    // date tiebreak actually changes something in this dataset). If this
+    // ever goes flat (no date-vs-nr conflict left in the top added-date
+    // group), the test still passes correctness-wise but stops proving the
+    // regression is caught — flag for a data refresh if so.
+    const nrOnlyOrder = await page.evaluate(async () => {
+      const db = window.PPP.db;
+      const rows = await db.queryMetaAsync(
+        "SELECT nr FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC, CAST(nr AS INTEGER) DESC LIMIT 10"
+      );
+      return rows.map((r) => String(r.nr));
+    });
+    expect(nrOnlyOrder).not.toEqual(expectedNrs);
   });
 
   test('6. Quick action: 20 latest transcripts', async ({ page }) => {

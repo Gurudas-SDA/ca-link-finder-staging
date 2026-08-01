@@ -4004,13 +4004,17 @@ PPP.app = (function () {
 
         if (usingSqlite) {
             db.queryMetaAsync(
-                "SELECT * FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC, CAST(nr AS INTEGER) DESC LIMIT 20"
+                "SELECT * FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC, date DESC, CAST(nr AS INTEGER) DESC LIMIT 20"
             ).then(function (rows) {
-                // NOTE: rows already arrive in SQL "added DESC" order — do NOT
-                // re-sort by utils.compareDates (lecture date), that silently
-                // undoes the added-date ordering and old lectures added
-                // recently can jump above newer additions (Rājan report,
-                // 2026-07-31).
+                // NOTE: rows already arrive in SQL "added DESC, date DESC" order
+                // — do NOT re-sort by utils.compareDates (lecture date) alone,
+                // that silently undoes the added-date ordering and old lectures
+                // added recently can jump above newer additions (Rājan report,
+                // 2026-07-31). Within the same Added date, the newest lecture
+                // date must sort first, then nr as a final tiebreaker (Rājan
+                // correction, 2026-08-01: nr-only secondary sort let an older
+                // lecture with a lower nr but newer date rank above a newer
+                // lecture with a higher nr).
                 var uiRows = rows.map(mapSqlRowToUI);
                 lastSearchTerm = i18n.t('latest20Files');
                 allResults = uiRows;
@@ -4040,7 +4044,13 @@ PPP.app = (function () {
             var addedCmp = (b['Added'] || '').toString().localeCompare((a['Added'] || '').toString());
             if (addedCmp !== 0) return addedCmp;
             // Secondary sort: within the same Added date, newest lecture
-            // (highest Nr.) first — matches the SQLite branch above.
+            // date (Date field) first — matches the SQLite branch above.
+            var dateCmp = (b['Date'] || '').toString().localeCompare((a['Date'] || '').toString());
+            if (dateCmp !== 0) return dateCmp;
+            // Final tiebreaker: highest Nr. first, for stable ordering when
+            // both Added and Date match (Rājan correction, 2026-08-01: a
+            // nr-only secondary sort let an older lecture with a lower nr
+            // but newer date rank above a newer lecture with a higher nr).
             var nrA = parseInt((a['Nr.'] || '').toString(), 10) || 0;
             var nrB = parseInt((b['Nr.'] || '').toString(), 10) || 0;
             return nrB - nrA;
