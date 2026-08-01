@@ -4004,7 +4004,7 @@ PPP.app = (function () {
 
         if (usingSqlite) {
             db.queryMetaAsync(
-                "SELECT * FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC LIMIT 20"
+                "SELECT * FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC, CAST(nr AS INTEGER) DESC LIMIT 20"
             ).then(function (rows) {
                 // NOTE: rows already arrive in SQL "added DESC" order — do NOT
                 // re-sort by utils.compareDates (lecture date), that silently
@@ -4036,7 +4036,15 @@ PPP.app = (function () {
             var nr = (r['Nr.'] || '').toString().trim();
             return added !== '' && nr !== '';
         });
-        withAdded.sort(function (a, b) { return (b['Added'] || '').toString().localeCompare((a['Added'] || '').toString()); });
+        withAdded.sort(function (a, b) {
+            var addedCmp = (b['Added'] || '').toString().localeCompare((a['Added'] || '').toString());
+            if (addedCmp !== 0) return addedCmp;
+            // Secondary sort: within the same Added date, newest lecture
+            // (highest Nr.) first — matches the SQLite branch above.
+            var nrA = parseInt((a['Nr.'] || '').toString(), 10) || 0;
+            var nrB = parseInt((b['Nr.'] || '').toString(), 10) || 0;
+            return nrB - nrA;
+        });
         var top20 = withAdded.slice(0, 20);
         var nrSet = new Set(top20.map(function (r) { return (r['Nr.'] || '').toString().trim(); }));
 

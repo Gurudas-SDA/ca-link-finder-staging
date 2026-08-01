@@ -227,13 +227,15 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
     await page.waitForTimeout(600);
 
-    // Ground truth: the DB's own added-date order. If the UI resorts by
-    // lecture date (the original bug — utils.compareDates undid the SQL
-    // "added DESC" order), the first rendered row will NOT match this.
+    // Ground truth: the DB's own added-date order, with the same secondary
+    // sort (Nr. DESC) the UI applies to break ties within the same added
+    // date. If the UI resorts by lecture date (the original bug —
+    // utils.compareDates undid the SQL "added DESC" order), the first
+    // rendered row will NOT match this.
     const expectedNr = await page.evaluate(async () => {
       const db = window.PPP.db;
       const rows = await db.queryMetaAsync(
-        "SELECT nr FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC LIMIT 1"
+        "SELECT nr FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC, CAST(nr AS INTEGER) DESC LIMIT 1"
       );
       return String(rows[0].nr);
     });
@@ -247,6 +249,31 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     const addedHintCount = await page.locator('#resultsTable tbody tr').first()
       .locator('.added-hint').count();
     expect(addedHintCount).toBe(1);
+  });
+
+  test('5c. Quick action: By Added — newest Nr. wins ties within the same added date (Rājan report 2026-07-31, 10311-10313 hidden below 10304-10306)', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.click('button[data-i18n="latest20Files"]');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
+
+    // Ground truth: among rows sharing the single most recent `added` date,
+    // the highest Nr. (most recently created lecture) must be first — not
+    // whatever order SQLite returns ties in naturally (ascending Nr., which
+    // is the bug Rājan reported: 10304-10306 shown above 10311-10313).
+    const expectedNr = await page.evaluate(async () => {
+      const db = window.PPP.db;
+      const rows = await db.queryMetaAsync(
+        "SELECT nr FROM lectures WHERE added != '' AND nr != '' ORDER BY added DESC, CAST(nr AS INTEGER) DESC LIMIT 1"
+      );
+      return String(rows[0].nr);
+    });
+
+    const firstRowNr = await page.locator('#resultsTable tbody tr').first()
+      .locator('.fav-star').getAttribute('data-nr');
+    expect(String(firstRowNr)).toBe(expectedNr);
   });
 
   test('6. Quick action: 20 latest transcripts', async ({ page }) => {
