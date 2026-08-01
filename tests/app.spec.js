@@ -1375,19 +1375,24 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     const alphabetical = [...values].sort((a, b) => a.toLowerCase() < b.toLowerCase() ? -1 : 1);
     expect(values).toEqual(alphabetical);
 
-    // "Lecture" alone must match the bare type only (4246 rows in the live
-    // DB), NOT also the "Lecture (event)" / "(public)" / "(seminar)" variants
-    // that the old family-based filter used to fold in.
+    // "Lecture" alone must match the bare type only, NOT also the
+    // "Lecture (event)" / "(public)" / "(seminar)" variants that the old
+    // family-based filter used to fold in. Absolute row counts drift every
+    // night as the DB grows (broke 2026-08-01 promote — was hardcoded to
+    // 4246/692), so this proves the invariant RELATIVELY instead: querying
+    // "Lecture" and "Lecture (event)" together (OR-combined in one filter)
+    // must return exactly the SUM of the two separate queries. If the two
+    // types ever leaked into each other (family/prefix match instead of
+    // exact), the combined query would double-count or under-count and the
+    // sum would no longer match — independent of how many rows exist.
     await panel.locator('.flt-type[value="Lecture"]').check();
     await panel.locator('.flt-apply').click();
     const lectureVal = await page.locator('#searchTerm').inputValue();
     expect(lectureVal).toContain('type:Lecture');
     await page.waitForSelector('#resultsInfo strong', { timeout: 15000 });
     const lectureTotal = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
-    expect(lectureTotal).toBe(4246);
+    expect(lectureTotal).toBeGreaterThan(0);
 
-    // Negative check: "Lecture (event)" is its own exact slice (692 rows),
-    // strictly smaller than plain "Lecture" — proves the two never merge.
     // (Reopening re-renders the panel with every checkbox unticked — test 50d.)
     await page.locator('.main-button-row .combo-btn-1').click();
     await expandFilterSections(page);
@@ -1401,8 +1406,23 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       return el && el.textContent.replace(/\D+/g, '') !== String(prev);
     }, lectureTotal, { timeout: 15000 });
     const eventTotal = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
-    expect(eventTotal).toBe(692);
-    expect(eventTotal).toBeLessThan(lectureTotal);
+    expect(eventTotal).toBeGreaterThan(0);
+
+    // Now check BOTH boxes together and compare against the sum — the real
+    // no-leak proof, and it holds regardless of DB size.
+    await page.locator('.main-button-row .combo-btn-1').click();
+    await expandFilterSections(page);
+    await panel.locator('.flt-type[value="Lecture"]').check();
+    await panel.locator('.flt-type[value="Lecture (event)"]').check();
+    await panel.locator('.flt-apply').click();
+    const combinedVal = await page.locator('#searchTerm').inputValue();
+    expect(combinedVal).toContain('type:Lecture,Lecture (event)');
+    await page.waitForFunction((prev) => {
+      var el = document.querySelector('#resultsInfo strong');
+      return el && el.textContent.replace(/\D+/g, '') !== String(prev);
+    }, eventTotal, { timeout: 15000 });
+    const combinedTotal = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
+    expect(combinedTotal).toBe(lectureTotal + eventTotal);
   });
 
   test('50o. length: ranges resolve "1h 15min" text to minutes and never swallow blank cells', async ({ page }) => {
