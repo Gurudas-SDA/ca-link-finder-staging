@@ -75,6 +75,15 @@ PPP.app = (function () {
     var textSearchMode = 'metadata';
     var navView = null;
     var transcriptView = null;
+    // Filters is the one nav button that is not a "view": it is a panel laid
+    // OVER whatever is showing, and what it filters is the title search. So
+    // while it is open the highlight reads "In Titles + Filters" (Rājan,
+    // 2026-08-01) — the pair actually in play — instead of leaving a stale
+    // By Added / Top Searches / Favorites highlight next to it. Kept as its
+    // own flag rather than a navView value precisely because it does not
+    // replace navView: closing the panel restores the underlying view's
+    // highlight untouched.
+    var _filtersOpen = false;
     var deferredPrompt = null;
     var installMode = 'ios';
     var totalLectures = (function () {
@@ -112,9 +121,19 @@ PPP.app = (function () {
         _comboTooltipEl.style.left = left + 'px';
     }
 
+    // The caption setComboDisplay() last wrote into #searchTerm, or null.
+    // Recorded because the .combo-display CLASS is not a reliable "is this a
+    // caption?" signal on every path (setSearchMode -> clearComboDisplay
+    // strips it while the text stays), and matching the text against
+    // SEARCH_VALUE_DISPLAY_KEYS is not reliable either (some captions use an
+    // i18n fallback string, e.g. '★ Favorites', that no key resolves to).
+    // The value written here IS the caption, by construction.
+    var _comboDisplayValue = null;
+
     function setComboDisplay(label) {
         var si = document.getElementById('searchTerm');
         if (!si) return;
+        _comboDisplayValue = label;
         si.value = label;
         si.disabled = true;
         si.classList.add('combo-display');
@@ -138,6 +157,7 @@ PPP.app = (function () {
         si.addEventListener('mouseleave', _comboTooltipLeave);
     }
     function clearComboDisplay() {
+        _comboDisplayValue = null;
         var si = document.getElementById('searchTerm');
         if (!si) return;
         si.value = '';
@@ -3524,11 +3544,22 @@ PPP.app = (function () {
         // only one thing looks selected at a time.
         var kw = document.querySelector('.keywords-search-btn');
         var tx = document.querySelector('.text-search-btn');
-        if (kw) kw.classList.toggle('active', !navView && !transcriptView && textSearchMode === 'metadata');
-        if (tx) tx.classList.toggle('active', !navView && !transcriptView && textSearchMode === 'sentences');
-        // Group B: top nav row — exactly one active iff navView matches.
+        // An open Filters panel counts as "not browsing": the filters narrow
+        // the text search, so its mode stays lit alongside Filters. Which of
+        // the two lights up still follows textSearchMode — in "In Text" mode
+        // the panel only offers Years, and claiming "In Titles" there would
+        // be a lie.
+        var groupAOn = _filtersOpen || (!navView && !transcriptView);
+        if (kw) kw.classList.toggle('active', groupAOn && textSearchMode === 'metadata');
+        if (tx) tx.classList.toggle('active', groupAOn && textSearchMode === 'sentences');
+        // Group B: top nav row — exactly one active. Filters wins while its
+        // panel is open (it is the thing the user is operating); otherwise the
+        // button whose data-navview matches the current browse view.
         document.querySelectorAll('.main-button-row .combo-btn').forEach(function (btn) {
-            btn.classList.toggle('active', !!navView && btn.getAttribute('data-navview') === navView);
+            var view = btn.getAttribute('data-navview');
+            btn.classList.toggle('active', _filtersOpen
+                ? view === 'filters'
+                : (!!navView && view === navView));
         });
         // Group C (By Date/Topic/Newest) is rebuilt inside the results header on
         // every render, reading transcriptView via getTranscriptView() — so no
@@ -3710,8 +3741,12 @@ PPP.app = (function () {
         _getFilterOptions().then(function (opts) {
             _renderFiltersPanel(panel, opts);
             panel.hidden = false;
-            var btn = document.querySelector('.main-button-row .combo-btn-1');
-            if (btn) btn.classList.add('active');
+            // Highlight through the one function that owns button state, so
+            // "Filters + In Titles" holds no matter which view we came from.
+            // The old code only add()ed .active here and left By Added / Top
+            // Searches / Favorites lit next to it.
+            _filtersOpen = true;
+            _refreshButtonGroups();
             document.addEventListener('click', _filtersOutside, true);
             document.addEventListener('keydown', _filtersEsc, true);
         });
@@ -3720,8 +3755,11 @@ PPP.app = (function () {
     function closeFilters() {
         var panel = document.getElementById('filtersPanel');
         if (panel) panel.hidden = true;
-        var btn = document.querySelector('.main-button-row .combo-btn-1');
-        if (btn) btn.classList.remove('active');
+        // Drop the flag first, then repaint: this restores the underlying
+        // view's highlight (By Added etc.) when the panel is dismissed
+        // without applying.
+        _filtersOpen = false;
+        _refreshButtonGroups();
         document.removeEventListener('click', _filtersOutside, true);
         document.removeEventListener('keydown', _filtersEsc, true);
     }
@@ -3746,6 +3784,28 @@ PPP.app = (function () {
             .filter(function (seg) { return !_FILTER_TOKEN_RE.test(seg); });
     }
 
+    // Is the search field currently showing a browse-view CAPTION ("By Added
+    // Date", "Favorites", "Top Searches", ...) rather than something the user
+    // typed? Such a label must never be fed back as a free-text term: ANDing
+    // an unmatchable phrase onto the filter makes Apply return "0 files found"
+    // for EVERY category whenever the user reached Filters from a browse view
+    // (Rājan report, 2026-08-01).
+    //
+    // Two independent signals, because neither alone covers every path:
+    //   - the .combo-display class, which is what the field carries while a
+    //     browse view owns it — but setSearchMode()/clearComboDisplay() strips
+    //     it on some paths before Apply gets to look (the Favorites repro);
+    //   - _comboDisplayValue, the exact string setComboDisplay() wrote. Not a
+    //     SEARCH_VALUE_DISPLAY_KEYS lookup: some captions come from an i18n
+    //     FALLBACK ('★ Favorites') that no key resolves to, so that lookup
+    //     silently misses them.
+    function _isComboDisplayValue(input) {
+        if (!input) return false;
+        if (input.classList.contains('combo-display')) return true;
+        var v = String(input.value || '').trim();
+        return !!v && v === String(_comboDisplayValue || '').trim();
+    }
+
     function applyFilters() {
         var panel = document.getElementById('filtersPanel');
         if (!panel) return;
@@ -3764,7 +3824,18 @@ PPP.app = (function () {
 
         // Keep any free-text the user already typed; drop only the OLD filter
         // tokens so re-applying replaces (not stacks) year/country/type.
-        var kept = _keepNonFilterTokens(input.value);
+        // A browse-view caption in the field is not free text — see
+        // _isComboDisplayValue().
+        var kept;
+        if (_isComboDisplayValue(input)) {
+            kept = [];
+            // Hand the field back to the user: setComboDisplay() left it
+            // DISABLED with a tooltip, and nothing else on this path clears
+            // that when searchMode is already 'metadata' (the By Added case).
+            clearComboDisplay();
+        } else {
+            kept = _keepNonFilterTokens(input.value);
+        }
 
         var tokens = kept.slice();
         if (years.length) tokens.push('year:' + years.join(','));
@@ -3800,11 +3871,13 @@ PPP.app = (function () {
         var input = document.getElementById('searchTerm');
         if (!input) return;
 
-        if (input.classList.contains('combo-display')) {
+        if (_isComboDisplayValue(input)) {
             // A combo-display label (By Added Date, By Topic, ...) sitting in
             // the field is not a real search term — don't token-parse it,
             // just drop it the same way switching search mode away from a
             // combo view already does (clearComboDisplay(), defined above).
+            // Uses the same two-signal test as applyFilters(): the class alone
+            // misses the paths where setSearchMode() already stripped it.
             clearComboDisplay();
         } else {
             input.value = _keepNonFilterTokens(input.value).join('; ');
@@ -4171,6 +4244,12 @@ PPP.app = (function () {
             matchHints = new Map();
             document.getElementById('searchTerm').value = i18n.t('favorites');
             displayResults();
+            // Every other browse view ends by registering its caption through
+            // setComboDisplay(); this branch used a bare .value assignment, so
+            // the field held a caption that nothing downstream recognised as
+            // one — and Apply then ANDed the literal word "Favorites" onto the
+            // filter ("Favorites; year:2025" -> 0 files). Rājan, 2026-08-01.
+            setComboDisplay(i18n.t('favorites'));
             var tbody = document.querySelector('#resultsTable tbody');
             if (tbody) {
                 var row = tbody.querySelector('tr');
@@ -6352,6 +6431,10 @@ PPP.app = (function () {
         i18n.setLanguage(lang);
         if (_pendingDisplayKey && searchInputEl) {
             searchInputEl.value = i18n.t(_pendingDisplayKey);
+            // Keep the caption record in step with the relabelled field, or
+            // _isComboDisplayValue() would stop recognising it after a
+            // language switch.
+            _comboDisplayValue = searchInputEl.value;
         }
         // A11Y: keep the document language in sync (screen readers, hyphenation).
         // Also covers initial load — init() calls setLanguage(savedLang).

@@ -1718,14 +1718,168 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.locator('#filtersPanel .flt-country').first().check();
     await page.locator('#filtersPanel .flt-apply').click();
 
+    // Apply must ALSO drop the label — see 50s. Before the 2026-08-01 fix it
+    // kept it, so the field read "By Added Date; country:ARE" here.
     const beforeClear = await page.locator('#searchTerm').inputValue();
-    expect(beforeClear).toContain(labelValue);
+    expect(beforeClear).not.toContain(labelValue);
     expect(beforeClear).toContain('country:');
 
     await page.locator('.main-button-row .combo-btn-1').click();
     await page.locator('#filtersPanel .flt-clear').click();
 
     expect(await page.locator('#searchTerm').inputValue()).toBe('');
+  });
+
+  test('50s. Apply from a browse view drops the caption and still finds results (Rajan report 2026-08-01)', async ({ page }) => {
+    // THE defect: a browse/nav view (By Added, Favorites, Top Searches, ...)
+    // parks a localized CAPTION in #searchTerm via setComboDisplay(). Apply
+    // ran that caption back through _keepNonFilterTokens(), which treats any
+    // non-token segment as free text — so the search became
+    // "By Added Date" AND year:2025, an unmatchable phrase ANDed onto every
+    // filter. Result: "0 files found" for EVERY category, but only when the
+    // user reached Filters from a browse view (hence the "sometimes it
+    // works" report). The filter mechanics themselves were never broken.
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    // Baseline: the same filter, applied from a clean field, does find rows.
+    await page.locator('.main-button-row .combo-btn-1').click();
+    await expandFilterSections(page);
+    await page.locator('#filtersPanel .flt-year[value="2025"]').check();
+    await page.locator('#filtersPanel .flt-apply').click();
+    await page.waitForSelector('#resultsInfo strong', { timeout: 15000 });
+    const clean = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
+    expect(clean).toBeGreaterThan(0);
+
+    // Now the reported path: enter "By Added" first, THEN filter.
+    await page.locator('.main-button-row .combo-btn-2').click();
+    await expect(page.locator('#searchTerm')).toHaveClass(/combo-display/);
+    const caption = await page.locator('#searchTerm').inputValue();
+    expect(caption.length).toBeGreaterThan(0);
+    await page.waitForSelector('#resultsInfo strong', { timeout: 15000 });
+    const browseTotal = (await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, '');
+
+    await page.locator('.main-button-row .combo-btn-1').click();
+    await expandFilterSections(page);
+    await page.locator('#filtersPanel .flt-year[value="2025"]').check();
+    await page.locator('#filtersPanel .flt-apply').click();
+    // The browse view already painted a count, so waiting for the element is
+    // not enough — wait until the number actually changes to the filtered one.
+    await page.waitForFunction((prev) => {
+      const el = document.querySelector('#resultsInfo strong');
+      return el && el.textContent.replace(/\D+/g, '') !== prev;
+    }, browseTotal, { timeout: 15000 });
+
+    // The caption is gone; only the filter token remains.
+    const field = await page.locator('#searchTerm').inputValue();
+    expect(field).toBe('year:2025');
+    expect(field).not.toContain(caption);
+
+    // And the search really ran: same count as from a clean field, NOT 0.
+    const fromBrowse = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
+    expect(fromBrowse).toBe(clean);
+
+    // setComboDisplay() also DISABLES the field; Apply must hand it back,
+    // otherwise the user cannot edit the query it just wrote.
+    await expect(page.locator('#searchTerm')).not.toHaveClass(/combo-display/);
+    await expect(page.locator('#searchTerm')).toBeEnabled();
+  });
+
+  test('50t. Apply drops the caption even after the class was stripped (Favorites path)', async ({ page }) => {
+    // The class alone is not a sufficient signal: on the paths where
+    // applyFilters() reaches setSearchMode(), clearComboDisplay() removes
+    // .combo-display before the caption is read, yet the caption TEXT is
+    // still sitting in the field. Live repro gave "Favorites; year:2026" ->
+    // 0 files. Hence _isComboDisplayValue() also matches the label text.
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.evaluate(() => PPP.app.showFavorites());   // "★ Favorites"
+    await page.waitForSelector('#resultsInfo strong', { timeout: 15000 });
+    const caption = await page.locator('#searchTerm').inputValue();
+    expect(caption.length).toBeGreaterThan(0);
+    const browseTotal = (await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, '');
+
+    await page.locator('.main-button-row .combo-btn-1').click();
+    await expandFilterSections(page);
+    await page.locator('#filtersPanel .flt-year[value="2025"]').check();
+    await page.locator('#filtersPanel .flt-apply').click();
+    await page.waitForFunction((prev) => {
+      const el = document.querySelector('#resultsInfo strong');
+      return el && el.textContent.replace(/\D+/g, '') !== prev;
+    }, browseTotal, { timeout: 15000 });
+
+    const field = await page.locator('#searchTerm').inputValue();
+    expect(field).toBe('year:2025');
+    expect(field).not.toContain(caption);
+    const total = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
+    expect(total).toBeGreaterThan(0);
+  });
+
+  test('50u. Filters lights up TOGETHER with In Titles, and alone in the nav row (Rājan 2026-08-01)', async ({ page }) => {
+    // Filters is not a browse view — it is a panel over one, and what it
+    // narrows is the title search. So it is the single exception to the
+    // "exactly one nav button" rule: Filters + In Titles are both in play,
+    // and both must read as active.
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.locator('.main-button-row .combo-btn-1').click();
+    await expect(page.locator('#filtersPanel')).toBeVisible();
+    await expect(page.locator('.main-button-row .combo-btn-1')).toHaveClass(/active/);
+    await expect(page.locator('.keywords-search-btn')).toHaveClass(/active/);
+    // ...and nothing else in either group.
+    await expect(page.locator('.text-search-btn')).not.toHaveClass(/active/);
+    expect(await page.locator('.main-button-row .combo-btn.active').count()).toBe(1);
+
+    // The hard case: arriving at Filters FROM a browse view. Before the fix
+    // toggleFilters() only add()ed .active to Filters, so By Added stayed lit
+    // beside it (two nav buttons active) and In Titles stayed dark.
+    await page.locator('.main-button-row .combo-btn-1').click();   // close
+    await page.locator('.main-button-row .combo-btn-2').click();   // By Added
+    await expect(page.locator('.main-button-row .combo-btn-2')).toHaveClass(/active/);
+    await page.locator('.main-button-row .combo-btn-1').click();   // Filters
+    await expect(page.locator('#filtersPanel')).toBeVisible();
+    await expect(page.locator('.main-button-row .combo-btn-1')).toHaveClass(/active/);
+    await expect(page.locator('.main-button-row .combo-btn-2')).not.toHaveClass(/active/);
+    await expect(page.locator('.keywords-search-btn')).toHaveClass(/active/);
+    expect(await page.locator('.main-button-row .combo-btn.active').count()).toBe(1);
+
+    // Dismissing the panel without applying hands the highlight back to the
+    // view underneath — Filters does not consume it.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#filtersPanel')).toBeHidden();
+    await expect(page.locator('.main-button-row .combo-btn-2')).toHaveClass(/active/);
+    await expect(page.locator('.main-button-row .combo-btn-1')).not.toHaveClass(/active/);
+    await expect(page.locator('.keywords-search-btn')).not.toHaveClass(/active/);
+  });
+
+  test('50v. By Added lights up ALONE — In Titles must stay dark', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.locator('.main-button-row .combo-btn-2').click();
+    await page.waitForSelector('#resultsInfo strong', { timeout: 15000 });
+
+    await expect(page.locator('.main-button-row .combo-btn-2')).toHaveClass(/active/);
+    expect(await page.locator('.main-button-row .combo-btn.active').count()).toBe(1);
+    // Unlike Filters, a browse view REPLACES the text search — neither of
+    // the Group A buttons describes what is on screen.
+    await expect(page.locator('.keywords-search-btn')).not.toHaveClass(/active/);
+    await expect(page.locator('.text-search-btn')).not.toHaveClass(/active/);
+  });
+
+  test('50w. Top Searches lights up ALONE — In Titles must stay dark', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.locator('.main-button-row .combo-btn-3').click();
+    await expect(page.locator('#recommendationsList')).toBeVisible();
+
+    await expect(page.locator('.main-button-row .combo-btn-3')).toHaveClass(/active/);
+    expect(await page.locator('.main-button-row .combo-btn.active').count()).toBe(1);
+    await expect(page.locator('.keywords-search-btn')).not.toHaveClass(/active/);
+    await expect(page.locator('.text-search-btn')).not.toHaveClass(/active/);
   });
 
   test('51. Latin query finds Cyrillic-titled lectures via transliteration (Rājan report 2026-08-01)', async ({ page }) => {
@@ -1774,7 +1928,6 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     const total = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
     expect(total).toBeGreaterThanOrEqual(148);
   });
-
 
   test('31f. Phase B chunked sentence search — all manifest shards, premium+raw, sorted, progress fired', async ({ page }) => {
     // The chunked engine fetches every shard over the network (one resident
