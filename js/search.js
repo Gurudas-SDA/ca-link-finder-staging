@@ -363,6 +363,20 @@ PPP.search = (function () {
                     var key = '$ft' + (paramIdx++);
                     params[key] = '%' + normalized + '%';
                     var colChecks = normCols.map(function (col) { return col + " LIKE " + key; });
+                    // Cyrillic titles (e.g. "2024.02.01_Дамодара врата") are stored
+                    // as-is in the _norm columns — diacritics stripping does not
+                    // touch Cyrillic. A Latin query like "vrata" never matches them
+                    // without also trying the transliterated form ("vrata" -> "врата")
+                    // as an ADDITIONAL OR alternative against the SAME columns. Skip
+                    // it when transliterate() is a no-op (all-Latin map miss, or the
+                    // term already contains non-Latin chars) — no useful extra clause.
+                    var translit = utils.transliterate(normalized);
+                    if (translit && translit !== normalized) {
+                        var tKey = '$ftx' + (paramIdx++);
+                        params[tKey] = '%' + translit + '%';
+                        var tColChecks = normCols.map(function (col) { return col + " LIKE " + tKey; });
+                        colChecks = colChecks.concat(tColChecks);
+                    }
                     return "(" + colChecks.join(" OR ") + ")";
                 });
                 conditions.push('(' + groupConds.join(' OR ') + ')');

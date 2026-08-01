@@ -1728,6 +1728,54 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(await page.locator('#searchTerm').inputValue()).toBe('');
   });
 
+  test('51. Latin query finds Cyrillic-titled lectures via transliteration (Rājan report 2026-08-01)', async ({ page }) => {
+    // The defect: 1456 lectures (14.8% of the DB) have Cyrillic titles, e.g.
+    // nr 7587 = "2024.02.01_Дамодара врата". buildMetadataSQL() only ran the
+    // typed term through removeDiacritics() before LIKE-matching against the
+    // *_norm columns — no transliteration — so a Latin query like "vrata"
+    // never matched them. utils.transliterate() already existed but was only
+    // wired into the legacy searchInMemory() fallback, which never runs in
+    // production. Fix: buildMetadataSQL() now ALSO tries the transliterated
+    // form as an extra OR alternative against the same columns.
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.fill('#searchTerm', 'vrata');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
+
+    const total = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
+    // Before the fix: 30 (Latin-spelled titles only). After: 32 (adds the two
+    // Cyrillic "врата" titles, nr 270 and nr 7587). Assert > 30 rather than
+    // the exact post-fix number so the test isn't pinned to this DB snapshot.
+    expect(total).toBeGreaterThan(30);
+
+    const nrs = await page.locator('#resultsTable tbody tr .fav-star').evaluateAll(
+      (stars) => stars.map((s) => s.getAttribute('data-nr'))
+    );
+    expect(nrs).toContain('7587');
+  });
+
+  test('52. Transliteration OR-clause does not reduce a plain Latin search (damodara)', async ({ page }) => {
+    // Regression guard for #51's fix: the transliterated form must be an
+    // ADDITIONAL alternative, never a replacement — a normal Latin search
+    // must keep matching at least as many rows as before. DB measurement at
+    // fix time: 148 rows for "damodara" pre-fix, 150 post-fix (a few more
+    // Cyrillic "дамодара" titles now also match) — never fewer.
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.fill('#searchTerm', 'damodara');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+    await page.waitForTimeout(600);
+
+    const total = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
+    expect(total).toBeGreaterThanOrEqual(148);
+  });
+
+
   test('31f. Phase B chunked sentence search — all manifest shards, premium+raw, sorted, progress fired', async ({ page }) => {
     // The chunked engine fetches every shard over the network (one resident
     // at a time, count and encoding from the manifest) — allow generous
