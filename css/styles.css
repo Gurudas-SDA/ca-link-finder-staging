@@ -1520,6 +1520,10 @@ th.transcripts-block {
     /* EN carries a second line (Raw) — keep LV/RU on the SAME line as EN
        instead of centering them against the taller EN cell (Rajan, 2026-08-22). */
     vertical-align: top;
+    /* All three labels get the same indent inside their column, so EN (which
+       carries the Raw sub-line under it) does not hug the left edge while
+       LV/RU float free (Rajan, 2026-08-22). */
+    text-align: center;
     font-size: 11px;
     font-weight: 700;
     color: var(--saffron);
