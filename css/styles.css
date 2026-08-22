@@ -1527,6 +1527,15 @@ th.transcripts-block {
     white-space: nowrap;
     transition: color 0.15s;
 }
+/* Raw transcripts are English and live in the EN column, so their count is a
+   black sub-line under the EN label (Rajan, 2026-08-22) — deliberately NOT the
+   saffron of a language header. */
+#resultsTable thead th.transcript-lang .tl-raw {
+    color: #222;
+    font-weight: 600;
+    text-transform: none;
+    margin-top: 2px;
+}
 #resultsTable thead th.transcript-lang:hover {
     text-decoration: underline;
     color: #cf7020;
@@ -1968,14 +1977,11 @@ body.dark .match-hint.sentence-hit {
     #resultsTable.lecture-cards tbody td:nth-child(11) { order: 9; }
     #resultsTable.lecture-cards tbody td:nth-child(12) { order: 10; }
     #resultsTable.lecture-cards tbody td:nth-child(13) { order: 11; }
-    /* Raw split (Rajan 2026-08-22): Script_RAW is the 14th cell. */
-    #resultsTable.lecture-cards tbody td:nth-child(14) { order: 12; }
     #resultsTable.lecture-cards tbody td:nth-child(8),
     #resultsTable.lecture-cards tbody td:nth-child(9),
     #resultsTable.lecture-cards tbody td:nth-child(11),
     #resultsTable.lecture-cards tbody td:nth-child(12),
-    #resultsTable.lecture-cards tbody td:nth-child(13),
-    #resultsTable.lecture-cards tbody td:nth-child(14) {
+    #resultsTable.lecture-cards tbody td:nth-child(13) {
         flex: 0 0 auto;
         margin: 8px 8px 0 0;
     }
