@@ -3926,6 +3926,14 @@ test.describe('Transcript header counts (EN / LV / RU + Raw under EN)', () => {
       };
     });
     expect(look.below).toBe(true);
+    // LV/RU sit on the SAME line as EN, not centered against the taller EN
+    // cell (Rajan, 2026-08-22).
+    const tops = await page.evaluate(() => {
+      const h = document.querySelectorAll('#resultsTable th.transcript-lang');
+      return Array.prototype.map.call(h, (th) => Math.round(th.querySelector('.tl-lang').getBoundingClientRect().top));
+    });
+    expect(Math.abs(tops[1] - tops[0])).toBeLessThanOrEqual(1);
+    expect(Math.abs(tops[2] - tops[0])).toBeLessThanOrEqual(1);
     expect(look.color).not.toBe(look.saffron);
     expect(look.color.replace(/\s/g, '')).toBe('rgb(34,34,34)');
 
