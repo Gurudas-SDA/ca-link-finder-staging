@@ -173,6 +173,8 @@ PPP.utils = (function () {
         if (low === 'script_lv') return 'Script_LV';
         if (low === 'script_en') return 'Script_EN';
         if (low === 'script_ru') return 'Script_RU';
+        // Virtual column: auto ("Raw") transcripts live in the Script_EN cell.
+        if (low === 'script_raw') return 'Script_RAW';
         if (low === 'dwnld.' || low === 'dwnld') return 'Dwnld.';
         if (low === 'links' || low === 'link') return 'Links';
         return t;

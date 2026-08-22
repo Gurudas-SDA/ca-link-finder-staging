@@ -1968,11 +1968,14 @@ body.dark .match-hint.sentence-hit {
     #resultsTable.lecture-cards tbody td:nth-child(11) { order: 9; }
     #resultsTable.lecture-cards tbody td:nth-child(12) { order: 10; }
     #resultsTable.lecture-cards tbody td:nth-child(13) { order: 11; }
+    /* Raw split (Rajan 2026-08-22): Script_RAW is the 14th cell. */
+    #resultsTable.lecture-cards tbody td:nth-child(14) { order: 12; }
     #resultsTable.lecture-cards tbody td:nth-child(8),
     #resultsTable.lecture-cards tbody td:nth-child(9),
     #resultsTable.lecture-cards tbody td:nth-child(11),
     #resultsTable.lecture-cards tbody td:nth-child(12),
-    #resultsTable.lecture-cards tbody td:nth-child(13) {
+    #resultsTable.lecture-cards tbody td:nth-child(13),
+    #resultsTable.lecture-cards tbody td:nth-child(14) {
         flex: 0 0 auto;
         margin: 8px 8px 0 0;
     }

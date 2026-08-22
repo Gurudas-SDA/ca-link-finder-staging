@@ -306,6 +306,11 @@ PPP.search = (function () {
         // has: filter (AND, check non-empty columns; includes duplicate-labeled transcripts)
         parsed.filters.has.forEach(function (t) {
             var colName = utils.normalizeHasColumn(t.slice(4));
+            // Virtual Raw column: the marker lives in script_en.
+            if (colName === 'Script_RAW') {
+                conditions.push("(l.script_en = 'Raw')");
+                return;
+            }
             // Map column names to SQLite column names (lowercase, underscored)
             var sqlCol = columnToSqlName(colName);
             if (sqlCol) {
@@ -446,6 +451,9 @@ PPP.search = (function () {
             if (parsed.filters.has.length > 0) {
                 if (!parsed.filters.has.every(function (t) {
                     var colName = utils.normalizeHasColumn(t.slice(4));
+                    if (colName === 'Script_RAW') {
+                        return (row['Script_EN'] || '').toString().trim() === 'Raw';
+                    }
                     return utils.cellHasLink(row[colName], colName, row);
                 })) return false;
             }

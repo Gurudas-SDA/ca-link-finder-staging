@@ -10,14 +10,14 @@ PPP.ui = (function () {
     var t = function (key) { return PPP.i18n.t(key); };
     var utils = PPP.utils;
 
-    var columnHeaders = ['Date', 'Type', 'Original file name', 'Country', 'Lang.', 'Links', 'Dwnld.', 'Length', 'Script_EN', 'Script_LV', 'Script_RU'];
+    var columnHeaders = ['Date', 'Type', 'Original file name', 'Country', 'Lang.', 'Links', 'Dwnld.', 'Length', 'Script_EN', 'Script_LV', 'Script_RU', 'Script_RAW'];
     // "In Text" (sentence search) table — SAME column set/renderer as the
     // metadata table, with these differences (Rājan design, Phase B):
     // no Length column, and NO separate Timestamp column — the matched
     // sentence's time is shown inline after the lecture name, in parentheses
     // (see _renderLectureRow: "Name (ts)"). The name
     // column header reads "File title / Sentence" in this mode.
-    var sentenceColumnHeaders = ['Date', 'Type', 'Original file name', 'Country', 'Lang.', 'Links', 'Dwnld.', 'Script_EN', 'Script_LV', 'Script_RU'];
+    var sentenceColumnHeaders = ['Date', 'Type', 'Original file name', 'Country', 'Lang.', 'Links', 'Dwnld.', 'Script_EN', 'Script_LV', 'Script_RU', 'Script_RAW'];
 
     /**
      * Build a per-language selection checkbox. ALWAYS rendered next to each
@@ -140,11 +140,36 @@ PPP.ui = (function () {
     }
 
     /**
+     * Per-language transcript counts for the header row ("EN - 1,234").
+     * Counted over the CURRENT result set (the same rows the table renders),
+     * not over the whole database. EN/LV/RU count real, original transcripts
+     * (duplicates, "Not relevant" and auto "Raw" cells excluded); Raw counts
+     * the Script_EN cells marked "Raw".
+     */
+    var DUP_LABELS_H = { 'Duplicate': 1, 'Dublik\u0101ts': 1, '\u0414\u0443\u0431\u043b\u0438\u043a\u0430\u0442': 1, '\u0414\u0443\u0431\u0438\u043a\u0430\u0442': 1 };
+    var NOT_REL_LABELS_H = { 'Not relevant': 1, 'Neattiecas': 1, '\u041d\u0435 \u043e\u0442\u043d\u043e\u0441\u0438\u0442\u0441\u044f': 1 };
+    function countScriptCols(rows) {
+        var c = { 'Script_EN': 0, 'Script_LV': 0, 'Script_RU': 0, 'Script_RAW': 0 };
+        if (!rows) return c;
+        for (var i = 0; i < rows.length; i++) {
+            var r = rows[i];
+            ['Script_EN', 'Script_LV', 'Script_RU'].forEach(function (col) {
+                var v = (r[col] || '').toString().trim();
+                if (v === '' || v === 'N/A' || v === '0') return;
+                if (DUP_LABELS_H[v] || NOT_REL_LABELS_H[v]) return;
+                if (col === 'Script_EN' && v === 'Raw') { c['Script_RAW']++; return; }
+                c[col]++;
+            });
+        }
+        return c;
+    }
+
+    /**
      * Build the multi-row table header (same structure as original).
      * mode 'sentences' swaps in the sentence-search column set (no Length
      * column, "File title / Sentence" header on the name column).
      */
-    function buildHeader(thead, totalCount, mode) {
+    function buildHeader(thead, totalCount, mode, counts) {
         var cols = (mode === 'sentences') ? sentenceColumnHeaders : columnHeaders;
         var row0 = thead.insertRow();
         // Extra spacer for star + share columns
@@ -163,8 +188,8 @@ PPP.ui = (function () {
         // a cream notch at the corner (Rājan report, 2026-07-25).
         var extraCols = 0;
         for (var ci = 0; ci < cols.length; ci++) {
-            if (cols[ci] === 'Script_LV' || cols[ci] === 'Script_RU') continue;
-            extraCols += (cols[ci] === 'Script_EN') ? 3 : 1;
+            if (cols[ci] === 'Script_LV' || cols[ci] === 'Script_RU' || cols[ci] === 'Script_RAW') continue;
+            extraCols += (cols[ci] === 'Script_EN') ? 4 : 1;
         }
         for (var i = 0; i < extraCols; i++) {
             var c = document.createElement('th');
@@ -205,7 +230,7 @@ PPP.ui = (function () {
             }
             if (h === 'Script_EN') {
                 var thBlock = document.createElement('th');
-                thBlock.colSpan = 3; thBlock.rowSpan = 2; thBlock.className = 'transcripts-block';
+                thBlock.colSpan = 4; thBlock.rowSpan = 2; thBlock.className = 'transcripts-block';
                 thBlock.style.textAlign = 'left'; thBlock.style.verticalAlign = 'middle';
 
                 var comboContainer = document.createElement('div');
@@ -277,19 +302,26 @@ PPP.ui = (function () {
                 }
 
                 row1.appendChild(thBlock);
-                ['EN', 'LV', 'RU'].forEach(function (lang) {
+                // Raw split (Rajan 2026-08-22): auto ("Raw") transcripts get their
+                // own column next to EN/LV/RU, and every language header carries
+                // the count of such transcripts in the CURRENT result set:
+                // "EN - 1,234".
+                var _cnt = counts || {};
+                [['EN', 'Script_EN'], ['LV', 'Script_LV'], ['RU', 'Script_RU'], ['Raw', 'Script_RAW']].forEach(function (pair) {
+                    var lang = pair[0], colKey = pair[1];
                     var thL = document.createElement('th');
-                    thL.textContent = lang;
+                    var n = _cnt[colKey];
+                    thL.textContent = (typeof n === 'number') ? (lang + ' - ' + n.toLocaleString()) : lang;
                     thL.className = 'transcript-lang';
                     thL.onclick = function () {
-                        if (PPP.app && PPP.app.applyHasFilter) PPP.app.applyHasFilter('Script_' + lang);
+                        if (PPP.app && PPP.app.applyHasFilter) PPP.app.applyHasFilter(colKey);
                     };
                     row3.appendChild(thL);
                 });
-                idx += 2; // skip Script_LV and Script_RU
+                idx += 3; // skip Script_LV, Script_RU and Script_RAW
                 continue;
             }
-            if (h === 'Script_LV' || h === 'Script_RU') continue;
+            if (h === 'Script_LV' || h === 'Script_RU' || h === 'Script_RAW') continue;
             var th2 = document.createElement('th');
             th2.textContent = (mode === 'sentences' && h === 'Original file name')
                 ? t('sentColFileSentence')
@@ -328,7 +360,7 @@ PPP.ui = (function () {
         var origCount = rows ? rows.filter(function (r) {
             return isOrig(r['Script_EN']) || isOrig(r['Script_LV']) || isOrig(r['Script_RU']);
         }).length : 0;
-        buildHeader(thead, origCount);
+        buildHeader(thead, origCount, null, countScriptCols(rows));
         var tbody = table.createTBody();
 
         if (rows.length === 0) {
@@ -411,9 +443,21 @@ PPP.ui = (function () {
                 var td = tr.insertCell();
                 var val = row[col] || '';
 
-                if (col === 'Links' || col === 'Dwnld.' || col === 'Script_EN' || col === 'Script_LV' || col === 'Script_RU') {
+                // Raw split (Rajan 2026-08-22): Script_RAW is a VIRTUAL column —
+                // it reads the same Script_EN source cell. A cell marked "Raw"
+                // renders ONLY in the Raw column; the EN column keeps the real EN
+                // transcripts (and the "Not relevant" marker).
+                var srcCol = col;
+                if (col === 'Script_EN' || col === 'Script_RAW') {
+                    srcCol = 'Script_EN';
+                    var _enIsRaw = ((row['Script_EN'] || '').toString().trim() === 'Raw');
+                    if (col === 'Script_RAW') val = _enIsRaw ? row['Script_EN'] : '';
+                    else if (_enIsRaw) val = '';
+                }
+
+                if (col === 'Links' || col === 'Dwnld.' || col === 'Script_EN' || col === 'Script_LV' || col === 'Script_RU' || col === 'Script_RAW') {
                     // For verse search results: all script columns get auto-scroll links
-                    var isScriptCol = (col === 'Script_EN' || col === 'Script_LV' || col === 'Script_RU');
+                    var isScriptCol = (col === 'Script_EN' || col === 'Script_LV' || col === 'Script_RU' || col === 'Script_RAW');
                     if (isScriptCol && row._blockIndex && row._lectureNr) {
                         var hasScript = val && val !== 'N/A' && val !== '0' && val !== '';
                         if (hasScript) {
@@ -424,7 +468,7 @@ PPP.ui = (function () {
                                 spanNR.style.cssText = 'color:#222;font-size:11px;';
                                 td.appendChild(spanNR);
                             } else {
-                            var defaultLangLabel = col.split('_')[1];
+                            var defaultLangLabel = srcCol.split('_')[1];
                             var langCode = defaultLangLabel.toLowerCase();
                             // Recognize special cell markers like the non-verse path.
                             // Non-ASCII duplicate labels (LV "Dublikats" with a-macron,
@@ -473,7 +517,7 @@ PPP.ui = (function () {
                         }
                     } else if (isScriptCol) {
                         // NON-VERSE MODE: open in-app modal for script columns
-                        var scriptDriveUrl = row[col + '_url'] || utils.extractUrl(val);
+                        var scriptDriveUrl = row[srcCol + '_url'] || utils.extractUrl(val);
                         if (scriptDriveUrl && !scriptDriveUrl.startsWith('http')) scriptDriveUrl = null;
                         var hasScript = val && val !== 'N/A' && val !== '0' && val !== '';
                         if (hasScript) {
@@ -484,7 +528,7 @@ PPP.ui = (function () {
                                 spanNRnv.style.cssText = 'color:#222;font-size:11px;';
                                 td.appendChild(spanNRnv);
                             } else {
-                            var defaultLangLabel = col.split('_')[1];
+                            var defaultLangLabel = srcCol.split('_')[1];
                             var langCode = defaultLangLabel.toLowerCase();
                             // If the cell value is a duplicate label, show it; otherwise show EN/LV/RU
                             var DUP_LABELS = { 'Duplicate': 1, 'Dublikāts': 1, 'Дубликат': 1, 'Дубикат': 1 };

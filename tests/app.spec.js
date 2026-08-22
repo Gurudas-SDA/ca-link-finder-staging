@@ -804,10 +804,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.keyboard.press('Enter');
     await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
     await page.waitForTimeout(600);
-    // Wait for a REAL result row (13 cells), not the transient empty-state row
+    // Wait for a REAL result row (14 cells), not the transient empty-state row
     await page.waitForFunction(() => {
       const tr = document.querySelector('#resultsTable.lecture-cards tbody tr');
-      return tr && tr.children.length === 13;
+      return tr && tr.children.length === 14;
     }, { timeout: 10000 });
 
     // Document itself must not scroll horizontally (2px tolerance)
@@ -832,10 +832,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
     await page.fill('#searchTerm', 'krishna');
     await page.keyboard.press('Enter');
-    // Wait for a REAL result row (13 cells), not the transient empty-state row
+    // Wait for a REAL result row (14 cells), not the transient empty-state row
     await page.waitForFunction(() => {
       const tr = document.querySelector('#resultsTable.lecture-cards tbody tr');
-      return tr && tr.children.length === 13;
+      return tr && tr.children.length === 14;
     }, { timeout: 10000 });
 
     const card = await page.evaluate(() => {
@@ -881,10 +881,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
 
     await page.fill('#searchTerm', 'krishna');
     await page.keyboard.press('Enter');
-    // Wait for a REAL result row (13 cells), not the transient empty-state row
+    // Wait for a REAL result row (14 cells), not the transient empty-state row
     await page.waitForFunction(() => {
       const tr = document.querySelector('#resultsTable tbody tr');
-      return tr && tr.children.length === 13;
+      return tr && tr.children.length === 14;
     }, { timeout: 10000 });
 
     const desktop = await page.evaluate(() => {
@@ -903,7 +903,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(desktop.tableDisplay).toBe('table');
     expect(desktop.theadDisplay).not.toBe('none');
     expect(desktop.rowDisplay).toBe('table-row');
-    expect(desktop.cellCount).toBe(13); // ★ + 🔗 + 11 columns
+    expect(desktop.cellCount).toBe(14); // ★ + 🔗 + 12 columns (Raw split, 2026-08-22)
     expect(desktop.headerCells).toBeGreaterThan(10);
 
     // thead quick buttons (By Date / By Topic / Newest) still visible on desktop
@@ -919,7 +919,7 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.keyboard.press('Enter');
     await page.waitForFunction(() => {
       const tr = document.querySelector('#resultsTable.lecture-cards tbody tr');
-      return tr && tr.children.length === 13;
+      return tr && tr.children.length === 14;
     }, { timeout: 10000 });
 
     // Extras (essence JSON) arriving later re-renders the whole table
@@ -2258,7 +2258,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(headers).not.toContain('Length');
     expect(headers).not.toContain('Quality');
     // EN/LV/RU transcript sub-header row present (same block as In Titles).
-    await expect(page.locator('#resultsTable thead .transcript-lang')).toHaveText(['EN', 'LV', 'RU']);
+    // Raw split (Rajan 2026-08-22): the sentence table uses the SAME column
+    // set as In Titles, so auto "Raw" transcripts have their own column here
+    // too. Counts are shown only in the lecture table, so these stay bare.
+    await expect(page.locator('#resultsTable thead .transcript-lang')).toHaveText(['EN', 'LV', 'RU', 'Raw']);
 
     // With results: rows are full metadata rows — LV/RU chips render whenever
     // the lecture actually has those transcripts (same rule as In Titles).
@@ -3873,6 +3876,95 @@ test.describe('Home button — the start screen is reachable again', () => {
     // Escape is not a back door either.
     await page.keyboard.press('Escape');
     await expect(page.locator('#onboardingOverlay')).toBeVisible();
+  });
+
+});
+
+
+/**
+ * Raw split + per-language header counts (Rajan, 2026-08-22).
+ *
+ * The EN column used to carry three different things: real EN transcripts,
+ * auto "Raw" transcripts and the "Not relevant" marker. Raw now has its OWN
+ * column next to EN/LV/RU, and every language header shows how many such
+ * transcripts the CURRENT result set holds ("EN - 1,234").
+ */
+test.describe('Transcript columns: Raw has its own column, headers carry counts', () => {
+
+  test('R1. Four language headers with counts; Raw chips leave the EN column', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsTable tbody tr', { timeout: 15000 });
+    await page.waitForTimeout(600);
+
+    // Four headers, each "<LANG> - <count>".
+    const heads = await page.locator('#resultsTable th.transcript-lang').allTextContents();
+    expect(heads).toHaveLength(4);
+    expect(heads[0]).toMatch(/^EN - [\d,.\u00a0\u202f]+$/);
+    expect(heads[1]).toMatch(/^LV - [\d,.\u00a0\u202f]+$/);
+    expect(heads[2]).toMatch(/^RU - [\d,.\u00a0\u202f]+$/);
+    expect(heads[3]).toMatch(/^Raw - [\d,.\u00a0\u202f]+$/);
+
+    // The Raw count must be the number of Raw chips the page would show for
+    // the whole result set — at minimum it is > 0 on this corpus.
+    const rawCount = parseInt(heads[3].replace(/[^0-9]/g, ''), 10);
+    expect(rawCount).toBeGreaterThan(0);
+
+    // Per row: the last four cells are EN | LV | RU | Raw. "Raw" may appear
+    // ONLY in the last one (negative half of the check: an EN cell reading
+    // "Raw" is exactly the old, wrong behaviour).
+    const cells = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('#resultsTable tbody tr')).map(function (tr) {
+        return Array.prototype.slice.call(tr.cells, -4).map(function (c) { return c.innerText.trim(); });
+      });
+    });
+    expect(cells.length).toBeGreaterThan(0);
+    for (const [en, lv, ru, raw] of cells) {
+      expect(en).not.toBe('Raw');
+      expect(lv).not.toBe('Raw');
+      expect(ru).not.toBe('Raw');
+      if (raw) expect(raw).toBe('Raw');
+    }
+    // "Not relevant" stays where it was — in the EN column.
+    const notRel = cells.filter(function (c) { return /Not relevant|Neattiecas/.test(c[0]); });
+    expect(notRel.every(function (c) { return c[3] === ''; })).toBe(true);
+  });
+
+  test('R2. Clicking the Raw header filters to raw-only lectures', async ({ page }) => {
+    await page.goto('./');
+    await waitForAppReady(page);
+
+    await page.fill('#searchTerm', 'krishna');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('#resultsTable tbody tr', { timeout: 15000 });
+    await page.waitForTimeout(600);
+
+    // applyHasFilter() sets the input value FIRST and searches after, so the
+    // table is still the old one for a moment — wait for the result line to
+    // actually change before reading rows.
+    const before = await page.locator('#resultsInfo').innerText();
+    await page.locator('#resultsTable th.transcript-lang').nth(3).click();
+    await page.waitForFunction(
+      (prev) => {
+        const el = document.getElementById('resultsInfo');
+        return el && el.innerText && el.innerText !== prev;
+      },
+      before,
+      { timeout: 20000 }
+    );
+    await page.waitForTimeout(600);
+
+    expect(await page.inputValue('#searchTerm')).toBe('has:Script_RAW');
+    const cells = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('#resultsTable tbody tr')).map(function (tr) {
+        return Array.prototype.slice.call(tr.cells, -4).map(function (c) { return c.innerText.trim(); });
+      });
+    });
+    expect(cells.length).toBeGreaterThan(0);
+    for (const row of cells) expect(row[3]).toBe('Raw');
   });
 
 });
