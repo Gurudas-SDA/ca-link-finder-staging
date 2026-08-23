@@ -4424,6 +4424,12 @@ test.describe('A generation arrives whole, or not at all (2026-07-28)', () => {
   // "search returns exactly as many rows as before" a measurement rather than
   // a boolean.
   const DROPPED_TERM = 'tattva';
+  // The app's title search also matches the Cyrillic transliteration of a term
+  // (utils.transliterate, used by buildMetaSQL), so a fixture that drops only
+  // the literal spelling leaves Russian-titled lectures behind and the
+  // "dropped lectures are gone" measurement fails on rows that were never
+  // supposed to be dropped. Three such lectures exist in the real corpus.
+  const DROPPED_TERM_CYRILLIC = 'таттва';
 
   let _reducedMeta = null;
   /**
@@ -4443,7 +4449,9 @@ test.describe('A generation arrives whole, or not at all (2026-07-28)', () => {
     fs.writeFileSync(tmp, raw);
     const db = new DatabaseSync(tmp);
     const doomed = db.prepare('SELECT * FROM lectures').all().filter(
-      r => Object.values(r).some(v => typeof v === 'string' && v.toLowerCase().includes(DROPPED_TERM))
+      r => Object.values(r).some(v => typeof v === 'string' && (
+        v.toLowerCase().includes(DROPPED_TERM) || v.toLowerCase().includes(DROPPED_TERM_CYRILLIC)
+      ))
     ).map(r => String(r.nr));
     const del = db.prepare('DELETE FROM lectures WHERE nr = ?');
     doomed.forEach(nr => del.run(nr));

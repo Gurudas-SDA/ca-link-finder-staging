@@ -1104,8 +1104,12 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     // `;` still means AND across separate terms, `//` still means OR.
     expect(out.and).toEqual(['% guru%', '% tattva%']);
     expect(out.or).toEqual(['% guru tattva%', '% nama tattva%']);
-    // Titles mode already phrase-matched; the two modes now agree.
-    expect(out.titles).toEqual(['%guru tattva%']);
+    // Titles mode already phrase-matched; the two modes now agree. It carries
+    // ONE extra param: the Cyrillic transliteration of the same phrase, so a
+    // Russian-titled lecture is found by an English-spelled search
+    // (utils.transliterate; "In Text" searches an English-only corpus and so
+    // needs no such twin).
+    expect(out.titles).toEqual(['%guru tattva%', '%гуру таттва%']);
   });
 
   // ===== Filters panel (Years + Countries) — replaces the old "By 2026" =====
