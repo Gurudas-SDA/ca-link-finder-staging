@@ -19,7 +19,7 @@ self.PRECACHE = [
   'css/fonts/montserrat_v31_JTUSjIg1_i6t8kCHKm459WZhyzbi.woff2?v=26b2403f',
   'css/fonts/montserrat_v31_JTUSjIg1_i6t8kCHKm459Wdhyzbi.woff2?v=54d9a78b',
   'css/fonts/montserrat_v31_JTUSjIg1_i6t8kCHKm459Wlhyw.woff2?v=06b16db7',
-  'css/styles.css?v=9bed798e',
+  'css/styles.css?v=6ff26ed3',
   'guide/en/index.html?v=c412ad05',
   'guide/es/index.html?v=097596d0',
   'guide/fr/index.html?v=2ebdf7d0',
@@ -29,7 +29,7 @@ self.PRECACHE = [
   'guide/ru/index.html?v=2dc35da1',
   'icon-192.png?v=fab41429',
   'icon-512.png?v=88196aa7',
-  'index.html?v=04ce101f',
+  'index.html?v=90bdda0a',
   'js/app.js?v=6f0a09f0',
   'js/auth-modal.js?v=2ba0f1fc',
   'js/auth.js?v=a4f11a49',
@@ -42,9 +42,9 @@ self.PRECACHE = [
   'js/firebase-config.js?v=3db6511a',
   'js/i18n.js?v=68f7594c',
   'js/offline-store.js?v=c3bdcad3',
-  'js/search.js?v=fc36b085',
-  'js/ui.js?v=a672d503',
-  'js/utils.js?v=7a7a0948',
+  'js/search.js?v=43a67988',
+  'js/ui.js?v=535e7c0e',
+  'js/utils.js?v=96951df3',
   'js/vendor/brotli-dec.js?v=423f2d10',
   'js/vendor/brotli-dec.wasm?v=79b29cb1',
   'js/vendor/jszip.min.js?v=acc7e414',
@@ -63,4 +63,4 @@ self.REQUIRED_SHELL = [
   'js/vendor/sql-wasm.js',
   'js/vendor/sql-wasm.wasm',
 ];
-self.SHELL_VERSION = '799e713f3914';
+self.SHELL_VERSION = '95d7082a297a';
