@@ -14,3 +14,17 @@ data/ppp_sentences_full_en.db
 # re-add. See scripts/build_offline_packs.py and scripts/promote_to_deploy.py.
 data/ppp_sentences_en.db
 data/ppp_sentences_en.db.gz
+
+# 2026-08-25: dead April 2nd DBs, zero consumers found (staging/js, index.html,
+# tests, manifest.json, scripts/, backup/daily_update.py, .github/workflows/ all
+# checked). deploy/.assetsignore explicitly excludes them from publishing.
+# ppp_transcripts_html_* superseded by individual HTML files (project_html_transcript_db_legacy.md).
+data/ppp_concepts_en.db
+data/ppp_transcripts_html_en.db
+data/ppp_transcripts_html_lv.db
+data/ppp_transcripts_html_ru.db
+
+# 2026-08-25: local benchmark artifacts (android profiling, memory sampler
+# output, throttle test config/results) — not part of the app, not deployed,
+# never committed. Kept on disk for local perf work only.
+bench/
