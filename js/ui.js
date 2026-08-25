@@ -167,24 +167,22 @@ PPP.ui = (function () {
         if (_totalCounts || _totalsPending) return;
         if (!PPP.db || !PPP.db.queryMetaAsync) return;
         _totalsPending = true;
-        var lvDup = 'Dublik' + String.fromCharCode(257) + 'ts';
-        var ruDup = String.fromCharCode(1044, 1091, 1073, 1083, 1080, 1082, 1072, 1090);
-        var ruDupTypo = String.fromCharCode(1044, 1091, 1073, 1080, 1082, 1072, 1090);
-        var ruNotRel = String.fromCharCode(1053, 1077, 32, 1086, 1090, 1085, 1086, 1089, 1080, 1090, 1089, 1103);
-        var lvNotNeeded = 'Nav nepiecie' + String.fromCharCode(353) + 'ams';
-        var ruNotNeeded = String.fromCharCode(1053, 1077, 32, 1090, 1088, 1077, 1073, 1091, 1077, 1090, 1089, 1103);
-        function q(list) {
-            return list.map(function (v) { return "'" + v.replace(/'/g, "''") + "'"; }).join(',');
-        }
-        var enSkip = q(['', 'N/A', '0', 'Raw', 'Duplicate', 'Not relevant', 'Not necessary', 'xx']);
-        var lvSkip = q(['', 'N/A', '0', 'Duplicate', lvDup, 'Not relevant', 'Neattiecas', lvNotNeeded, 'Raw']);
-        var ruSkip = q(['', 'N/A', '0', 'Duplicate', ruDup, ruDupTypo, 'Not relevant', ruNotRel, ruNotNeeded]);
+        // Rājan rule (2026-08-25): "Uzskaite rāda UNIKĀLOS DOCX katrā valodā.
+        // Dublikāti neskaitās, jo tie dublē esošus failus — viens fails
+        // vairākiem ierakstiem." A handful of docx are shared by 2-3 lecture
+        // rows (e.g. nr 9545/9546/9547 -> one file), so COUNTing rows over-
+        // counts; COUNT(DISTINCT script_<lang>_url) counts the actual files.
+        // No status blacklist needed: script_en/lv/ru already holds the
+        // literal status string, so filtering on it (= 'Script_EN' etc., or
+        // = 'Raw' for the raw count) is the whole rule — any other status
+        // (Duplicate, Not necessary, xx, Not relevant, ...) is excluded by
+        // definition, not by an exclusion list that has to be kept in sync.
         var sql =
             'SELECT ' +
-            "SUM(CASE WHEN TRIM(COALESCE(script_en,'')) NOT IN (" + enSkip + ') THEN 1 ELSE 0 END) AS en, ' +
-            "SUM(CASE WHEN TRIM(COALESCE(script_lv,'')) NOT IN (" + lvSkip + ') THEN 1 ELSE 0 END) AS lv, ' +
-            "SUM(CASE WHEN TRIM(COALESCE(script_ru,'')) NOT IN (" + ruSkip + ') THEN 1 ELSE 0 END) AS ru, ' +
-            "SUM(CASE WHEN TRIM(COALESCE(script_en,'')) = 'Raw' THEN 1 ELSE 0 END) AS raw " +
+            "COUNT(DISTINCT CASE WHEN script_en = 'Script_EN' AND TRIM(COALESCE(script_en_url,'')) != '' THEN script_en_url END) AS en, " +
+            "COUNT(DISTINCT CASE WHEN script_lv = 'Script_LV' AND TRIM(COALESCE(script_lv_url,'')) != '' THEN script_lv_url END) AS lv, " +
+            "COUNT(DISTINCT CASE WHEN script_ru = 'Script_RU' AND TRIM(COALESCE(script_ru_url,'')) != '' THEN script_ru_url END) AS ru, " +
+            "COUNT(DISTINCT CASE WHEN script_en = 'Raw' AND TRIM(COALESCE(script_en_url,'')) != '' THEN script_en_url END) AS raw " +
             'FROM lectures';
         PPP.db.queryMetaAsync(sql).then(function (res) {
             var r = (res && res[0]) || null;
@@ -544,15 +542,16 @@ PPP.ui = (function () {
                     // For verse search results: all script columns get auto-scroll links
                     var isScriptCol = (col === 'Script_EN' || col === 'Script_LV' || col === 'Script_RU');
                     if (isScriptCol && row._blockIndex && row._lectureNr) {
-                        var hasScript = val && val !== 'N/A' && val !== '0' && val !== '';
-                        if (hasScript) {
-                            var cellTrimNR = (val || '').toString().trim();
-                            if (cellTrimNR === 'Not relevant' || cellTrimNR === 'Neattiecas' || cellTrimNR === 'Не относится') {
-                                var spanNR = document.createElement('span');
-                                spanNR.textContent = cellTrimNR;
-                                spanNR.style.cssText = 'color:#222;font-size:11px;';
-                                td.appendChild(spanNR);
-                            } else {
+                        // Same rule as the non-verse branch below (Rājan
+                        // 2026-08-25): a verse citation was extracted FROM the
+                        // transcript text, so a real script_<lang>_url should
+                        // always be present here — but gate on it explicitly
+                        // rather than assume, so this path can never render a
+                        // dead button either.
+                        var verseScriptUrl = row[col + '_url'] || utils.extractUrl(val);
+                        if (verseScriptUrl && !verseScriptUrl.startsWith('http')) verseScriptUrl = null;
+                        var cellTrimNR = (val || '').toString().trim();
+                        if (verseScriptUrl) {
                             var defaultLangLabel = col.split('_')[1];
                             var langCode = defaultLangLabel.toLowerCase();
                             // Recognize special cell markers like the non-verse path.
@@ -598,21 +597,33 @@ PPP.ui = (function () {
                                 td.appendChild(_makeSelCheckbox(row._lectureNr, langCode, langLabel));
                             }
                             td.appendChild(viewBtn);
-                            } // end else (not-relevant check)
+                        } else if (cellTrimNR && cellTrimNR !== 'N/A' && cellTrimNR !== '0') {
+                            var spanNR = document.createElement('span');
+                            spanNR.textContent = cellTrimNR;
+                            spanNR.style.cssText = 'color:#222;font-size:11px;';
+                            td.appendChild(spanNR);
                         }
                     } else if (isScriptCol) {
                         // NON-VERSE MODE: open in-app modal for script columns
+                        //
+                        // Rājan decision 2026-08-25: "app ir jārāda 100% to ko
+                        // rāda datu bāze." Whether a script cell shows a
+                        // clickable transcript chip is decided ONLY by whether
+                        // script_<lang>_url is non-empty — never by a hardcoded
+                        // list of status strings (the old list never had "Not
+                        // necessary"/"xx" in it, so those 1008 lectures got a
+                        // dead EN/LV/RU button that failed on click). A
+                        // non-empty status with NO url (Not necessary/Nav
+                        // nepieciešams/Не требуется/Not relevant/xx/...) is
+                        // shown as the literal DB text, plain and
+                        // non-clickable, no checkbox — untranslated, exactly
+                        // what the cell holds. Empty url AND empty text ->
+                        // empty cell. Any future status value works
+                        // automatically, no code change needed here.
                         var scriptDriveUrl = row[col + '_url'] || utils.extractUrl(val);
                         if (scriptDriveUrl && !scriptDriveUrl.startsWith('http')) scriptDriveUrl = null;
-                        var hasScript = val && val !== 'N/A' && val !== '0' && val !== '';
-                        if (hasScript) {
-                            var cellTrim = (val || '').toString().trim();
-                            if (cellTrim === 'Not relevant' || cellTrim === 'Neattiecas' || cellTrim === 'Не относится') {
-                                var spanNRnv = document.createElement('span');
-                                spanNRnv.textContent = cellTrim;
-                                spanNRnv.style.cssText = 'color:#222;font-size:11px;';
-                                td.appendChild(spanNRnv);
-                            } else {
+                        var cellTrim = (val || '').toString().trim();
+                        if (scriptDriveUrl) {
                             var defaultLangLabel = col.split('_')[1];
                             var langCode = defaultLangLabel.toLowerCase();
                             // If the cell value is a duplicate label, show it; otherwise show EN/LV/RU
@@ -624,7 +635,11 @@ PPP.ui = (function () {
                             // matched sentence — pass it so the EN chip opens the
                             // transcript scrolled to that sentence.
                             _renderScriptChip(td, lectNr, langCode, defaultLangLabel, isRaw, isDuplicate, cellTrim, scriptDriveUrl, (sentCtx && sentCtx.sentence) || null);
-                            } // end else (not-relevant check)
+                        } else if (cellTrim && cellTrim !== 'N/A' && cellTrim !== '0') {
+                            var spanNRnv = document.createElement('span');
+                            spanNRnv.textContent = cellTrim;
+                            spanNRnv.style.cssText = 'color:#222;font-size:11px;';
+                            td.appendChild(spanNRnv);
                         }
                     } else {
                         // Links and Dwnld. columns — keep existing behavior (external links)

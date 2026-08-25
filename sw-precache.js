@@ -29,7 +29,7 @@ self.PRECACHE = [
   'guide/ru/index.html?v=2dc35da1',
   'icon-192.png?v=fab41429',
   'icon-512.png?v=88196aa7',
-  'index.html?v=9dd5ec92',
+  'index.html?v=5b0b4f71',
   'js/app.js?v=6f0a09f0',
   'js/auth-modal.js?v=2ba0f1fc',
   'js/auth.js?v=a4f11a49',
@@ -43,7 +43,7 @@ self.PRECACHE = [
   'js/i18n.js?v=68f7594c',
   'js/offline-store.js?v=c3bdcad3',
   'js/search.js?v=43a67988',
-  'js/ui.js?v=c157fafe',
+  'js/ui.js?v=6478d558',
   'js/utils.js?v=96951df3',
   'js/vendor/brotli-dec.js?v=423f2d10',
   'js/vendor/brotli-dec.wasm?v=79b29cb1',
@@ -63,4 +63,4 @@ self.REQUIRED_SHELL = [
   'js/vendor/sql-wasm.js',
   'js/vendor/sql-wasm.wasm',
 ];
-self.SHELL_VERSION = '9d524a14f1cf';
+self.SHELL_VERSION = 'a88a80de2459';
