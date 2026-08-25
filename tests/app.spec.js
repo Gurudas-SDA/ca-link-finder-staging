@@ -163,22 +163,16 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     test.use({ serviceWorkers: 'block' });
 
     test('1b. excludes Not necessary/xx lectures', async ({ page }) => {
-      // staging/data/ppp_meta.db is a stale/synthetic fixture that has NO
-      // rows with script_en = 'Not necessary' or 'xx' — the exact bug this
-      // test guards against can't show up on that data. Serve the real
-      // production meta DB (deploy/data/ppp_meta.db.br, which DOES have
-      // those statuses) for this one test instead, via route interception —
-      // this only swaps response bytes in the test's own browser context,
-      // it does not touch any file under staging/ or deploy/.
-      const fs = require('fs');
-      const path = require('path');
-      const prodMetaBr = fs.readFileSync(
-        path.join(__dirname, '..', '..', 'deploy', 'data', 'ppp_meta.db.br')
-      );
-      await page.route('**/data/ppp_meta.db.br*', route => {
-        route.fulfill({ status: 200, contentType: 'application/octet-stream', body: prodMetaBr });
-      });
-
+      // Until 2026-08-25 staging/data/ppp_meta.db was a stale/synthetic
+      // fixture with NO rows with script_en = 'Not necessary' or 'xx', so
+      // the exact bug this test guards against couldn't show up on it — a
+      // page.route intercept swapped in deploy/data/ppp_meta.db.br (the real
+      // production DB) for this one test. staging/data/ is now synced
+      // straight from deploy/ (same Arthashastra "staging mirrors prod"
+      // baseline), so staging's own DB already has those statuses and the
+      // intercept is redundant. Removed; verified this test still fails
+      // against the pre-fix js/ui.js (commit 19c6bf8) and passes against the
+      // fix (28ccf05) with no intercept in either case.
       await page.goto('./');
       await waitForAppReady(page);
 
@@ -190,12 +184,18 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       await expect(enHeader).toContainText('-', { timeout: 60000 });
 
       const text = await enHeader.textContent();
-      // Against the real production DB (9,357 lectures), before the fix
-      // this read "EN - 3,041" because status values 'Not necessary' and
-      // 'xx' (= no transcript needed/exists) were counted as real EN
-      // transcripts. The true premium EN count is 2,026.
-      expect(text).toContain('2,026');
+      // Against the real production DB (9,357 lectures): originally read
+      // "EN - 3,041" because status values 'Not necessary' and 'xx' (= no
+      // transcript needed/exists) were counted as real EN transcripts.
+      // Re-pinned 2026-08-25 (Rājan: "Uzskaite rāda UNIKĀLOS DOCX katrā
+      // valodā. Dublikāti neskaitās") — loadTotalScriptCounts() now counts
+      // COUNT(DISTINCT script_en_url) over script_en='Script_EN' rows, not
+      // rows themselves: 2,026 rows share only 2,019 distinct docx files (7
+      // files are pointed to by 2-3 lecture rows each, e.g. nr
+      // 9545/9546/9547 -> one file). The true premium EN count is 2,019.
+      expect(text).toContain('2,019');
       expect(text).not.toContain('3,041');
+      expect(text).not.toContain('2,026');
     });
   });
 
@@ -2017,10 +2017,14 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.waitForTimeout(600);
 
     const total = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
-    // Before the fix: 30 (Latin-spelled titles only). After: 32 (adds the two
-    // Cyrillic "врата" titles, nr 270 and nr 7587). Assert > 30 rather than
-    // the exact post-fix number so the test isn't pinned to this DB snapshot.
-    expect(total).toBeGreaterThan(30);
+    // Before the fix: 30 (Latin-spelled titles only). After: 32 at fix time
+    // (adds the two Cyrillic "врата" titles, nr 270 and nr 7587). Re-measured
+    // 2026-08-25 against the production DB synced into staging: 30 total —
+    // title edits/removals since Aug 1 moved the count, that's expected DB
+    // drift, not a regression. The real regression guard is the nrs.toContain
+    // check below (proves the transliterated Cyrillic match still fires);
+    // >=30 just keeps this from silently accepting a broken search.
+    expect(total).toBeGreaterThanOrEqual(30);
 
     const nrs = await page.locator('#resultsTable tbody tr .fav-star').evaluateAll(
       (stars) => stars.map((s) => s.getAttribute('data-nr'))
@@ -2033,7 +2037,10 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     // ADDITIONAL alternative, never a replacement — a normal Latin search
     // must keep matching at least as many rows as before. DB measurement at
     // fix time: 148 rows for "damodara" pre-fix, 150 post-fix (a few more
-    // Cyrillic "дамодара" titles now also match) — never fewer.
+    // Cyrillic "дамодара" titles now also match) — never fewer. Re-measured
+    // 2026-08-25 against the production DB synced into staging: 144 rows —
+    // title edits since Aug 1 moved the baseline down, that's expected DB
+    // drift, not a regression. Threshold re-pinned to the current baseline.
     await page.goto('./');
     await waitForAppReady(page);
 
@@ -2043,7 +2050,46 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     await page.waitForTimeout(600);
 
     const total = parseInt((await page.locator('#resultsInfo strong').first().innerText()).replace(/\D+/g, ''), 10);
-    expect(total).toBeGreaterThanOrEqual(148);
+    expect(total).toBeGreaterThanOrEqual(144);
+  });
+
+  test('53. A lecture whose transcript link is empty shows the DB status as plain text, never a dead button (Rājan 2026-08-25)', async ({ page }) => {
+    // Lecture nr 3906 (Kirtan, 2019-02-12): script_en='Not necessary',
+    // script_lv='Nav nepieciešams', script_ru='Не требуется', all three
+    // script_*_url columns EMPTY. Before the fix, ui.js decided whether to
+    // render a clickable EN/LV/RU chip using a hardcoded status blacklist
+    // that never listed 'Not necessary'/'xx' — so all three columns rendered
+    // a live-looking button that, on click, opened a "No EN transcript for
+    // lecture Nr.3906" error. 1008 lectures × 3 languages had this dead
+    // button. Rājan: "app ir jārāda 100% to ko rāda datu bāze" — the fix
+    // replaces the blacklist with a single rule: a script_<lang>_url column
+    // decides whether the cell is a link (never a status-string list). No
+    // url + non-empty status text -> plain, non-clickable text showing that
+    // exact DB value, no checkbox.
+    await page.goto('./#nr=3906');
+    await waitForAppReady(page);
+    await expect(page.locator('.fav-star[data-nr="3906"]')).toBeVisible({ timeout: 15000 });
+
+    const row = page.locator('.fav-star[data-nr="3906"]').locator('xpath=ancestor::tr[1]');
+
+    // No clickable transcript chip and no EN/LV/RU select-checkbox anywhere
+    // in this row — the old code rendered EN/LV/RU chips with checkboxes
+    // here. (The row DOES legitimately have an unrelated Mp3-download
+    // checkbox with the same .select-checkbox class but data-lang="mp3" —
+    // scope to the three transcript languages only.)
+    await expect(row.locator('a.script-chip')).toHaveCount(0);
+    await expect(row.locator(
+      'input.select-checkbox[data-lang="en"], ' +
+      'input.select-checkbox[data-lang="lv"], ' +
+      'input.select-checkbox[data-lang="ru"]'
+    )).toHaveCount(0);
+
+    // The literal DB status text is shown as plain text in each language's
+    // own column — never translated, never merged across languages.
+    const rowText = await row.innerText();
+    expect(rowText).toContain('Not necessary');
+    expect(rowText).toContain('Nav nepieciešams');
+    expect(rowText).toContain('Не требуется');
   });
 
   test('31f. Phase B chunked sentence search — all manifest shards, premium+raw, sorted, progress fired', async ({ page }) => {

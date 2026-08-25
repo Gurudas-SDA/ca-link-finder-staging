@@ -455,14 +455,15 @@ test.describe('shard open does not copy the database (db-worker queryCloseBuffer
       expect(out.fixed.rows).toEqual(out.control.rows);
 
       // Golden value for the corpus generation currently in staging/data/
-      // (re-measured 2026-07-28 against the 22-shard Brotli generation —
-      // was 416028 for the prior 21-shard gzip one). This one line is
-      // corpus-coupled ON PURPOSE — a silent change in shard content should
-      // stop the gate. Rebuilt the sentence shards? Re-measure and update HERE,
-      // and nowhere else in this file.
+      // (re-measured 2026-08-25 against the 23-shard generation synced from
+      // production deploy/ — was 421417 for the prior 22-shard Brotli one,
+      // 416028 before that for the 21-shard gzip generation). This one line
+      // is corpus-coupled ON PURPOSE — a silent change in shard content
+      // should stop the gate. Rebuilt the sentence shards? Re-measure and
+      // update HERE, and nowhere else in this file.
       expect(out.fixed.n,
         'total matches for "% krishna%" changed — corpus rebuilt, or the shard ' +
-        'search regressed').toBe(421417);
+        'search regressed').toBe(323626);
     });
 });
 
