@@ -151,6 +151,54 @@ test.describe('CA Link Finder — Daily Health Check', () => {
     expect(criticalErrors).toHaveLength(0);
   });
 
+  // Route interception below only replaces bytes fetched by the PAGE. The
+  // app's service worker fetches/caches the core DB independently (its own
+  // fetch-event handler, a separate execution context) and would otherwise
+  // win the race and serve the real (unintercepted) staging file — observed
+  // while writing this test: two extra un-intercepted requests landed after
+  // the intercepted one, and the header ended up showing the staging
+  // number regardless of what the route served. Blocking the service
+  // worker for this test removes that second, uncontrolled data source.
+  test.describe('Header EN transcript count', () => {
+    test.use({ serviceWorkers: 'block' });
+
+    test('1b. excludes Not necessary/xx lectures', async ({ page }) => {
+      // staging/data/ppp_meta.db is a stale/synthetic fixture that has NO
+      // rows with script_en = 'Not necessary' or 'xx' — the exact bug this
+      // test guards against can't show up on that data. Serve the real
+      // production meta DB (deploy/data/ppp_meta.db.br, which DOES have
+      // those statuses) for this one test instead, via route interception —
+      // this only swaps response bytes in the test's own browser context,
+      // it does not touch any file under staging/ or deploy/.
+      const fs = require('fs');
+      const path = require('path');
+      const prodMetaBr = fs.readFileSync(
+        path.join(__dirname, '..', '..', 'deploy', 'data', 'ppp_meta.db.br')
+      );
+      await page.route('**/data/ppp_meta.db.br*', route => {
+        route.fulfill({ status: 200, contentType: 'application/octet-stream', body: prodMetaBr });
+      });
+
+      await page.goto('./');
+      await waitForAppReady(page);
+
+      // The header's "EN - N" total is filled in asynchronously once the
+      // whole DB is scanned (loadTotalScriptCounts / _fillHeaderCounts in
+      // ui.js) — wait for the dash to appear, not just for the column to
+      // exist.
+      const enHeader = page.locator('#resultsTable thead [data-count-col="Script_EN"]');
+      await expect(enHeader).toContainText('-', { timeout: 60000 });
+
+      const text = await enHeader.textContent();
+      // Against the real production DB (9,357 lectures), before the fix
+      // this read "EN - 3,041" because status values 'Not necessary' and
+      // 'xx' (= no transcript needed/exists) were counted as real EN
+      // transcripts. The true premium EN count is 2,026.
+      expect(text).toContain('2,026');
+      expect(text).not.toContain('3,041');
+    });
+  });
+
   test('2. Metadata search returns results', async ({ page }) => {
     await page.goto('./');
     await waitForAppReady(page);

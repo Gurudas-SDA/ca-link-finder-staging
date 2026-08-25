@@ -171,12 +171,14 @@ PPP.ui = (function () {
         var ruDup = String.fromCharCode(1044, 1091, 1073, 1083, 1080, 1082, 1072, 1090);
         var ruDupTypo = String.fromCharCode(1044, 1091, 1073, 1080, 1082, 1072, 1090);
         var ruNotRel = String.fromCharCode(1053, 1077, 32, 1086, 1090, 1085, 1086, 1089, 1080, 1090, 1089, 1103);
+        var lvNotNeeded = 'Nav nepiecie' + String.fromCharCode(353) + 'ams';
+        var ruNotNeeded = String.fromCharCode(1053, 1077, 32, 1090, 1088, 1077, 1073, 1091, 1077, 1090, 1089, 1103);
         function q(list) {
             return list.map(function (v) { return "'" + v.replace(/'/g, "''") + "'"; }).join(',');
         }
-        var enSkip = q(['', 'N/A', '0', 'Raw', 'Duplicate', 'Not relevant']);
-        var lvSkip = q(['', 'N/A', '0', 'Duplicate', lvDup, 'Not relevant', 'Neattiecas']);
-        var ruSkip = q(['', 'N/A', '0', 'Duplicate', ruDup, ruDupTypo, 'Not relevant', ruNotRel]);
+        var enSkip = q(['', 'N/A', '0', 'Raw', 'Duplicate', 'Not relevant', 'Not necessary', 'xx']);
+        var lvSkip = q(['', 'N/A', '0', 'Duplicate', lvDup, 'Not relevant', 'Neattiecas', lvNotNeeded, 'Raw']);
+        var ruSkip = q(['', 'N/A', '0', 'Duplicate', ruDup, ruDupTypo, 'Not relevant', ruNotRel, ruNotNeeded]);
         var sql =
             'SELECT ' +
             "SUM(CASE WHEN TRIM(COALESCE(script_en,'')) NOT IN (" + enSkip + ') THEN 1 ELSE 0 END) AS en, ' +
