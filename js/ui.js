@@ -142,12 +142,12 @@ PPP.ui = (function () {
     /**
      * Per-language transcript counts for the header row ("EN - 1,234").
      * Counted over the CURRENT result set (the same rows the table renders),
-     * not over the whole database. EN/LV/RU count real, original transcripts
-     * (duplicates, "Not relevant" and auto "Raw" cells excluded); Raw counts
-     * the Script_EN cells marked "Raw".
+     * not over the whole database. EXACT status match only (R\u0101jan rule,
+     * 2026-08-26) \u2014 no blacklist: a cell counts for Script_EN/LV/RU only
+     * when its status is literally 'Script_EN'/'Script_LV'/'Script_RU', and
+     * for Raw only when Script_EN is literally 'Raw'. Duplicate / Not
+     * necessary / Not relevant / xx etc. are excluded by definition.
      */
-    var DUP_LABELS_H = { 'Duplicate': 1, 'Dublik\u0101ts': 1, '\u0414\u0443\u0431\u043b\u0438\u043a\u0430\u0442': 1, '\u0414\u0443\u0431\u0438\u043a\u0430\u0442': 1 };
-    var NOT_REL_LABELS_H = { 'Not relevant': 1, 'Neattiecas': 1, '\u041d\u0435 \u043e\u0442\u043d\u043e\u0441\u0438\u0442\u0441\u044f': 1 };
     /** "EN - 676" (or a bare "EN" while the number is not known yet). */
     function _langCountLabel(lang, n) {
         return (typeof n === 'number') ? (lang + ' - ' + n.toLocaleString()) : lang;
@@ -224,14 +224,23 @@ PPP.ui = (function () {
     function countScriptCols(rows) {
         var c = { 'Script_EN': 0, 'Script_LV': 0, 'Script_RU': 0, 'Script_RAW': 0 };
         if (!rows) return c;
+        // Unique docx per language (Rājan rule, 2026-08-25/08-26): a handful
+        // of docx are shared by 2-3 lecture rows, so counting rows would
+        // over-count — count distinct script_<lang>_url values instead,
+        // mirroring loadTotalScriptCounts' COUNT(DISTINCT ..._url) SQL.
+        var seen = { 'Script_EN': {}, 'Script_LV': {}, 'Script_RU': {}, 'Script_RAW': {} };
         for (var i = 0; i < rows.length; i++) {
             var r = rows[i];
             ['Script_EN', 'Script_LV', 'Script_RU'].forEach(function (col) {
                 var v = (r[col] || '').toString().trim();
-                if (v === '' || v === 'N/A' || v === '0') return;
-                if (DUP_LABELS_H[v] || NOT_REL_LABELS_H[v]) return;
-                if (col === 'Script_EN' && v === 'Raw') { c['Script_RAW']++; return; }
-                c[col]++;
+                var url = (r[col + '_url'] || '').toString().trim();
+                if (!url) return;
+                if (col === 'Script_EN' && v === 'Raw') {
+                    if (!seen['Script_RAW'][url]) { seen['Script_RAW'][url] = 1; c['Script_RAW']++; }
+                    return;
+                }
+                if (v !== col) return;
+                if (!seen[col][url]) { seen[col][url] = 1; c[col]++; }
             });
         }
         return c;

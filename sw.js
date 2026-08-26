@@ -63,7 +63,7 @@ importScripts('sw-precache.js');
 // already-installed device — this constant, kept in sync with
 // self.SHELL_VERSION on every cache_bust.py run, is what makes the NEXT such
 // change actually visible (Codex HIGH-2, 2026-07-28).
-const SW_SHELL_STAMP = 'a88a80de2459';
+const SW_SHELL_STAMP = '7f2481ba940a';
 if (typeof self.SHELL_VERSION === 'string' && self.SHELL_VERSION !== SW_SHELL_STAMP) {
     // Non-fatal: an install-blocking throw here would be worse than serving
     // a mismatched shell for one cycle. This means scripts/cache_bust.py was

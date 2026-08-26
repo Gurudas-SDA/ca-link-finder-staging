@@ -197,6 +197,67 @@ test.describe('CA Link Finder — Daily Health Check', () => {
       expect(text).not.toContain('3,041');
       expect(text).not.toContain('2,026');
     });
+
+    test('1c. Clicking EN counter filters to EXACT Script_EN status only (Rājan report 2026-08-26)', async ({ page }) => {
+      // Rājan's report: clicking "EN - 2121" (production) surfaced ~9343
+      // rows — has:Script_EN's SQL/JS predicates matched ANY non-empty
+      // script_en cell (Raw, Not necessary, Duplicate, xx, ...), not the
+      // exact 'Script_EN' status — and the header itself jumped to
+      // "EN - 3136" because ui.js's countScriptCols recomputed the header
+      // over that wrongly-inflated filtered set using its own non-empty +
+      // blacklist rule. Fix: both has: predicates (search.js SQL path and
+      // in-memory path) now require script_en/lv/ru = 'Script_EN'/etc.
+      // exactly, and countScriptCols uses the same exact-match rule (plus
+      // the same COUNT(DISTINCT url) dedup loadTotalScriptCounts already
+      // used) so the header stays put after filtering.
+      await page.goto('./');
+      await waitForAppReady(page);
+
+      const enHeader = page.locator('#resultsTable thead [data-count-col="Script_EN"]');
+      await expect(enHeader).toContainText('-', { timeout: 60000 });
+      const headerBefore = await enHeader.textContent();
+
+      // Ground truth computed independently of the app's own search code:
+      // straight COUNT of rows whose script_en literally equals 'Script_EN'.
+      const truth = await page.evaluate(async () => {
+        const db = window.PPP.db;
+        const en = await db.queryMetaAsync("SELECT COUNT(*) AS c FROM lectures WHERE script_en = 'Script_EN'");
+        const lv = await db.queryMetaAsync(
+          "SELECT COUNT(DISTINCT script_lv_url) AS c FROM lectures WHERE script_en = 'Script_EN' AND script_lv = 'Script_LV' AND TRIM(COALESCE(script_lv_url,'')) != ''"
+        );
+        const ru = await db.queryMetaAsync(
+          "SELECT COUNT(DISTINCT script_ru_url) AS c FROM lectures WHERE script_en = 'Script_EN' AND script_ru = 'Script_RU' AND TRIM(COALESCE(script_ru_url,'')) != ''"
+        );
+        return { rows: en[0].c, lv: lv[0].c, ru: ru[0].c };
+      });
+
+      await enHeader.click();
+      await page.waitForFunction(() => document.getElementById('searchTerm').value === 'has:Script_EN');
+      await page.waitForSelector('#resultsInfo strong', { timeout: 10000 });
+      await page.waitForTimeout(600);
+
+      // Result list: exactly the rows whose status is literally Script_EN —
+      // not the ~9,343-magnitude figure the pre-fix "non-empty" predicate
+      // produced.
+      const info = await page.locator('#resultsInfo strong').textContent();
+      const resultCount = parseInt(info, 10);
+      expect(resultCount).toBe(truth.rows);
+      expect(resultCount).toBeLessThan(3000);
+
+      // Header: unchanged by the click. It counts UNIQUE docx over whatever
+      // set it's shown for, and filtering to has:Script_EN doesn't change
+      // that unique-docx count (every row now already has Script_EN).
+      const headerAfter = await enHeader.textContent();
+      expect(headerAfter).toBe(headerBefore);
+
+      // LV/RU sub-counts recomputed over this EN-only result set, using the
+      // same exact-status + unique-url rule (same shape of check Rājan
+      // already verified visually on the Raw view: "EN - 0  LV - 1  RU - 0").
+      const lvHeader = await page.locator('#resultsTable thead [data-count-col="Script_LV"]').textContent();
+      const ruHeader = await page.locator('#resultsTable thead [data-count-col="Script_RU"]').textContent();
+      expect(parseInt(lvHeader.replace(/[^\d]/g, ''), 10)).toBe(truth.lv);
+      expect(parseInt(ruHeader.replace(/[^\d]/g, ''), 10)).toBe(truth.ru);
+    });
   });
 
   test('2. Metadata search returns results', async ({ page }) => {

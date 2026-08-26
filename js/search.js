@@ -303,12 +303,23 @@ PPP.search = (function () {
             if (typeConds.length > 0) conditions.push('(' + typeConds.join(' OR ') + ')');
         }
 
-        // has: filter (AND, check non-empty columns; includes duplicate-labeled transcripts)
+        // has: filter (AND). Script_EN/LV/RU require the EXACT status string
+        // (Rājan rule, 2026-08-26) — no "not empty" blacklist, so Duplicate /
+        // Not necessary / Not relevant / xx / Raw etc. never match has:Script_EN.
+        // Script_RAW stays the virtual exact-match column it already was.
+        // All other has: columns (Links, Dwnld., ...) keep the "not empty" rule.
         parsed.filters.has.forEach(function (t) {
             var colName = utils.normalizeHasColumn(t.slice(4));
             // Virtual Raw column: the marker lives in script_en.
             if (colName === 'Script_RAW') {
                 conditions.push("(l.script_en = 'Raw')");
+                return;
+            }
+            if (colName === 'Script_EN' || colName === 'Script_LV' || colName === 'Script_RU') {
+                var sqlColExact = columnToSqlName(colName);
+                var exKey = '$hasExact' + (paramIdx++);
+                params[exKey] = colName;
+                conditions.push("(l." + sqlColExact + " = " + exKey + ")");
                 return;
             }
             // Map column names to SQLite column names (lowercase, underscored)
@@ -447,12 +458,16 @@ PPP.search = (function () {
                 })) return false;
             }
 
-            // has: ALL must match
+            // has: ALL must match. Script_EN/LV/RU require the EXACT status
+            // string (same rule as the SQL path above) — no "not empty" fallback.
             if (parsed.filters.has.length > 0) {
                 if (!parsed.filters.has.every(function (t) {
                     var colName = utils.normalizeHasColumn(t.slice(4));
                     if (colName === 'Script_RAW') {
                         return (row['Script_EN'] || '').toString().trim() === 'Raw';
+                    }
+                    if (colName === 'Script_EN' || colName === 'Script_LV' || colName === 'Script_RU') {
+                        return (row[colName] || '').toString().trim() === colName;
                     }
                     return utils.cellHasLink(row[colName], colName, row);
                 })) return false;
